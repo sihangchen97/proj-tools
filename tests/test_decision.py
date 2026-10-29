@@ -1,130 +1,79 @@
-"""v2 decision engine: frontmatter contract, index, submit validation."""
+"""v3 decision engine: new, supersede, status, toc/graph."""
 import pytest
 
 from proj import decision as dec
-from proj import index as pindex
-from proj.frontmatter import split
+from proj import records as rec
 
 
-def _first(cfg):
-    return dec._records(cfg)[0]
+def test_new_creates_record(proj):
+    row, p = rec.new_record(proj, "decision", "Use Rust")
+    assert row["id"] == "0002"
+    assert row["status"] == "Proposed"
+    text = p.read_text()
+    assert text.startswith(f"<!-- proj:decision {row['uuid']} -->")
+    assert "# 2. Use Rust" in text
+    assert "Status: Proposed" in text
+    assert "## Context" in text
+    # changelog shows the created entry
+    assert "| Added | created |" in text
 
 
-def test_new_creates_frontmatter_record(cfg):
-    rec = dec.new(cfg, "Use Rust")
-    assert rec.path.name == "0001-use-rust.md"
-    meta, body = split(rec.path.read_text())
-    assert meta["id"] == "0001"
-    assert meta["title"] == "Use Rust"
-    assert meta["status"] == "Proposed"
-    assert meta["uuid"]
-    assert meta["history"] == [{"date": meta["created"], "event": "created"}]
-    assert "# 1. Use Rust" in body
-    assert "proj-template" not in rec.path.read_text()
+def test_supersede_updates_both(proj):
+    row, _ = dec.new(proj, "New decision", supersede="1")
+    spec = rec.load_registry(proj.root)["decision"]
+    db = rec.open_db(proj)
+    old = db.get(spec, row["supersedes"], by="id")
+    new = db.get(spec, row["id"], by="id")
+    db.close()
+    assert old["status"] == "Superseded by DEC-0002"
+    assert new["status"] == "Supersedes DEC-0001"
+    assert new["supersedes"] == "0001"
 
 
-def test_new_increments_number(cfg):
-    dec.new(cfg, "A")
-    rec = dec.new(cfg, "B")
-    assert rec.path.name == "0002-b.md"
-
-
-def test_supersede_updates_both(cfg):
-    dec.new(cfg, "A")
-    rec = dec.new(cfg, "B", supersede="1")
-    old = _first(cfg)
-    assert old.meta["status"] == "Superseded by DEC-0002"
-    assert rec.meta["status"] == "Supersedes DEC-0001"
-    assert rec.meta["supersedes"] == "0001"
-    # status change recorded in the old record's history
-    last = old.meta["history"][-1]
-    assert last["event"] == "status"
-    assert last["to"] == "Superseded by DEC-0002"
-
-
-def test_status_set_records_history(cfg):
-    rec = dec.new(cfg, "A")
-    rec = dec.set_status(cfg, "1", "Accepted")
-    rec.write()
-    again = _first(cfg)
-    assert again.meta["status"] == "Accepted"
-    last = again.meta["history"][-1]
-    assert last["event"] == "status" and last["from"] == "Proposed" and last["to"] == "Accepted"
-
-
-def test_status_rejects_out_of_set(cfg):
-    dec.new(cfg, "A")
+def test_status_validates_allowed_set(proj):
+    rec.new_record(proj, "decision", "D2")
+    rec.status_set(proj, "decision", "2", "Accepted")
     with pytest.raises(ValueError, match="not allowed"):
-        dec.set_status(cfg, "1", "Bogus")
+        rec.status_set(proj, "decision", "2", "Bogus")
 
 
-def test_status_allows_supersede_form(cfg):
-    dec.new(cfg, "A")
-    rec = dec.set_status(cfg, "1", "Supersedes DEC-0001")  # matches template with {{id}}=0001
-    rec.write()
-    assert _first(cfg).meta["status"] == "Supersedes DEC-0001"
+def test_status_supersede_pattern(proj):
+    # "Supersedes DEC-0001" only matches when id==0001
+    with pytest.raises(ValueError, match="not allowed"):
+        rec.status_set(proj, "decision", "1", "Supersedes DEC-0002")
+    rec.status_set(proj, "decision", "1", "Supersedes DEC-0001")
+    spec = rec.load_registry(proj.root)["decision"]
+    db = rec.open_db(proj)
+    assert db.get(spec, "0001", by="id")["status"] == "Supersedes DEC-0001"
+    db.close()
 
 
-def test_validate_bad_status(cfg):
-    rec = dec.new(cfg, "A")
-    rec.meta["status"] = "Bogus"
-    idx = pindex.load(cfg)
-    problems = pindex.validate_record(cfg, rec, idx)
-    assert any("Bogus" in p for p in problems)
+def test_status_change_auto_logs(proj):
+    row, _ = rec.new_record(proj, "decision", "D2")  # starts Proposed
+    rec.status_set(proj, "decision", row["id"], "Accepted")
+    spec = rec.load_registry(proj.root)["decision"]
+    db = rec.open_db(proj)
+    r = db.get(spec, row["id"], by="id")
+    logs = db.logs("decision", r["uuid"])
+    db.close()
+    assert any("Proposed → Accepted" in e["summary"] for e in logs)
 
 
-def test_validate_id_mismatch(cfg):
-    rec = dec.new(cfg, "A")
-    rec.meta["id"] = "9999"
-    idx = pindex.load(cfg)
-    problems = pindex.validate_record(cfg, rec, idx)
-    assert any("does not match filename" in p for p in problems)
-
-
-def test_validate_bad_uuid(cfg):
-    rec = dec.new(cfg, "A")
-    rec.meta["uuid"] = "not-a-uuid"
-    idx = pindex.load(cfg)
-    problems = pindex.validate_record(cfg, rec, idx)
-    assert any("bad uuid" in p for p in problems)
-
-
-def test_validate_uuid_collision(cfg):
-    a = dec.new(cfg, "A")
-    b = dec.new(cfg, "B")
-    b.meta["uuid"] = a.uuid
-    idx = pindex.load(cfg)
-    idx["records"]["decision"][a.uuid] = a.to_index(a.path.relative_to(cfg.root))
-    problems = pindex.validate_record(cfg, b, idx)
-    assert any("already used" in p for p in problems)
-
-
-def test_rebuild_index(cfg):
-    dec.new(cfg, "A")
-    dec.new(cfg, "B", supersede="1")
-    index, problems = pindex.rebuild(cfg)
-    assert problems == []
-    decs = index["records"]["decision"]
-    assert len(decs) == 2
-    first = next(v for v in decs.values() if v["id"] == "0001")
-    assert first["status"] == "Superseded by DEC-0002"
-    assert "context" in first["sections"]
-    # index persisted to .proj/index.json
-    import json
-    on_disk = json.loads((cfg.proj_dir / "index.json").read_text())
-    assert on_disk["records"]["decision"] == decs
-
-
-def test_link_adds_see_also(cfg):
-    dec.new(cfg, "A")
-    dec.new(cfg, "B")
-    dec.link(cfg, "1", ["2"])
-    assert "See also: DEC-2" in _first(cfg).path.read_text()
-
-
-def test_graph_edges_from_supersedes(cfg):
-    dec.new(cfg, "A")
-    dec.new(cfg, "B", supersede="1")
-    g = dec.graph(cfg)
+def test_toc_and_graph(proj):
+    dec.new(proj, "Second", supersede="1")
+    g = dec.graph(proj)
     assert "graph LR" in g
     assert "D0001 --> D0002" in g
+    t = dec.toc(proj)
+    assert "Superseded by DEC-0002" in t
+
+
+def test_link_appends_to_consequences(proj):
+    dec.new(proj, "Third")
+    dec.link(proj, "1", ["3"])
+    spec = rec.load_registry(proj.root)["decision"]
+    db = rec.open_db(proj)
+    row = db.get(spec, "0001", by="id")
+    db.close()
+    import json
+    assert "See also: DEC-3" in json.loads(row["sections"])["consequences"]

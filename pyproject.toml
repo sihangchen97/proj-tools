@@ -50,5 +50,5 @@ dev = ["dev"]
 [tool.pixi.tasks]
 test = { cmd = "pytest -q", default-environment = "dev" }
 lint = { cmd = "ruff check src tests", default-environment = "dev" }
-# 清空 testproj 内容，保留目录本身与 .gitkeep
-clean-test = "mkdir -p testproj && find testproj -mindepth 1 -maxdepth 1 ! -name .gitkeep -exec rm -rf {} + && touch testproj/.gitkeep"
+# 清空 testproj 内容，保留目录本身、.git 与 .gitkeep
+clean-test = "mkdir -p testproj && find testproj -mindepth 1 -maxdepth 1 ! -name .gitkeep ! -name .git -exec rm -rf {} + && touch testproj/.gitkeep && git -C testproj init -q 2>/dev/null || true"

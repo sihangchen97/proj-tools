@@ -29,6 +29,10 @@ class ProjConfig:
         self.experiments_dir = self.root / "docs/experiments"
         self.proj_dir = self.root / ".proj"
 
+    @property
+    def db_path(self) -> Path:
+        return self.proj_dir / "sqlite"
+
 
 def find_root(start: Path | None = None, strict: bool = True) -> Path:
     """Walk up from start (default cwd) looking for a project root.

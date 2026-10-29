@@ -1,0 +1,11 @@
+kind: incident
+dir: docs/incidents
+numbered: date
+status-allowed:
+  - Open
+  - Closed
+sections:
+  - {name: Summary, hint: what broke, when, impact}
+  - {name: Root cause}
+  - {name: Actions taken}
+  - {name: Prevention rule, hint: actionable rule added to guidelines to prevent repeat errors}

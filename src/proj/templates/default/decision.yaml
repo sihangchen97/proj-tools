@@ -1,0 +1,15 @@
+kind: decision
+dir: docs/decisions
+numbered: 4
+status-allowed:
+  - Proposed
+  - Accepted
+  - Deprecated
+  - "Superseded by DEC-{id}"
+  - "Supersedes DEC-{id}"
+fields:
+  - {name: supersedes, hint: id of the decision this one replaces (set by `proj decision new -s`)}
+sections:
+  - {name: Context, hint: problem statement & constraints}
+  - {name: Decision, hint: chosen solution & why over alternatives}
+  - {name: Consequences, hint: pros, cons, tech debt, follow-ups}

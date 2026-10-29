@@ -1,0 +1,14 @@
+kind: experiment
+dir: docs/experiments
+numbered: 4
+status-allowed:
+  - Proposed
+  - Running
+  - Closed
+fields:
+  - {name: commit, hint: git commit hash the experiment runs on}
+sections:
+  - {name: Hypothesis, hint: the claim being tested (write before running)}
+  - {name: Hyperparameters, hint: dataset version, key hyperparameters}
+  - {name: Results, hint: metric deltas vs baseline}
+  - {name: Conclusion, hint: hypothesis confirmed / refuted, next step}

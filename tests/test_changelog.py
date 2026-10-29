@@ -1,59 +1,74 @@
+"""v3 global CHANGELOG.md from the DB."""
 import pytest
 
-from proj.changelog import add_entry, bump, read, release_notes, version
-
-SEED = """\
-# Changelog
-
-## [Unreleased]
-
-## [0.1.0] - 2026-01-01
-### Added
-- initial release
-"""
+from proj import changelog as cl
+from proj import db as dbmod
+from proj import records as rec
+from proj.views import bump
 
 
-def test_bump():
-    assert bump("0.1.0", "patch") == "0.1.1"
-    assert bump("0.1.0", "minor") == "0.2.0"
-    assert bump("0.1.0", "major") == "1.0.0"
+def test_parse_summary():
+    assert dbmod.parse_summary("Added: new thing") == ("Added", "new thing")
+    assert dbmod.parse_summary("added: lowercase ok") == ("Added", "lowercase ok")
+    assert dbmod.parse_summary("plain text") == ("Changed", "plain text")
+    assert dbmod.parse_summary("Fixed: off by one") == ("Fixed", "off by one")
+    with pytest.raises(ValueError, match="unknown changelog category"):
+        dbmod.parse_summary("Wrong: nope")
+
+
+def test_add_and_release(proj):
+    cl.add(proj, "Added: sqlite core")
+    cl.add(proj, "Changed: CLI rewrite")
+    text = (proj.root / "CHANGELOG.md").read_text()
+    assert "## [Unreleased]" in text
+    assert "- sqlite core" in text
+    assert "- CLI rewrite" in text
+
+    used = cl.version_bump(proj, None, "minor")
+    assert used == "v0.1.0"
+    text = (proj.root / "CHANGELOG.md").read_text()
+    assert "## [v0.1.0] - " in text
+    assert "Unreleased]" in text  # still has the (now empty) section
+    assert "sqlite core" in text
+
+
+def test_release_notes(proj):
+    cl.add(proj, "Added: x")
+    cl.add(proj, "Fixed: y")
+    cl.version_bump(proj, "v1.2.3", None)
+    notes = cl.release_notes(proj, "v1.2.3")
+    assert "### Added" in notes
+    assert "### Fixed" in notes
     with pytest.raises(ValueError):
-        bump("abc", "patch")
+        cl.release_notes(proj, "v9.9.9")
 
 
-def test_add_entry_unreleased(cfg):
-    cfg.changelog.write_text(SEED)
-    add_entry(cfg, "Added", "new feature")
-    text = cfg.changelog.read_text()
-    assert text.index("[Unreleased]") < text.index("new feature") < text.index("[0.1.0]")
+def test_bump_math():
+    assert bump("0.0.9", "patch") == "0.0.10"
+    assert bump("0.1.9", "minor") == "0.2.0"
+    assert bump("1.2.3", "major") == "2.0.0"
 
 
-def test_add_entry_creates_section(cfg):
-    cfg.changelog.write_text("# Changelog\n")
-    add_entry(cfg, "Fixed", "a bug", version_name="0.1.0")
-    text = cfg.changelog.read_text()
-    assert "## [0.1.0]" in text
-    assert "### Fixed" in text
-    assert "- a bug" in text
+def test_show_versions(proj):
+    cl.add(proj, "Added: a")
+    cl.version_bump(proj, "v0.1.0", None)
+    cl.add(proj, "Added: b")
+    cl.version_bump(proj, "v0.2.0", None)
+    versions = cl.show_versions(proj)
+    assert [v for v, _ in versions] == ["v0.2.0", "v0.1.0"]
 
 
-def test_version_creates_release(cfg):
-    cfg.changelog.write_text(SEED)
-    v = version(cfg, part="minor")
-    assert v == "0.2.0"
-    text = cfg.changelog.read_text()
-    assert "## [0.2.0]" in text
-    # fresh Unreleased must now be first
-    names = [x.name for x in read(cfg)[1]]
-    assert names[0] == "Unreleased"
-    with pytest.raises(ValueError):
-        version(cfg, explicit="0.2.0")
-
-
-def test_release_notes(cfg):
-    cfg.changelog.write_text(SEED)
-    notes = release_notes(cfg, "0.1.0")
-    assert "# 0.1.0" in notes
-    assert "initial release" in notes
-    with pytest.raises(ValueError):
-        release_notes(cfg, "9.9.9")
+def test_incident_and_experiment_kinds(proj):
+    # date-numbered kinds work through the same engine
+    row, _ = rec.new_record(proj, "incident", "DB down")
+    assert row["id"].startswith("20")  # date-based id
+    row2, _ = rec.new_record(proj, "experiment", "lr sweep")
+    assert row2["id"] == "0001"  # experiments are 4-digit (design table)
+    # field round-trips
+    spec = rec.load_registry(proj.root)["experiment"]
+    db = rec.open_db(proj)
+    r = db.get(spec, row2["id"], by="id")
+    db.set(spec, r["uuid"], commit="abc123")
+    r = db.get(spec, row2["id"], by="id")
+    assert r["commit"] == "abc123"
+    db.close()

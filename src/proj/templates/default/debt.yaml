@@ -1,0 +1,11 @@
+kind: debt
+dir: docs/tech-debt
+numbered: 4
+status-allowed:
+  - Proposed
+  - In progress
+  - Repaid
+sections:
+  - {name: Location, hint: file / module where the hack lives}
+  - {name: Reason, hint: why this temporary workaround was introduced}
+  - {name: Trigger for removal, hint: condition under which this debt must be repaid}

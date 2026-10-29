@@ -1,0 +1,16 @@
+kind: task
+dir: tasks
+numbered: letter
+status-allowed:
+  - Not started
+  - In progress
+  - Done
+fields:
+  - {name: plan, hint: id of the owning plan (empty = main tasklist task)}
+derived:
+  - {name: Started, to-status: In progress}
+  - {name: Done, to-status: Done}
+sections:
+  - {name: Steps, hint: checkbox list, max 2 levels (step + sub-task)}
+  - {name: Open, hint: open items / decisions needed, one per line}
+  - {name: Notes, hint: results & notes after running}

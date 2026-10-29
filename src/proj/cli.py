@@ -1,142 +1,84 @@
-"""Typer CLI for proj."""
-
+"""Typer CLI for proj (v3: SQLite core, YAML templates, md input channel)."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
-from datetime import date
 from pathlib import Path
 
 import typer
 
+from proj import changelog as cl
 from proj import decision as dec
-from proj import index as pindex
-from proj.adr import by_number
-from proj.changelog import add_entry, release_notes, version
+from proj import plan as planmod
+from proj import records as rec
+from proj import scaffold
+from proj import task as taskmod
 from proj.check import check as run_checks
-from proj.config import load_config
+from proj.config import ProjConfig, load_config
 from proj.hooks import install as hooks_install
-from proj.records import RecordSet
-from proj.scaffold import init as scaffold_init
-from proj.tasklist import (
-    add_task,
-    done_task,
-    list_plans,
-    new_plan,
-    read_tasks,
-    resume_plan,
-    shelve_task,
-)
 
 app = typer.Typer(
-    help="Project governance: ADRs, tasklists, changelogs, tech debt, incidents, experiments.",
-    no_args_is_help=True,
-)
-adr_app = typer.Typer(help="Architecture Decision Records.")
-task_app = typer.Typer(help="TASKLIST.md — work in progress right now.")
-plan_app = typer.Typer(help="docs/plans/ — overall plans, can be shelved/resumed.")
+    help="Project governance: decisions, tasks, plans, changelog, tech debt, "
+         "incidents, experiments. SQLite core + YAML templates + md input channel.",
+    no_args_is_help=True)
+decision_app = typer.Typer(help="Decisions (ADR-style).")
+task_app = typer.Typer(help="Tasks (main tasklist / plan tasks).")
+plan_app = typer.Typer(help="Plans (state machine drives task visibility).")
 cl_app = typer.Typer(help="CHANGELOG.md maintenance.")
-debt_app = typer.Typer(help="Tech debt items.")
-incident_app = typer.Typer(help="Incident post-mortems.")
-experiment_app = typer.Typer(help="Experiment tracking.")
 hooks_app = typer.Typer(help="Git hooks.")
 
-app.add_typer(adr_app, name="decision")
+app.add_typer(decision_app, name="decision")
 app.add_typer(task_app, name="task")
 app.add_typer(plan_app, name="plan")
 app.add_typer(cl_app, name="changelog")
-app.add_typer(debt_app, name="debt")
-app.add_typer(incident_app, name="incident")
-app.add_typer(experiment_app, name="experiment")
 app.add_typer(hooks_app, name="hooks")
+
+
+_ROOT: dict[str, Path | None] = {"root": None}  # set by --root callback (MCP reuses)
+
+
+@app.callback()
+def _main(root: Path | None = typer.Option(
+        None, "--root", help="project root (default: discover by walking up)")):
+    _ROOT["root"] = root
+
+
+def _cfg(strict: bool = True) -> ProjConfig:
+    return load_config(_ROOT["root"], strict=strict)
+
+
+def _fail(msg: str) -> None:
+    typer.echo(f"error: {msg}", err=True)
+    raise typer.Exit(1)
+
+
+def _print_problems(problems: list[str], notes: list[str]) -> None:
+    for p in problems:
+        typer.echo(f"FAIL  {p}", err=True)
+    for n in notes:
+        typer.echo(f"note: {n}")
 
 
 def _editor(path: Path) -> None:
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
-    if not editor:
+    if editor:
+        subprocess.run([editor, str(path)], check=False)
+    else:
         typer.echo(f"Created {path} (set $EDITOR to open automatically)")
-        return
-    subprocess.run([editor, str(path)], check=False)
 
 
-def _record_set_for(cfg, which: str) -> RecordSet:
-    if which == "debt":
-        return RecordSet(cfg.debt_dir, prefix="debt")
-    if which == "incident":
-        return RecordSet(cfg.incidents_dir, dated=True, prefix="incident")
-    if which == "experiment":
-        return RecordSet(cfg.experiments_dir, prefix="experiment")
-    raise ValueError(which)
-
-
-DEBT_TEMPLATE = """\
-# {number}. {title}
-
-Date: {date}
-
-## Status
-
-Proposed
-
-## Location
-
-[File / module where the hack lives]
-
-## Reason
-
-[Why this temporary workaround was introduced]
-
-## Trigger for removal
-
-[Condition under which this debt must be repaid]
-"""
-
-INCIDENT_TEMPLATE = """\
-# {number}. {title}
-
-Date: {date}
-
-## Status
-
-Open
-
-## Summary
-
-[What broke, when, impact]
-
-## Root cause
-
-## Actions taken
-
-## Prevention rule
-
-[Actionable rule added to AI guidelines to prevent repeat errors]
-"""
-
-EXPERIMENT_TEMPLATE = """\
-# {number}. {title}
-
-Date: {date}
-Commit: {commit}
-
-## Status
-
-Running
-
-## Hypothesis
-
-## Hyperparameters
-
-## Results / Metric deltas
-
-"""
-
+# ---- lifecycle -----------------------------------------------------------------
 
 @app.command()
-def init(tiers: list[str] = typer.Option(["core"], "--tier", help="core, cv, infra, quality")):
-    """Scaffold governance files (idempotent, never overwrites)."""
-    cfg = load_config(strict=False)
-    created = scaffold_init(cfg, tiers)
+def init(profiles: list[str] = typer.Option(
+        ["core"], "--profile", help="core, cv, infra, quality")):
+    """Scaffold, build tables (lock wins over templates), seed, adopt files."""
+    cfg = _cfg(strict=False)
+    try:
+        created = scaffold.init(cfg, profiles)
+    except ValueError as e:
+        _fail(str(e))
     if created:
         typer.echo("Created:")
         for c in created:
@@ -146,9 +88,106 @@ def init(tiers: list[str] = typer.Option(["core"], "--tier", help="core, cv, inf
 
 
 @app.command()
+def new(kind: str, title: str,
+        supersede: str | None = typer.Option(None, "--supersede", "-s"),
+        plan: str | None = typer.Option(None, "--plan", help="owning plan id (tasks)"),
+        field: list[str] = typer.Option(
+            [], "--field", help="kind field: name=value (repeatable)"),
+        yes: bool = typer.Option(False, "--yes", "-y", help="Don't open editor")):
+    """Create a new record from its template (DB insert + render md)."""
+    cfg = _cfg()
+    fields = {}
+    for f in field:
+        if "=" not in f:
+            _fail(f"--field expects name=value, got {f!r}")
+        k, v = f.split("=", 1)
+        fields[k.strip()] = v.strip()
+    if kind == "task" and plan:
+        fields["plan"] = plan
+    if kind not in rec.load_registry(cfg.root):
+        _fail(f"unknown kind {kind!r} (run `proj info` for registered kinds)")
+    try:
+        if kind == "decision" and supersede:
+            _, p = dec.new(cfg, title, supersede)
+        else:
+            _, p = rec.new_record(cfg, kind, title, fields=fields or None)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"Created {p.relative_to(cfg.root)}")
+    if not yes:
+        _editor(p)
+
+
+@app.command()
+def sync(files: list[Path] = typer.Argument(
+        None, help="Files (default: all managed dirs)")):
+    """md → DB (validate, normalize) → re-render all md."""
+    cfg = _cfg()
+    try:
+        problems, notes = rec.sync(cfg, list(files) if files else None)
+    except ValueError as e:
+        _fail(str(e))
+    _print_problems(problems, notes)
+    if problems:
+        raise typer.Exit(1)
+    typer.echo("OK — synced and re-rendered")
+
+
+@app.command()
+def adopt(files: list[Path] = typer.Argument(
+        None, help="Files (default: all managed dirs)")):
+    """Absorb pre-existing md files (uuid preferred; else id check + generate)."""
+    cfg = _cfg()
+    problems, notes = rec.adopt(cfg, list(files) if files else None)
+    _print_problems(problems, notes)
+    if problems:
+        raise typer.Exit(1)
+    typer.echo("OK — adopted and re-rendered")
+
+
+@app.command()
+def update():
+    """sync all + re-render every view (TASKLIST.md, CHANGELOG.md, view sections)."""
+    cfg = _cfg()
+    problems, notes = rec.sync(cfg, None)
+    _print_problems(problems, notes)
+    if problems:
+        raise typer.Exit(1)
+    typer.echo("OK — updated")
+
+
+@app.command()
+def render(kind: str | None = None, id_: str | None = None):
+    """DB → md (no md input). No args = every record + views."""
+    cfg = _cfg()
+    try:
+        if kind is None:
+            written = rec.render_all(cfg)
+            typer.echo(f"Rendered {len(written)} file(s)")
+            return
+        spec = rec.load_registry(cfg.root)[kind]
+        db = rec.open_db(cfg)
+        if id_ is None:
+            rows = db.all(spec)
+        else:
+            row = rec.by_id(cfg, spec, db, id_)
+            if row is None:
+                db.close()
+                _fail(f"{kind} {id_} not found")
+            rows = [row]
+        for row in rows:
+            p = rec.file_path(cfg, spec, row)
+            p.write_text(rec.render_record(spec, row, db), encoding="utf-8")
+            typer.echo(f"Rendered {p.relative_to(cfg.root)}")
+        db.close()
+    except KeyError as e:
+        _fail(f"unknown kind {e.args[0]!r}")
+
+
+@app.command()
 def check():
-    """Validate governance invariants; exit 1 on failure."""
-    cfg = load_config()
+    """Validate DB ↔ lock ↔ templates ↔ md invariants; exit 1 on failure."""
+    cfg = _cfg()
     problems = run_checks(cfg)
     if problems:
         for p in problems:
@@ -157,87 +196,131 @@ def check():
     typer.echo("OK")
 
 
-@adr_app.command("new")
-def adr_new(title: str, supersede: str | None = typer.Option(None, "--supersede", "-s"),
-            yes: bool = typer.Option(False, "--yes", "-y", help="Don't open editor")):
-    """Create the next decision (frontmatter record)."""
-    cfg = load_config()
-    try:
-        rec = dec.new(cfg, title, supersede)
-    except ValueError as e:
-        raise typer.BadParameter(str(e)) from e
-    typer.echo(f"Created {rec.path}")
-    if not yes:
-        _editor(rec.path)
+@app.command()
+def info(as_json: bool = typer.Option(False, "--json", help="machine-readable")):
+    """What this directory manages + which verbs change it (for humans and MCP)."""
+    cfg = _cfg()
+    d = rec.info(cfg)
+    if as_json:
+        typer.echo(json.dumps(d, indent=2, ensure_ascii=False))
+    else:
+        typer.echo(rec.info_text(d).rstrip())
 
 
-@adr_app.command("list")
-def adr_list(status: str | None = typer.Option(None, "--status")):
-    """List decisions."""
-    cfg = load_config()
-    for rec in dec._records(cfg):
-        if status and rec.status != status:
-            continue
-        typer.echo(rec.display)
+# ---- generic record verbs ---------------------------------------------------------
+
+@app.command("list")
+def list_cmd(kind: str, status: str | None = typer.Option(None, "--status")):
+    """List records of a kind (from DB)."""
+    cfg = _cfg()
+    reg = rec.load_registry(cfg.root)
+    if kind not in reg:
+        _fail(f"unknown kind {kind!r} (registered: {', '.join(sorted(reg))})")
+    db = rec.open_db(cfg)
+    rows = db.all(reg[kind])
+    db.close()
+    if status:
+        rows = [r for r in rows if r["status"] == status]
+    if not rows:
+        typer.echo(f"(no {kind} records)" + (f" with status {status!r}" if status else ""))
+    for r in rows:
+        typer.echo(f"{r['id']:<8} {r['status']:<18} {r['title']}")
 
 
-@adr_app.command("show")
-def adr_show(id_: str, history: bool = typer.Option(False, "--history", help="Show audit trail")):
-    """Show one decision's frontmatter (and history)."""
-    cfg = load_config()
-    rec = pindex.by_id(cfg, "decision", id_)
-    if rec is None:
-        raise typer.BadParameter(f"decision {id_} not found")
-    for k in ("id", "uuid", "title", "status", "created"):
-        typer.echo(f"{k}: {rec.meta.get(k, '')}")
-    if rec.meta.get("supersedes"):
-        typer.echo(f"supersedes: {rec.meta['supersedes']}")
+@app.command()
+def show(kind: str, id_: str,
+         history: bool = typer.Option(False, "--history", help="full changelog")):
+    """Show one record (from DB)."""
+    cfg = _cfg()
+    reg = rec.load_registry(cfg.root)
+    if kind not in reg:
+        _fail(f"unknown kind {kind!r}")
+    spec = reg[kind]
+    db = rec.open_db(cfg)
+    row = rec.by_id(cfg, spec, db, id_)
+    if row is None:
+        db.close()
+        _fail(f"{kind} {id_} not found")
+    typer.echo(f"id: {row['id']}")
+    typer.echo(f"uuid: {row['uuid']}")
+    typer.echo(f"title: {row['title']}")
+    typer.echo(f"status: {row['status']}")
+    typer.echo(f"created: {row['created']}")
+    for f in spec.fields:
+        if row.get(f.name):
+            typer.echo(f"{f.name}: {row[f.name]}")
+    logs = db.logs(kind, row["uuid"])
+    db.close()
     if history:
-        for h in rec.history:
-            frm, to = h.get("from"), h.get("to")
-            extra = f" ({frm} -> {to})" if frm or to else ""
-            typer.echo(f"  {h['date']}  {h['event']}{extra}")
+        for e in logs:
+            typer.echo(f"  {e['date']}  [{e['category']}] {e['summary']}")
 
 
-@adr_app.command("status")
-def adr_status(id_: str, new_status: str = typer.Argument(None, help="New status value")):
-    """Set a decision's status (validated against the template's allowed set)."""
-    cfg = load_config()
-    if not new_status:
-        raise typer.BadParameter("usage: proj decision status ID NEW_STATUS")
+@app.command()
+def status(kind: str, id_: str, new_status: str):
+    """Set a record's status (validated against the template's allowed set)."""
+    cfg = _cfg()
     try:
-        rec = dec.set_status(cfg, id_, new_status)
-        rec.write()
+        row = rec.status_set(cfg, kind, id_, new_status)
     except ValueError as e:
-        raise typer.BadParameter(str(e)) from e
-    typer.echo(f"{rec.path.name}: status -> {new_status}")
+        _fail(str(e))
+    typer.echo(f"{kind} {row['id']}: status → {new_status}")
 
 
-@adr_app.command("link")
-def adr_link(target: str, links: list[str]):
-    """Add See-also cross-links to a decision."""
-    cfg = load_config()
+@app.command()
+def log(kind: str, id_: str, summary: str):
+    """Append a changelog entry: "Category: one-line summary" (or plain text)."""
+    cfg = _cfg()
     try:
-        dec.link(cfg, target, links)
+        rec.add_log(cfg, kind, id_, summary)
     except ValueError as e:
-        raise typer.BadParameter(str(e)) from e
-    typer.echo(f"Linked {', '.join(links)} -> DEC-{target}")
+        _fail(str(e))
+    typer.echo(f"logged on {kind} {id_}")
 
 
-@adr_app.command("toc")
-def adr_toc():
-    """Regenerate the decisions table of contents into .proj/toc/decisions.md."""
-    cfg = load_config()
+# ---- decision ------------------------------------------------------------------------
+
+@decision_app.command("new")
+def decision_new(title: str,
+                 supersede: str | None = typer.Option(None, "--supersede", "-s"),
+                 yes: bool = typer.Option(False, "--yes", "-y")):
+    """Create the next decision (with optional supersede)."""
+    cfg = _cfg()
+    try:
+        _, p = dec.new(cfg, title, supersede)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"Created {p.relative_to(cfg.root)}")
+    if not yes:
+        _editor(p)
+
+
+@decision_app.command("list")
+def decision_list(status: str | None = typer.Option(None, "--status")):
+    """List decisions."""
+    cfg = _cfg()
+    rows = dec.records(cfg)
+    if status:
+        rows = [r for r in rows if r["status"] == status]
+    for r in rows:
+        typer.echo(f"{r['id']:<8} {r['status']:<22} {r['title']}")
+
+
+@decision_app.command("toc")
+def decision_toc():
+    """Regenerate .proj/toc/decisions.md."""
+    cfg = _cfg()
     out = cfg.proj_dir / "toc" / "decisions.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(dec.toc(cfg), encoding="utf-8")
-    typer.echo(f"Wrote {out}")
+    typer.echo(f"Wrote {out.relative_to(cfg.root)}")
 
 
-@adr_app.command("graph")
-def adr_graph(out: Path | None = typer.Argument(None, help="Output file (default stdout)")):
+@decision_app.command("graph")
+def decision_graph(out: Path | None = typer.Argument(
+        None, help="Output file (default stdout)")):
     """Emit a mermaid graph of supersede links."""
-    cfg = load_config()
+    cfg = _cfg()
     text = dec.graph(cfg)
     if out:
         out.write_text(text, encoding="utf-8")
@@ -246,235 +329,145 @@ def adr_graph(out: Path | None = typer.Argument(None, help="Output file (default
         typer.echo(text)
 
 
-@app.command()
-def submit(files: list[Path] = typer.Argument(None, help="Files (default: all managed dirs)")):
-    """Validate record files and upsert them into .proj/index.json."""
-    cfg = load_config()
-    index = pindex.load(cfg)
-    if files:
-        recs = []
-        for f in files:
-            spec = _spec_for_path(cfg, f)
-            rec = pindex.read_record(cfg, spec, f) if spec else None
-            if rec is None:
-                raise typer.BadParameter(f"{f}: not a frontmatter-managed record")
-            recs.append(rec)
-    else:
-        recs = pindex.all_records(cfg)
-    problems: list[str] = []
-    for rec in recs:
-        problems.extend(pindex.validate_record(cfg, rec, index))
-    if problems:
-        for p in problems:
-            typer.echo(f"FAIL  {p}", err=True)
-        raise typer.Exit(1)
-    for rec in recs:
-        pindex.upsert(cfg, rec)
-    typer.echo(f"OK — {len(recs)} record(s) validated and indexed")
+@decision_app.command("link")
+def decision_link(target: str, links: list[str]):
+    """Add See-also cross-references to a decision's Consequences."""
+    cfg = _cfg()
+    try:
+        dec.link(cfg, target, links)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"Linked {', '.join('DEC-' + n for n in links)} → DEC-{target}")
 
 
-def _spec_for_path(cfg, path: Path):
-    from proj.templates import load_registry
-    for spec in load_registry(cfg.root).values():
-        if path.parent == cfg.root / spec.dir:
-            return spec
-    return None
+# ---- task ------------------------------------------------------------------------------
 
-
-@app.command("update")
-def update():
-    """Full rescan: rebuild .proj/index.json from all record files."""
-    cfg = load_config()
-    index, problems = pindex.rebuild(cfg)
-    for p in problems:
-        typer.echo(f"WARN  {p}", err=True)
-    total = sum(len(v) for v in index["records"].values())
-    typer.echo(f"Indexed {total} record(s) across {len(index['records'])} kind(s)")
-    if problems:
-        raise typer.Exit(1)
-
-
-@task_app.command("add")
-def task_add(title: str):
-    """Add a new active task to TASKLIST.md."""
-    cfg = load_config()
-    add_task(cfg, title)
-    typer.echo(f"Added task '{title}'")
+@task_app.command("new")
+def task_new(title: str, plan: str | None = typer.Option(None, "--plan"),
+             yes: bool = typer.Option(False, "--yes", "-y")):
+    """Create a task (optionally attached to a plan)."""
+    cfg = _cfg()
+    try:
+        _, p = taskmod.new(cfg, title, plan)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"Created {p.relative_to(cfg.root)}")
+    if not yes:
+        _editor(p)
 
 
 @task_app.command("done")
-def task_done(title: str):
-    """Archive a fully-completed task to docs/plans/."""
-    cfg = load_config()
-    archive = done_task(cfg, title)
-    typer.echo(f"Archived to {archive}")
+def task_done(id_: str):
+    """Mark a task Done (requires every step + sub-task checked)."""
+    cfg = _cfg()
+    try:
+        row = taskmod.done(cfg, id_)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"task {row['id']} → Done")
 
 
 @task_app.command("list")
-def task_list():
-    """List active tasks."""
-    cfg = load_config()
-    _h, blocks = read_tasks(cfg)
-    for t, _l, task in blocks:
-        typer.echo(f"{task.progress:>6}  {t}")
+def task_list(status: str | None = typer.Option(None, "--status")):
+    """List tasks (main + parked)."""
+    cfg = _cfg()
+    for r in taskmod.list_tasks(cfg, status):
+        plan = f"  (plan {r['plan']})" if r.get("plan") else ""
+        typer.echo(f"{r['id']:<8} {r['status']:<12} {r['title']}{plan}")
 
+
+# ---- plan --------------------------------------------------------------------------------
 
 @plan_app.command("new")
-def plan_new(title: str):
-    """Create a draft overall plan in docs/plans/."""
-    cfg = load_config()
-    p = new_plan(cfg, title)
-    typer.echo(f"Created {p}")
+def plan_new(title: str, yes: bool = typer.Option(False, "--yes", "-y")):
+    """Create a plan (Draft)."""
+    cfg = _cfg()
+    try:
+        _, p = planmod.new(cfg, title)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"Created {p.relative_to(cfg.root)}")
+    if not yes:
+        _editor(p)
 
 
-@plan_app.command("shelve")
-def plan_shelve(title: str):
-    """Park an in-progress task from TASKLIST.md into docs/plans/."""
-    cfg = load_config()
-    p = shelve_task(cfg, title)
-    typer.echo(f"Shelved to {p}")
-
-
-@plan_app.command("resume")
-def plan_resume(title: str):
-    """Bring a plan from docs/plans/ back into TASKLIST.md as an active task."""
-    cfg = load_config()
-    resume_plan(cfg, title)
-    typer.echo(f"Resumed '{title}' into TASKLIST.md")
+for _verb, _desc in [
+    ("activate", "Draft → Active (its tasks appear in the main tasklist)"),
+    ("review", "Active → Pending review (requires all its tasks Done)"),
+    ("shelve", "Pending review → Shelved (its tasks park in the plan)"),
+    ("resume", "Shelved → Active"),
+    ("archive", "Pending review → Archived (frozen)"),
+]:
+    def _make(verb=_verb, desc=_desc):
+        @plan_app.command(verb)
+        def cmd(id_: str):
+            """desc"""
+            cfg = _cfg()
+            try:
+                row = planmod.transition(cfg, verb, id_)
+            except ValueError as e:
+                _fail(str(e))
+            typer.echo(f"plan {row['id']}: status → {row['status']}")
+    _make()
 
 
 @plan_app.command("list")
-def plan_list():
-    """List plans in docs/plans/ (newest first)."""
-    cfg = load_config()
-    for p, _title, note in list_plans(cfg):
-        suffix = f"  ({note})" if note else ""
-        typer.echo(f"{p.name}{suffix}")
+def plan_list(status: str | None = typer.Option(None, "--status")):
+    """List plans."""
+    cfg = _cfg()
+    for r in planmod.list_plans(cfg, status):
+        typer.echo(f"{r['id']:<8} {r['status']:<16} {r['title']}")
 
 
-@cl_app.command("version")
-def cl_version(bump_: str | None = typer.Option(None, "--bump", help="major|minor|patch"),
-               explicit: str | None = typer.Option(None, "--explicit", help="Version string")):
-    """Create a new released version section."""
-    cfg = load_config()
-    v = version(cfg, part=bump_, explicit=explicit)
-    typer.echo(f"Created version {v}")
-
+# ---- changelog ----------------------------------------------------------------------------
 
 @cl_app.command("add")
-def cl_add(entry: str, version_name: str = typer.Option("Unreleased", "--version")):
-    """Add an entry. Format: '<Section> <text>', e.g. 'Added new feature'."""
-    cfg = load_config()
-    parts = entry.split(" ", 1)
-    if len(parts) != 2:
-        raise typer.BadParameter("format: '<Section> <text>'")
-    add_entry(cfg, parts[0], parts[1], version_name)
+def cl_add(entry: str, version: str = typer.Option("Unreleased", "--version")):
+    """Add an entry: "Category: text" (Added/Changed/Fixed/...; plain text ok)."""
+    cfg = _cfg()
+    try:
+        cl.add(cfg, entry, version)
+    except ValueError as e:
+        _fail(str(e))
     typer.echo("Added entry")
 
 
+@cl_app.command("version")
+def cl_version(name: str | None = typer.Argument(None),
+               bump: str | None = typer.Option(
+                   None, "--bump", help="major | minor | patch (from latest)")):
+    """Release: move Unreleased into a version (--version NAME or --bump LEVEL)."""
+    cfg = _cfg()
+    try:
+        used = cl.version_bump(cfg, name, bump)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"Released {used}")
+
+
 @cl_app.command("release-notes")
-def cl_release_notes(version_name: str):
-    """Print release notes for one version."""
-    cfg = load_config()
-    typer.echo(release_notes(cfg, version_name), nl=False)
+def cl_notes(version: str):
+    """Print one version's section (for PR/tag bodies)."""
+    cfg = _cfg()
+    try:
+        typer.echo(cl.release_notes(cfg, version).rstrip())
+    except ValueError as e:
+        _fail(str(e))
 
 
-@debt_app.command("new")
-def debt_new(title: str, yes: bool = typer.Option(False, "--yes", "-y")):
-    """Create a new tech-debt item."""
-    cfg = load_config()
-    rs = _record_set_for(cfg, "debt")
-    number = rs.next_number()
-    body = DEBT_TEMPLATE.format(number=number, title=title, date=date.today().isoformat())
-    path = rs.create(title, body, number=number)
-    typer.echo(f"Created {path}")
-    if not yes:
-        _editor(path)
+@cl_app.command("list")
+def cl_list():
+    """List released versions (newest first)."""
+    cfg = _cfg()
+    for version, d in cl.show_versions(cfg):
+        typer.echo(f"{version}  {d}")
 
 
-@debt_app.command("list")
-def debt_list():
-    """List tech-debt items."""
-    cfg = load_config()
-    for rec in _record_set_for(cfg, "debt").discover():
-        typer.echo(rec.display)
-
-
-@debt_app.command("repay")
-def debt_repay(number: str):
-    """Mark a tech-debt item as Repaid."""
-    cfg = load_config()
-    rs = _record_set_for(cfg, "debt")
-    rec = by_number(rs, number)
-    if rec is None:
-        raise typer.BadParameter(f"debt item {number} not found")
-    rs.set_status(rec, f"Repaid on {date.today().isoformat()}")
-    typer.echo(f"Repaid {rec.path.name}")
-
-
-@incident_app.command("new")
-def incident_new(title: str, yes: bool = typer.Option(False, "--yes", "-y")):
-    """Create a new incident post-mortem."""
-    cfg = load_config()
-    rs = _record_set_for(cfg, "incident")
-    number = rs.next_number()
-    body = INCIDENT_TEMPLATE.format(number=number, title=title, date=date.today().isoformat())
-    path = rs.create(title, body, number=number)
-    typer.echo(f"Created {path}")
-    if not yes:
-        _editor(path)
-
-
-@incident_app.command("list")
-def incident_list():
-    """List incidents."""
-    cfg = load_config()
-    for rec in _record_set_for(cfg, "incident").discover():
-        typer.echo(rec.display)
-
-
-@experiment_app.command("new")
-def experiment_new(title: str, commit: str = typer.Option("", "--commit", "-c"),
-                   yes: bool = typer.Option(False, "--yes", "-y")):
-    """Create a new experiment record."""
-    cfg = load_config()
-    rs = _record_set_for(cfg, "experiment")
-    number = rs.next_number()
-    body = EXPERIMENT_TEMPLATE.format(number=number, title=title,
-                                      date=date.today().isoformat(), commit=commit or "unknown")
-    path = rs.create(title, body, number=number)
-    typer.echo(f"Created {path}")
-    if not yes:
-        _editor(path)
-
-
-@experiment_app.command("list")
-def experiment_list():
-    """List experiments."""
-    cfg = load_config()
-    for rec in _record_set_for(cfg, "experiment").discover():
-        typer.echo(rec.display)
-
-
-@experiment_app.command("close")
-def experiment_close(number: str):
-    """Mark an experiment as Closed."""
-    cfg = load_config()
-    rs = _record_set_for(cfg, "experiment")
-    rec = by_number(rs, number)
-    if rec is None:
-        raise typer.BadParameter(f"experiment {number} not found")
-    rs.set_status(rec, f"Closed on {date.today().isoformat()}")
-    typer.echo(f"Closed {rec.path.name}")
-
+# ---- hooks ---------------------------------------------------------------------------------
 
 @hooks_app.command("install")
 def hooks_install_cmd():
-    """Install git hooks (pre-commit runs `proj check`)."""
-    cfg = load_config()
+    """Install .proj/githooks/pre-commit (runs `proj check`) and core.hooksPath."""
+    cfg = _cfg()
     hook = hooks_install(cfg)
-    typer.echo(f"Installed {hook} and set core.hooksPath")
-
-
-if __name__ == "__main__":
-    app()
+    typer.echo(f"Installed {hook} — pre-commit now runs `proj check`")

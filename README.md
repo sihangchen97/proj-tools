@@ -1,243 +1,134 @@
 # proj
 
-Project governance tool: ADRs, tasklists, changelogs, tech debt, incidents,
-experiments — one CLI. User docs live in `docs/` and `TASKLIST.md` /
-`CHANGELOG.md` at root; tool-owned generated files live in `.proj/`.
+Project governance CLI: decisions (ADR), tasks, plans, changelog, tech debt,
+incidents, experiments. One generic engine, YAML templates as schema,
+SQLite as source of truth, Markdown as the human/LLM input channel.
 
-## Install
+Design docs: [`plans/v3-sqlite-core.md`](plans/v3-sqlite-core.md) (current),
+[`plans/v2-templates-and-index.md`](plans/v2-templates-and-index.md) (superseded
+core premise), [`plans/architecture.md`](plans/architecture.md) (v1).
+Implementation deviations: [`plans/v3-implementation-notes.md`](plans/v3-implementation-notes.md).
+
+## Install / develop
 
 ```bash
-uv tool install proj        # or: uvx proj
+pixi install            # dev environment (project root)
+pixi run proj --help    # the CLI itself
 ```
 
-## Layout produced by `proj init`
-
-```
-TASKLIST.md                    # active work only
-CHANGELOG.md                   # Keep a Changelog format
-CONTRIBUTING.md
-DATASET.md                     # tier: cv
-BENCHMARK.md                   # tier: cv
-.env.example                   # tier: quality
-docs/adr/NNNN-slug.md          # ADRs (heading "# N. Title" un-padded)
-docs/plans/YYYY-MM-slug.md     # plans: drafts, shelved, or archived (frozen)
-docs/tech-debt/NNNN-slug.md    # tier: quality
-docs/incidents/YYYY-MM-DD-slug.md   # tier: quality
-docs/experiments/NNNN-slug.md  # tier: cv
-docs/specs/  docs/dev/         # tier: infra
-.github/ISSUE_TEMPLATE/{bug,feature}.md
-.github/PULL_REQUEST_TEMPLATE.md
-.proj/toc/adr.md               # generated TOC (tool-owned)
-.proj/githooks/pre-commit      # installed by `proj hooks install`
-```
-
-Project root is found by walking up from the cwd looking for
-`pyproject.toml`, `.git`, or `.proj/`. Optional overrides in
-`pyproject.toml`:
-
-```toml
-[tool.proj]
-tiers = ["core", "quality"]
-```
-
-## Command reference
-
-Global options: `proj --help`, `proj --install-completion` (bash/zsh/fish),
-`proj --show-completion`. Any subcommand accepts `--help`.
-
-### `proj init` — scaffold (idempotent, never overwrites)
-
-```
-proj init [--tier TIER]...
-```
-
-| Option | Meaning |
-|---|---|
-| `--tier TIER` | Repeatable. One of `core` (default), `cv`, `infra`, `quality`. |
-
-- `core`: `docs/adr/`, `docs/plans/`, `CHANGELOG.md`, `TASKLIST.md`, ADR 0001,
-  `CONTRIBUTING.md`, `.github/` templates, `.proj/`
-- `cv`: `docs/experiments/`, `DATASET.md`, `BENCHMARK.md`
-- `infra`: `docs/specs/`, `docs/dev/`
-- `quality`: `docs/tech-debt/`, `docs/incidents/`, `.env.example`
-
-### `proj check` — validate invariants (CI / pre-commit), exit 1 on failure
-
-No options. Checks:
-- ADR heading number matches filename number
-- Every ADR has a recognizable status (`Proposed`, `Accepted`, `Deprecated`,
-  `Superseded by ADR-NNNN`, `Supersedes ADR-NNNN`, `Repaid…`, `Closed…`)
-- `TASKLIST.md` contains no fully-completed task (must be archived)
-- `CHANGELOG.md` versions are newest-first, `[Unreleased]` first if present
-
-### `proj decision` — Architecture Decision Records (`docs/adr/`)
-
-```
-proj decision new TITLE [-s SUPERSEDED] [-y]
-```
-
-| Option | Meaning |
-|---|---|
-| `-s, --supersede N` | New ADR supersedes ADR N (old one gets `Superseded by ADR-<new>`) |
-| `-y, --yes` | Don't open `$VISUAL`/`$EDITOR` after creation |
-
-```
-proj decision list [--status STATUS]
-```
-
-| Option | Meaning |
-|---|---|
-| `--status STATUS` | Filter by exact status, e.g. `Accepted`, `Deprecated` |
-
-```
-proj decision link TARGET NNNN [NNNN...]
-```
-
-Add/extend a `See also: ADR-N, …` list on ADR TARGET. Idempotent.
-
-```
-proj decision toc
-```
-
-Regenerate `.proj/toc/adr.md`.
-
-```
-proj decision graph [OUT_FILE]
-```
-
-Emit a mermaid graph of supersede edges. `OUT_FILE` optional (default stdout).
-
-### `proj task` — work in progress RIGHT NOW (`TASKLIST.md`)
-
-```
-proj task add TITLE
-```
-
-Append an active task block to `TASKLIST.md` (error if the title exists).
-
-```
-proj task done TITLE
-```
-
-Requires every sub-step checked `[x]`; freezes the record into
-`docs/plans/YYYY-MM-slug.md` and removes it from `TASKLIST.md`.
-
-```
-proj task list
-```
-
-List active tasks with `done/total` progress.
-
-### `proj plan` — overall plans, can be shelved (`docs/plans/`)
-
-`docs/plans/` holds drafts, paused work, and finished archives.
-
-```
-proj plan new TITLE
-```
-
-Create a draft plan `docs/plans/YYYY-MM-slug.md` from the plan template.
-
-```
-proj plan shelve TITLE
-```
-
-Park an in-progress (incomplete) task from `TASKLIST.md` into `docs/plans/`
-marked `Shelved <date> (n/m done)`. The checklist state is preserved.
-
-```
-proj plan resume TITLE
-```
-
-Move a plan back into `TASKLIST.md` as an active task (checklist state
-preserved). Refuses if a task with the same title is already active.
-
-```
-proj plan list
-```
-
-List plans in `docs/plans/`, newest first, with their status note
-(Archived / Shelved / Plan created).
-
-### `proj changelog` — CHANGELOG.md
-
-```
-proj changelog version [--bump major|minor|patch] [--explicit VERSION]
-```
-
-Create a new released version section (dated) plus a fresh `[Unreleased]`
-above it. `--bump` computes the next semver from the current released version
-(falls back to `[project] version` in pyproject.toml); `--explicit` overrides.
-Give exactly one of the two.
-
-```
-proj changelog add "<SECTION> <text>" [--version VERSION]
-```
-
-`<SECTION>` ∈ `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, `Security`.
-`--version` targets a specific version section (default `Unreleased`; the
-section is created if missing).
-
-```
-proj changelog release-notes VERSION
-```
-
-Print that version's section as standalone markdown (for PR/tag bodies).
-
-### `proj debt` — tech debt (`docs/tech-debt/`)
-
-```
-proj debt new TITLE [-y]        # -y = skip editor
-proj debt list
-proj debt repay NNNN            # status -> "Repaid on YYYY-MM-DD"
-```
-
-### `proj incident` — post-mortems (`docs/incidents/`, date-prefixed)
-
-```
-proj incident new TITLE [-y]
-proj incident list
-```
-
-Every incident template includes a **Prevention rule** section (actionable
-rule to add to AI guidelines so the failure can't recur).
-
-### `proj experiment` — experiment records (`docs/experiments/`)
-
-```
-proj experiment new TITLE [-c COMMIT] [-y]
-proj experiment list
-proj experiment close NNNN      # status -> "Closed on YYYY-MM-DD"
-```
-
-### `proj hooks` — git hooks
-
-```
-proj hooks install
-```
-
-Writes `.proj/githooks/pre-commit` (runs `proj check`) and sets
-`git config core.hooksPath .proj/githooks`. The hook is committed and shared
-with the repo.
+`pyproject.toml` registers the `proj` entry point; for other projects:
+`uv tool install proj` (once packaged).
 
 ## Quick start
 
 ```bash
-proj init --tier core --tier quality
-proj decision new "Use pixi for dev envs"
-proj task add "Ship v1"
-proj plan new "Roadmap to v1"
-proj changelog add "Added new feature"
-proj check
+cd my-project
+proj init --profile core            # + --profile cv|infra|quality
+proj new decision "Use pixi"        # opens $EDITOR on docs/decisions/0001-*.md
+proj sync                           # after editing md: md → DB → re-render md
+proj new task "Data pipeline"       # tasks/A-data-pipeline.md
+proj new plan "Ship v1"
+proj new task "Baseline" --plan 1   # parks in the plan until it activates
+proj plan activate 1                # its tasks appear in TASKLIST.md
+# ... edit steps, check boxes ...
+proj sync
+proj task done A                    # requires every step + sub-task checked
+proj plan review 1 && proj plan shelve 1
+proj changelog add "Added: sqlite core"
+proj changelog version --bump minor
+proj check                          # invariants; also runs in pre-commit hook
 ```
 
-## Development (this repo)
+`--root PATH` works on every command (run from anywhere, e.g. for MCP use).
 
-Uses pixi for local dev/test (declared in `pyproject.toml`):
+## Core model
+
+- **Source of truth = `.proj/sqlite`** (SQLite, one table per kind + one
+  changelog table per kind). The md files are **input channel + rendered
+  output**: edit `##` section content → `proj sync` reads it back, then
+  re-renders every md from the DB.
+- **Templates are YAML schema** (`templates/default/<kind>.yaml`, copied into
+  the project at init, user-editable). A template declares: kind, dir,
+  numbering, allowed statuses, extra fields, sections (+ hints). New kind =
+  drop one YAML file, zero code changes.
+- **`<kind>.lock` = `.proj.lock`** (committed) pins which templates + schema
+  the DB was built from. `proj init` with a lock follows the lock; without,
+  it builds from `templates/` and writes the lock.
+- **UUIDs live only in the DB**; each md carries them as an invisible first
+  line `<!-- proj:<kind> <uuid> -->` for cross-validation (uuid → id must
+  match the filename prefix).
+- **Rendered views, never hand-edit**: `TASKLIST.md`, `CHANGELOG.md`, the
+  `Task List` section of plans.
+- **Ownership rules on conflict** (sync): section content → md wins;
+  id/uuid/created/title/status/fields/changelog → DB wins.
+
+## Kinds
+
+| kind | dir | id | statuses |
+|---|---|---|---|
+| `decision` | `docs/decisions/` | NNNN | Proposed, Accepted, Deprecated, `Superseded by DEC-{id}`, `Supersedes DEC-{id}` |
+| `task` | `tasks/` | A, B, … AA | Not started, In progress, Done |
+| `plan` | `docs/plans/` | NNNN | Draft, Active, Pending review, Shelved, Archived |
+| `debt` | `docs/tech-debt/` | NNNN | Proposed, In progress, Repaid |
+| `incident` | `docs/incidents/` | YYYY-MM-DD | Open, Closed |
+| `experiment` | `docs/experiments/` | NNNN | Proposed, Running, Closed |
+
+### Plans drive task visibility (no file moving)
+
+Tasks are independent records; `task.plan` links them to a plan.
+
+- `plan` empty → task always in `TASKLIST.md`
+- plan **Active** → task in `TASKLIST.md` (promoted)
+- plan anything else → task only in that plan's `Task List` section (parked)
+
+State machine: `Draft →(activate) Active →(review: all tasks Done)
+Pending review →(shelve) Shelved →(resume) Active`;
+`Pending review →(archive) Archived`.
+
+### Task Steps (two-level checkboxes)
+
+```markdown
+## Steps
+- [x] step one
+  - [ ] sub-task
+- [ ] step two
+```
+
+- First `[x]` anywhere → auto `Not started → In progress` (on sync).
+- `proj task done A` → requires **all** checkboxes checked.
+- Level-3 nesting → `proj check` failure (flatten or split into a new task).
+
+## CLI
+
+```
+proj init [--profile X] [--root P]
+proj new <kind> TITLE [-s N] [--plan N] [--field k=v] [-y]
+proj sync [FILE…]          # md → DB → md
+proj adopt [FILE…]         # absorb pre-existing md (generates uuids)
+proj render [kind [ID]]    # DB → md only
+proj update                # sync + all views
+proj list <kind> [--status S]
+proj show <kind> ID [--history]
+proj status <kind> ID STATUS   # validated; auto changelog entry
+proj log <kind> ID "Category: …"
+proj check                 # md↔DB, filename↔id, schema↔template, nesting
+proj info [--json]         # what this dir manages + ops cheatsheet
+proj decision toc|graph|link
+proj task new|done|list
+proj plan new|activate|review|shelve|resume|archive|list
+proj changelog add|version|release-notes|list
+proj hooks install         # pre-commit → proj check
+```
+
+## Adding a kind
+
+Drop `templates/default/<kind>.yaml` (see existing ones for the format), then
+`proj init` (or `proj render` after `proj sync` if tables exist). That's it —
+the engine is fully generic.
+
+## Tests / lint
 
 ```bash
-pixi run test        # pytest
+pixi run test        # pytest, 39 tests
 pixi run lint        # ruff
 ```
-
-Design: `plans/architecture.md`.

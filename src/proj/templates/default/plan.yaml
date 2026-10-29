@@ -1,0 +1,13 @@
+kind: plan
+dir: docs/plans
+numbered: 4
+status-allowed:
+  - Draft
+  - Active
+  - Pending review
+  - Shelved
+  - Archived
+sections:
+  - {name: Goal, hint: what this plan achieves and why now}
+  - {name: Task List, view: tasks, hint: rendered from the task table - never hand-edit}
+  - {name: Notes, hint: context, constraints, review remarks}
