@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proj"
+version = "0.1.0"
+description = "Project governance tool: ADRs, tasklists, changelogs, tech debt, incidents, experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.12",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+proj = "proj.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proj"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLW"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# --- pixi (local dev & testing) -----------------------------------------
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+
+[tool.pixi.pypi-dependencies]
+proj = { path = ".", editable = true }
+
+[tool.pixi.feature.dev.dependencies]
+pytest = "*"
+ruff = "*"
+
+[tool.pixi.environments]
+dev = ["dev"]
+
+[tool.pixi.tasks]
+test = { cmd = "pytest -q", default-environment = "dev" }
+lint = { cmd = "ruff check src tests", default-environment = "dev" }
+# 清空 testproj 内容，保留目录本身与 .gitkeep
+clean-test = "mkdir -p testproj && find testproj -mindepth 1 -maxdepth 1 ! -name .gitkeep -exec rm -rf {} + && touch testproj/.gitkeep"

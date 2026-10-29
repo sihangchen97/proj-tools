@@ -1,0 +1,46 @@
+# 功能测试沙盒（pixi run clean-test 清空内容，保留目录）
+testproj/*
+!testproj/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# pixi environments (与 ecs-gpu 一致：lock 不提交)
+.pixi/
+.pixi-build/
+pixi.lock
+
+# 真机/本地配置（只提交 *.example.* 模板）
+config.toml
+config.json
+!config.example.toml
+!config.example.json
+
+# MCP server 本地配置（含路径/密钥，勿提交）
+mcp_settings.json
+
+# 运行时缓存 / 日志（MCP server、CLI 生成）
+*.cache.json
+logs/
+
+# 本地工具状态
+.roo/
+.roomodes
+
+# 本地参考资料
+reference/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
