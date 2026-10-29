@@ -89,6 +89,17 @@ def test_check_detects_section_drift(proj):
     assert any("differs from DB" in p for p in problems)
 
 
+def test_md_drift_detects_unsynced_edit(proj):
+    assert rec.md_drift(proj) == []
+    rec.new_record(proj, "decision", "D2")
+    p = next((proj.root / "docs/decisions").glob("0002-*.md"))
+    p.write_text(p.read_text().replace("## Context\n", "## Context\nunsynced edit\n"))
+    assert rec.md_drift(proj) == [p.name]
+    # sync clears it
+    rec.sync(proj)
+    assert rec.md_drift(proj) == []
+
+
 def test_check_detects_deep_steps(proj):
     row, _ = rec.new_record(proj, "task", "T1")
     p = next((proj.root / "tasks").glob(f"{row['id']}-*.md"))

@@ -32,6 +32,17 @@ def test_add_and_release(proj):
     assert "sqlite core" in text
 
 
+def test_bump_base_is_highest_version_not_newest_date(proj):
+    # v1.0.0 released first, then an older v0.9.9 backfilled (newer date)
+    cl.add(proj, "Added: base")
+    cl.version_bump(proj, "v1.0.0", None)
+    cl.add(proj, "Added: backfill")
+    cl.version_bump(proj, "v0.9.9", None)
+    cl.add(proj, "Added: next")
+    used = cl.version_bump(proj, None, "minor")
+    assert used == "v1.1.0"  # not v0.10.0 (newest-date base)
+
+
 def test_release_notes(proj):
     cl.add(proj, "Added: x")
     cl.add(proj, "Fixed: y")

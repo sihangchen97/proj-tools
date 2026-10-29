@@ -111,6 +111,36 @@ def render_record(spec: KindSpec, row: dict, db: dbmod.Db,
     return "\n".join(lines).rstrip() + "\n"
 
 
+def md_drift(cfg: ProjConfig) -> list[str]:
+    """md files whose section content differs from the DB (unsynced edits).
+    Used to warn before DB-only renders silently overwrite them."""
+    reg = load_registry(cfg.root)
+    db = open_db(cfg)
+    out: list[str] = []
+    for spec in reg.values():
+        d = cfg.root / spec.dir
+        if not d.is_dir():
+            continue
+        for p in sorted(d.glob("*.md")):
+            text = p.read_text(encoding="utf-8")
+            (mk, u), _t, raw_sections = parse_record(text)
+            if mk != spec.kind or not u:
+                continue
+            row = db.get(spec, u, by="uuid")
+            if row is None:
+                continue
+            stored = json.loads(row["sections"] or "{}")
+            for s in spec.sections:
+                if s.view:
+                    continue
+                if normalize(raw_sections.get(s.name.lower(), "")) != \
+                        stored.get(s.name.lower(), ""):
+                    out.append(p.name)
+                    break
+    db.close()
+    return out
+
+
 def render_all(cfg: ProjConfig) -> list[Path]:
     """Phase 2: DB → every record file + global views. Returns written paths."""
     from proj.views import render_changelog_md, render_tasklist_md

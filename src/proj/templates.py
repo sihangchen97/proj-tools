@@ -84,6 +84,11 @@ def parse_template(text: str) -> KindSpec:
 
 
 def bundled_dir() -> Path:
+    # bundled templates live in the repo root templates/ (moved out of src/proj/);
+    # installed wheels may carry a copy inside the package instead
+    repo = Path(__file__).resolve().parents[2] / "templates"
+    if repo.is_dir():
+        return repo
     return Path(__file__).parent / "templates"
 
 

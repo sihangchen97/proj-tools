@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from proj import check as checkmod
 from proj import plan as planmod
 from proj import records as rec
 from proj import task as taskmod
@@ -144,3 +145,27 @@ def test_illegal_transition_rejected(proj):
 def test_norm_id():
     assert _norm_id("0001") == "1"
     assert _norm_id("A") == "A"
+
+
+def test_task_rejects_ghost_plan_ref(proj):
+    with pytest.raises(ValueError, match="plan 999 not found"):
+        taskmod.new(proj, "T1", plan="999")
+    # valid ref still works, and a bare task (no plan) is fine
+    planmod.new(proj, "P1")
+    row, _ = taskmod.new(proj, "T1", plan="1")
+    assert row["plan"] == "1"
+    taskmod.new(proj, "T2")
+
+
+def test_check_flags_dangling_plan(proj):
+    planmod.new(proj, "P1")
+    rec.new_record(proj, "task", "T1", fields={"plan": "42"})  # bypass the CLI guard
+    problems = checkmod.check(proj)
+    assert any("plan 42 does not exist" in p for p in problems)
+    # healthy refs pass once the dangling one is repointed
+    spec = rec.load_registry(proj.root)["task"]
+    db = rec.open_db(proj)
+    bad = db.get(spec, "A", by="id")
+    db.set(spec, bad["uuid"], plan="1")
+    db.close()
+    assert not any("does not exist" in p for p in checkmod.check(proj))

@@ -48,6 +48,10 @@ v3 已按 `v3-sqlite-core.md` 实现（39 tests, lint 绿）。以下偏差全�
 - `new` 后自动打开 `$EDITOR`（`-y` 跳过）：设计未写，实现补上，降低手敲频率。
 - `--root PATH` 全局选项：设计为 MCP 预留，CLI 一并加上（`cli.py:_ROOT`）。
 - 字段名加 SQL 引号：`experiment.commit` 撞 SQLite 保留字，`db.py:_q()` 统一引号。
+- 内置模板移到仓库根 `templates/`（用户要求），`bundled_dir()` 优先仓库根、
+  回退包内。**wheel 打包未配置** `artifacts`，`uv tool install` 场景下新
+  init 的 bundled 复制会缺文件——当前只用 pixi editable 开发，暂不处理；
+  发布前需在 pyproject 加 `artifacts = ["templates/**/*.yaml"]` 并改回退逻辑。
 - plan id 比较统一归一化（`"1"` vs `"0001"`）：`views.py:_norm_id` /
   `plan.py:transition`，用户传 `--plan 1` 或 `--plan 0001` 都成立。
 - changelog category 白名单：`Added/Changed/Deprecated/Removed/Fixed/Security`，

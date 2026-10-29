@@ -187,18 +187,19 @@ def release(cfg: ProjConfig, db, version: str | None = None,
     entries = db.cl_entries("Unreleased")
     current: str | None = None
     rows = db.conn.execute(
-        "SELECT version, MAX(date) FROM changelog_entries "
-        "WHERE version != 'Unreleased' GROUP BY version").fetchall()
+        "SELECT DISTINCT version FROM changelog_entries "
+        "WHERE version != 'Unreleased'").fetchall()
     if rows:
-        current = max(rows, key=lambda r: r[1])[0]
+        # highest version wins (semver), not most recently dated — backfilling
+        # an older release must not skew the bump base
+        current = max((r[0] for r in rows),
+                      key=lambda v: [int(x) for x in re.findall(r"\d+", v)][:3])
     if version:
         used = version
     elif bump_level:
         if current is None:
             current = "0.0.0"
-        used = f"v{bump(current.lstrip('v'), bump_level)}" if not current.startswith("v") \
-            else f"v{bump(current[1:], bump_level)}"
-        used = used if used.startswith("v") else "v" + used
+        used = f"v{bump(current.lstrip('v'), bump_level)}"
     else:
         raise ValueError("need --version or --bump")
     db.conn.execute(

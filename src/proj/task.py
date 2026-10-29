@@ -7,7 +7,20 @@ from proj import records as rec
 from proj.config import ProjConfig
 
 
+def _check_plan_ref(cfg: ProjConfig, plan: str) -> None:
+    """A task pointing at a nonexistent plan would park forever, silently."""
+    spec = rec.load_registry(cfg.root)["plan"]
+    db = rec.open_db(cfg)
+    row = rec.by_id(cfg, spec, db, plan)
+    db.close()
+    if row is None:
+        raise ValueError(f"plan {plan} not found — create it first "
+                         f"(`proj plan new ...`) or drop --plan")
+
+
 def new(cfg: ProjConfig, title: str, plan: str | None = None):
+    if plan:
+        _check_plan_ref(cfg, plan)
     fields = {"plan": plan or ""} if plan else None
     return rec.new_record(cfg, "task", title, fields=fields)
 

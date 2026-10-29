@@ -102,13 +102,13 @@ def new(kind: str, title: str,
             _fail(f"--field expects name=value, got {f!r}")
         k, v = f.split("=", 1)
         fields[k.strip()] = v.strip()
-    if kind == "task" and plan:
-        fields["plan"] = plan
     if kind not in rec.load_registry(cfg.root):
         _fail(f"unknown kind {kind!r} (run `proj info` for registered kinds)")
     try:
         if kind == "decision" and supersede:
             _, p = dec.new(cfg, title, supersede)
+        elif kind == "task":
+            _, p = taskmod.new(cfg, title, plan)
         else:
             _, p = rec.new_record(cfg, kind, title, fields=fields or None)
     except ValueError as e:
@@ -161,6 +161,11 @@ def render(kind: str | None = None, id_: str | None = None):
     """DB → md (no md input). No args = every record + views."""
     cfg = _cfg()
     try:
+        drift = rec.md_drift(cfg)
+        if drift:
+            typer.echo(f"warning: unsynced md edits will be overwritten by this "
+                       f"render: {', '.join(drift)} — run `proj sync` first",
+                       err=True)
         if kind is None:
             written = rec.render_all(cfg)
             typer.echo(f"Rendered {len(written)} file(s)")

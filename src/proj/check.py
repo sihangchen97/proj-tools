@@ -7,6 +7,7 @@ from proj import db as dbmod
 from proj import records as rec
 from proj.config import ProjConfig
 from proj.templates import load_registry
+from proj.views import _norm_id
 
 
 def check(cfg: ProjConfig) -> list[str]:
@@ -66,13 +67,20 @@ def check(cfg: ProjConfig) -> list[str]:
             if row["uuid"] not in seen:
                 problems.append(f"{kind} {row['id']}: record in DB has no md file")
 
-    # task: third-level nesting in Steps
+    # task: third-level nesting in Steps + dangling plan references
     if "task" in reg:
+        plan_ids = set()
+        if "plan" in reg:
+            plan_ids = {_norm_id(r["id"]) for r in db.all(reg["plan"])}
         for r in db.all(reg["task"]):
             steps = json.loads(r["sections"] or "{}").get("steps", "")
             if any(i >= 2 for i, _, _ in rec.checkboxes(steps)):
                 problems.append(f"task {r['id']}: Steps deeper than 2 levels "
                                 f"— flatten sub-tasks")
+            plan = (r.get("plan") or "").strip()
+            if plan and _norm_id(plan) not in plan_ids:
+                problems.append(f"task {r['id']}: plan {plan} does not exist "
+                                f"— create it or clear the task's plan field")
 
     db.close()
     return problems
