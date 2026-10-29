@@ -25,6 +25,13 @@ config.toml
 config.json
 !config.example.toml
 !config.example.json
+.env
+/.env.example
+
+# 数据库文件（DB 在 <project>/.proj/sqlite，这里兜底防误提交）
+*.sqlite
+*.sqlite3
+*.db
 
 # MCP server 本地配置（含路径/密钥，勿提交）
 mcp_settings.json
