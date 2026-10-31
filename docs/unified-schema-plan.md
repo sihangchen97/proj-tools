@@ -2,6 +2,7 @@
 
 > 状态：**已完成**（2026-11-01；本仓库是 proj 工具的 dev 仓库，非 proj 项目，不在根目录 dogfood）
 > 实施记录：统一 `records`（`one_sentence`/`commit` 通用列）+ 单 `record_changelog`（`from_status`/`to_status`/`comment`）+ parent 入 relations（source=父）+ supersede 通用化（D1/D7）+ `contain_task` 替代 `features:` + `PROJ_LOGS` env + head 需求 8（关系链接文本 = 目标文件名**不带 .md 后缀**、路径相对记录自身文件；任务树留在 contain_task 记录的可编辑 `## Task List` section）+ `SCHEMA_VERSION=2`（无 migrate）。验证：`pixi run test` 63 passed；`pixi run e2e` 69 断言全绿（已适配需求 8 head 新格式 + status 图例 + PROJ_LOGS 三态）。
+> **实施后修正（待改）**：① `PROJ_LOGS` 改从**项目 `.env`（当前工作目录）**读（D6 修订：proj 之后管理自己，项目级配置走 `.env`，沿用 CONTRIBUTING"从环境读、只提交 .env.example"约定），OS 环境变量作回退；② `record_changelog` 存 **UTC 时间戳**，渲染才只显示日期（D10）。
 > 本文件是**实施规划**，给实施 agent 照做。规划人负责本文件，实施负责改代码。
 > **dev 阶段，不做数据迁移、不兼容历史 `.proj.sqlite`**——直接换 schema 重建。
 
@@ -31,7 +32,7 @@
 | 4 | 同一张 record 表 + 同一张 changelog 表 | 统一 `records` 表 + 统一 `record_changelog` 表（见 §2）。 |
 | 5 | status 变化单独列存（不塞文本）+ changelog 表下加 status 图例 | `record_changelog` 加 `from_status`/`to_status` 两列：status 变化时填两列、事件备注列 `comment` **不再拼 "status X → Y"**；渲染 Change 列 = emoji 版状态变化开头 + 后跟 comment（D5 显示规则）；**changelog 表底下渲染一行 status 图例**（`emoji 状态名` 对照，复用现有 `views.status_legend`）；`first_date_to` 改查 `to_status=?` 列。非 status 事件两列为 NULL。 |
 | 6 | record 表的 `summary` 列改名 `one_sentence` | `records.one_sentence`：一句话总览这条记录。列名避开与正式 section 混淆（incident/debt 等有同名 `## Summary` section）。Python/CLI 对外 API 可仍叫 `summary`（`row["one_sentence"]`、`--summary` flag、`new(summary=)` 不变），仅存储列名改。 |
-| 7 | 删 `render.changelog:` 开关，改用环境变量 `PROJ_LOGS` | 环境变量 `PROJ_LOGS`（D6 已定）控制每条记录 md 里渲染的 changelog 表行数：`0` = 不显示；`-1` = 显示全部；正整数 N = 显示最新 N 条（现状 5 条，即默认值，未设变量时按 5）。6 个 template 删 `render:` 段里的 `changelog:` 行（decision 的 `render.toc: true` 保留——toc 与 changelog 无关）。 |
+| 7 | 删 `render.changelog:` 开关，改用 `PROJ_LOGS`（项目 `.env` 优先） | `PROJ_LOGS`（D6 修订）控制每条记录 md 里渲染的 changelog 表行数：`0` = 不显示；`-1` = 显示全部；正整数 N = 显示最新 N 条（默认 5）。**读取顺序：项目 `.env`（当前工作目录，简单 KEY=VALUE 解析，无 dotenv 依赖）> OS 环境变量 > 默认 5**。6 个 template 删 `render:` 段里的 `changelog:` 行（decision 的 `render.toc: true` 保留——toc 与 changelog 无关）。 |
 | 8 | head block 渲染细节：空值行隐藏 + 相对路径链接 + 文件名显示 + 多值列表；任务树保持 head 外独立可编辑 block | ① `> **done:**` 行**只在有 done 日期时显示**（未进过 done 状态 → 整行不出，不再渲染 `—`；`created` 恒有值照常显示）。② 关系链接（`supersedes`/`superseded_by`/`related`/`parent`/`subtask`）**路径改用相对记录自身文件**（现状项目根相对 `docs/tasks/T-…md`，点链接会断）：跨目录 = `../{目标dir}/{文件名}`，同目录 = 直接文件名——VS Code/GitHub 点链接可用。③ 链接**文本显示目标完整文件名**（不是 id）：`[PLN-0001-build-plan-tool.md](../plans/PLN-0001-build-plan-tool.md)`，一眼看出指向什么。④ **单值 → 一行**（`> **parent:** [文件名](路径)`）；**多值 → 列表**（key 行后跟 `> - [文件名1](路径1)`、`> - [文件名2](路径2)`，blockquote 内列表）。⑤ **任务树不进 head block**（head 围栏严格 no-hand-edit，任务树可手动勾选、回收入库要变更）：任务树保持为 head 围栏**之外的独立可编辑 block**——即现状的 `kind: task` section 渲染（`## <section>` 标题 + `task_tree_lines` 输出，位于 head + changelog 表之后），**该位置与机制不变**（不加新围栏）；手动勾选经现有 md→DB sync 回库。 |
 
 ### 需求 4 补充说明「task 本身也是 head block 里的内容」
@@ -43,7 +44,7 @@ parent 入 relations 后，**父记录的 head block 渲染 `> **subtask:**` 行
 records(id TEXT PK, type TEXT, title TEXT, status TEXT,
         one_sentence TEXT,                                  -- 一句话说清这条记录（≠ 正式 section；
         created TEXT, sections TEXT)                        --   incident 等有同名 "Summary" section，故列名用 one_sentence 区分）
-record_changelog(id INTEGER PK, record_id TEXT, date TEXT,
+record_changelog(id INTEGER PK, record_id TEXT, date TEXT,  -- UTC 时间戳（D10），渲染只显示日期部分
                  category TEXT, comment TEXT,               -- 这条事件的备注（D5 已定名）
                  from_status TEXT, to_status TEXT)          -- status 变化专属两列（见需求 5）
 relations(id INTEGER PK, source TEXT, target TEXT,
@@ -98,13 +99,29 @@ sections:
 | D3 | `record_changelog` 是否加 `record_type TEXT` 冗余列 | **不加**（你确认）。record_id 全局唯一，join `records` 推出 type。 |
 | D4 | parent 关系约束 | **不加 DB 约束，但强制"一棵树"**（你确认）：① 无环——`check_rows` 父环校验（已有）；② 一子一父——一个 task 只带单值 `--parent`（new 参数天然单值，不会挂两个父）。应用层保证，不加 DB CHECK/UNIQUE。 |
 | D5 | status 变化事件的备注列 | **列名 `comment`**（你确认）。status 变化时 `from_status`/`to_status` 两列表达变化，`comment` 可空可写（如 "review passed with notes"）；**显示**：有 status 变化 → Change 列 = `emoji 版状态变化`（如 `✏️ Draft → 🚧 In Progress`）开头，后跟 `comment`；无 status 变化 → Change 列单独显示 `comment`。非 status 事件（created 等）两列为 NULL。 |
-| D6 | changelog 表行数的环境变量名 | **`PROJ_LOGS`**（你确认，保留建议名）：`0`=不显示，`-1`=全部，未设/空=默认 5，正整数 N=最新 N 条。注意：`render.toc` 开关保留（decision 用），只有 `render.changelog` 被 env 变量取代。 |
+| D6 | changelog 表行数的配置名 + 读取位置 | **`PROJ_LOGS`**（你确认）：`0`=不显示，`-1`=全部，未设/空=默认 5，正整数 N=最新 N 条。**读取位置（修订）**：项目 `.env`（项目根，与 `.proj.lock` 同级）优先 → OS 环境变量 → 默认 5。**`.env` 是什么**：项目级环境配置文件，标准扁平格式——一行一个 `KEY=VALUE`，`#` 行是注释（现有 quality profile scaffold 的 `.env.example` 就是这个格式，目前只有 `# API_KEY=` 占位）；作用 = proj CLI/MCP 操作本项目时要读的、不进 OS 的配置（现在只有 `PROJ_LOGS` 一项）；解析 = 逐行 `line.split("=",1)` 进 dict（无 dotenv 依赖，~10 行）；与 `PROJ_HOME`（mcp.py，OS 级指项目路径）不冲突：OS 级 = 全局/服务器默认，项目级 `.env` = 本项目配置。**proj 之后管理自己**：`.env` 随项目提交（和 DB 一样），clone 即得同一渲染配置；本地要覆盖改自己的 `.env`；`.env.example` 加一行 `PROJ_LOGS=` 占位。注意：`render.toc` 开关保留（decision 用），只有 `render.changelog` 被 `.env` 取代。 |
 
 | D7 | supersede 通用化后，被替代记录的状态副作用 | **不自动置 Deprecated**（你确认）。写入 supersede 边**不改被替代记录的状态**；`> **superseded_by:**` 行保留（从 relations 反向查，纯渲染，与状态无关）。`deprecate` 动词仍可用，需要时手动 `proj decision deprecate`。 |
 | D8 | `relations` 是否存 `source_type`/`target_type` 列 | **不存**（你确认）。type 从 **id 前缀解析**：`source`/`target` 形如 `DEC-0003`，registry 里 `code → record_type` 是现成的映射（`resolve_record_type` 已按 code 解析），查表即得 type。**全量成立**：`numbered` 只填位数且**必须 > 0**（D9，无 letter、无 `numbered:0`）→ 每条记录都有 code 前缀 id，前缀必能解析。顺带：`source`/`target` 加 `FK REFERENCES records(id) ON DELETE CASCADE`——删记录自动删边，现状 `db.delete` 手动清 relations 的三行代码删掉。同类型校验（supersede）= 两个 id 的前缀 code 相同（解析后比较 record_type）。 |
 | D9 | `numbered` 取值约束 | **必须 > 0**（你确认）：只填位数（`numbered: 4` → `DEC-0001`），无 letter 类型、无 `numbered: 0`（无 id 类型）。`load_registry` 校验 `numbered` 为 ≥1 整数，否则 init 报错。这让 D8 的前缀解析全量可行，也让 `next_id`/`max_int_id` 不再有 `numbered==0` 分支。 |
+| D10 | 时间存储精度（实施后修正） | **`record_changelog.date`（及 `records.created`、全局 `changelog_entries.date`）存 UTC 时间戳**（你确认）：ISO8601 带时区（`datetime.now(timezone.utc)`，如 `2026-10-31T08:23:11+00:00`），精确到秒、可排序。**渲染只显示日期**：changelog 表 Date 列 = 存值的日期部分（`ts[:10]`）。现状代码存 `date.today().isoformat()`（本地日期、无时间），改 UTC 时间戳。 |
 
 > **不做数据迁移、不兼容历史**（dev 阶段）：直接 `SCHEMA_VERSION` 置 2，`.proj.sqlite` 重建即可，无 migrate 分支。
+
+## 4c. 实施后修正（已落地代码上待改的 2 处；改完重跑 `pixi run test` + `pixi run e2e`）
+
+> 实施 agent 已按上文落地 schema + `PROJ_LOGS`（OS env 版）。以下两条是**规划人在实施后追加的决定**，需回改已落地代码。
+
+1. **`PROJ_LOGS` 改从项目 `.env` 读（D6 修订）**：
+   - 现状：[`store.py`](src/proj/engine/store.py) `_logs_limit()` 只读 `os.environ["PROJ_LOGS"]`。
+   - 改法：`_logs_limit()` 改成 **项目根 `.env`（与 `.proj.lock` 同级）优先 → OS env → 默认 5**。解析 = 逐行 `line.split("=",1)`、跳过 `#`/空行（~10 行，无 dotenv 依赖）。`.env` 随项目提交（clone 即得），本地可覆盖。
+   - `.env.example`（quality profile scaffold 的 `texts.env_example`）加一行 `PROJ_LOGS=` 占位。
+   - 注意：与 [`mcp.py`](src/proj/mcp.py) 的 `PROJ_HOME`（OS 级指项目路径）不冲突——OS 级 = 全局/服务器默认，项目级 `.env` = 本项目配置。
+2. **时间存 UTC 时间戳、渲染只显示日期（D10）**：
+   - 现状：[`db.py`](src/proj/core/db.py) `add_log`/`add_changelog_entry` 存 `date.today().isoformat()`（本地日期、无时间）。
+   - 改法：改存 `datetime.now(timezone.utc).isoformat(timespec="seconds")`（UTC 时间戳，可排序）；**渲染** changelog 表 Date 列 = 存值日期部分（`ts[:10]`）。`_done_date`/`first_date_to` 取日期部分比较。
+
+→ 改完统一跑一次 `pixi run test` + `pixi run e2e`（沿用 §5 的"最后统一测"纪律）。
 
 ## 4b. 关系写入接口（supersede/related/parent 怎么进 relations）
 
