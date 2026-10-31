@@ -54,16 +54,6 @@ class Db:
             f"CREATE TABLE IF NOT EXISTS {spec.record_type} ("
             f"uuid TEXT PRIMARY KEY, id TEXT UNIQUE, title TEXT, status TEXT, "
             f"summary TEXT, created TEXT{extra}, sections TEXT)")
-        # upgrade path for existing DBs: missing columns added in place
-        cols = self.table_columns(spec.record_type)
-        if "summary" not in cols:
-            self.conn.execute(f'ALTER TABLE {spec.record_type} ADD COLUMN summary TEXT')
-            self.conn.commit()
-        # the task.plan column was renamed to task.parent (legacy field)
-        cols = self.table_columns(spec.record_type)
-        if spec.record_type == "task" and "plan" in cols and "parent" not in cols:
-            self.conn.execute(f'ALTER TABLE {spec.record_type} RENAME COLUMN plan TO parent')
-            self.conn.commit()
         for f in spec.fields:
             if f.name not in self.table_columns(spec.record_type):
                 self.conn.execute(f'ALTER TABLE {spec.record_type} ADD COLUMN "{f.name}" TEXT')

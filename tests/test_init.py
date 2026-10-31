@@ -9,8 +9,10 @@ def test_init_creates_expected_files(proj):
     for expected in ["CHANGELOG.md", "TASKLIST.md", "CONTRIBUTING.md",
                      ".proj.lock",
                      "docs/decisions/0001-record-architecture-decisions.md",
-                     ".env.example", ".github/PULL_REQUEST_TEMPLATE.md"]:
+                     ".env.example"]:
         assert (root / expected).is_file(), expected
+    # .github (issue/PR templates) is not scaffolded — project-specific
+    assert not (root / ".github").exists()
     # DB is .proj.sqlite at the project root (committed by default);
     # record_type profiles are NOT copied (bundled fallback), but the global
     # changelog config IS (every project keeps its own editable copy)
@@ -30,8 +32,11 @@ def test_seed_decision_content(proj):
     assert rows[0]["status"] == "Accepted"
     text = (proj.root / "docs/decisions/0001-record-architecture-decisions.md").read_text()
     assert "<!-- proj:decision " in text
-    assert "status: ✅ Accepted" in text
+    assert "> **status:** ✅ Accepted" in text
     assert "# 1. Record architecture decisions" in text
+    # seed cites the ADR pattern (Nygard) and the tool's repo (ADR-tools-style 0001)
+    assert "thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions" in text
+    assert "github.com/sihangchen97/proj-tools" in text
 
 
 def test_lock_written_and_consistent(proj):
@@ -66,33 +71,24 @@ def test_task_kind_registered(proj):
     assert [f.name for f in reg["task"].fields] == ["parent", "related"]
 
 
-def test_front_matter_shape(proj):
-    """Record md head: a VALID-YAML front matter (gray box) on line 1 ('---',
-    status with emoji, derived rows always shown), the uuid marker comment
-    just below the closing '---' (invisible in preview)."""
+def test_head_blockquote_shape(proj):
+    """Record md head: the uuid marker comment on line 1 (invisible in preview),
+    then a blockquote of `> **key:** value` lines (gray sidebar, NOT front matter,
+    each line hard-wrapped with two trailing spaces, derived rows always shown)."""
     row, p = rec.new_record(proj, "task", "F1", summary="s")
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == "---"
-    assert lines[1] == "status: 🕐 Not Started"
-    assert f"<!-- proj:task {row['uuid']} -->" in lines
-    assert lines.index("---") < lines.index(f"<!-- proj:task {row['uuid']} -->")
-    assert "started: —" in lines and "done: —" in lines
-    # summary lives BELOW the box (heading → summary → changelog), not in it
+    assert lines[0] == f"<!-- proj:task {row['uuid']} -->"
+    assert lines[1] == "# A. F1"  # title directly below the marker (tasks use letters)
+    assert "> **status:** 🕐 Not Started  " in lines  # blockquote below the title
+    assert "> **started:** —  " in lines and "> **done:** —  " in lines
+    # summary lives BELOW the head (heading → summary → changelog)
     assert "Summary: s" in lines
-    assert lines.index("---") < lines.index("Summary: s")
+    assert lines.index(f"<!-- proj:task {row['uuid']} -->") < lines.index("Summary: s")
+    # no front matter anywhere: the head is a blockquote, not a --- block
+    assert not text.startswith("---")
     # round-trip: the marker and managed values survive parse
     (mk, u), _t, _s = rec.parse_record(text)
     assert (mk, u) == ("task", row["uuid"])
     assert rec.md_status(text) == "Not Started"
     assert rec.md_summary(text) == "s"
-    # legacy shape (marker line 1 + `Status:` line) still parses
-    legacy = (f"<!-- proj:task {row['uuid']} -->\n\n# F1\n\nStatus: Done\n\n## Steps\n")
-    (mk, u), _t, _s = rec.parse_record(legacy)
-    assert (mk, u) == ("task", row["uuid"])
-    assert rec.md_status(legacy) == "Done"
-    # old shape (marker INSIDE the front-matter block) still parses, too
-    old = (f"---\n<!-- proj:task {row['uuid']} -->\nstatus: Done\n---\n\n# F1\n\n## Steps\n")
-    (mk, u), _t, _s = rec.parse_record(old)
-    assert (mk, u) == ("task", row["uuid"])
-    assert rec.md_status(old) == "Done"

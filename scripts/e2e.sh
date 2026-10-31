@@ -43,7 +43,9 @@ expect_ok "check on fresh project"     "OK" -- $PROJ check
 # hooks: pre-commit embeds the absolute proj path (a bare `proj` on PATH may be
 # an unrelated program), and the installed hook actually runs `proj check`
 expect_ok "hooks install"              "Installed" -- $PROJ hooks install
-grep -qF "$PROJ" .git/hooks/pre-commit && ok "hook uses absolute proj path" \
+# the hook embeds SOME absolute proj binary (the project's pixi env if it has
+# one — this sandbox doesn't — else the first `proj` on PATH, e.g. a uv tool)
+grep -qE 'exec "/[^"]+proj" check' .git/hooks/pre-commit && ok "hook uses absolute proj path" \
   || fail "hook missing absolute proj path"
 if out=$(.git/hooks/pre-commit 2>&1) && grep -qF "OK" <<<"$out"; then ok "hook runs proj check"
 else fail "hook run failed: $out"; fi
@@ -52,8 +54,9 @@ else fail "hook run failed: $out"; fi
 expect_ok "new decision 0002"          "Created docs/decisions/0002-" -- $PROJ new decision "Use SQLite as core store" -y
 expect_ok "new decision 0003 (-s 2)"   "Created docs/decisions/0003-" -- $PROJ new decision "Adopt YAML templates" -y -s 2
 expect_ok "decision new subcmd -s 3"   "Created docs/decisions/0004-" -- $PROJ decision new "Supersede via subcommand" -y -s 3
-expect_ok "supersede subcmd link"      "supersedes: 0003" -- cat docs/decisions/0004-*.md
-expect_ok "supersede link rendered"    "supersedes: 0002" -- cat docs/decisions/0003-*.md
+# supersede now renders as a blockquote line with a markdown link to the target's md
+expect_ok "supersede subcmd link"      "> **supersedes:** [0003](" -- cat docs/decisions/0004-*.md
+expect_ok "supersede link rendered"    "> **supersedes:** [0002](" -- cat docs/decisions/0003-*.md
 expect_ok "decision toc"               "Wrote" -- $PROJ decision toc
 grep -qF "0003" docs/decisions/_TOC.md && ok "toc lists 0003" || fail "toc missing 0003"
 grep -qF "| 0001 | ✅ |" docs/decisions/_TOC.md \

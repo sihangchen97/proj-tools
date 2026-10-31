@@ -46,66 +46,25 @@ CONTRIBUTING_INIT = """\
    fields, dates) or the changelog table.
 """
 
-ISSUE_BUG = """\
----
-name: Bug report
-about: Something is broken
----
-
-## What happened?
-
-## Expected behavior
-
-## Steps to reproduce
-
-1.
-
-## Environment (OS, versions, commit hash)
-
-## Related decision / task (if any)
-"""
-
-ISSUE_FEATURE = """\
----
-name: Feature request
-about: A new capability or change
----
-
-## Problem to solve
-
-## Proposed solution
-
-## Alternatives considered
-
-## Decision required? (yes for architectural changes — link it here)
-"""
-
-PR_TEMPLATE = """\
-## Summary
-
-## Task / decision references
-
-- task:
-- decision:
-
-## Verification
-
-- [ ] `proj check` passes
-- [ ] tests pass locally
-- [ ] CHANGELOG.md updated (`proj changelog add ...`) where applicable
-"""
+# .github templates (issue/PR) are not scaffolded — they were project-specific;
+# kept in the proj-tools repo under tobedelete/github-scaffold/.
 
 SEED_DECISION = {
     "title": "Record architecture decisions",
     "status": "Accepted",
     "sections": {
-        "context": ("We want a lightweight, reviewable record of non-trivial "
-                    "architectural decisions and the trade-offs behind them."),
-        "decision": ("We use decision records managed by the `proj` tool, stored "
-                     "as Markdown files under `docs/decisions/` with SQLite as "
-                     "the source of truth (`.proj.sqlite`)."),
-        "consequences": ("Every significant decision gets a record before "
-                         "production code. Views regenerate via `proj update`."),
+        "context": ("We need to record the architectural decisions made on this "
+                    "project, with the trade-offs behind them."),
+        "decision": ("We will use Architecture Decision Records, as described by "
+                     "Michael Nygard in this article: "
+                     "https://thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions"
+                     ". Records are managed by the `proj` tool "
+                     "(https://github.com/sihangchen97/proj-tools), stored as "
+                     "Markdown files under `docs/decisions/` with SQLite as the "
+                     "source of truth (`.proj.sqlite`)."),
+        "consequences": ("See Michael Nygard's article, linked above. Every "
+                         "significant decision gets a record before production "
+                         "code; views regenerate via `proj update`."),
     },
 }
 
@@ -146,9 +105,6 @@ def init(cfg: ProjConfig, profiles: list[str]) -> list[str]:
     if "quality" in profiles:
         add(".env.example", ENV_EXAMPLE_INIT)
     add("CONTRIBUTING.md", CONTRIBUTING_INIT)
-    add(".github/ISSUE_TEMPLATE/bug.md", ISSUE_BUG)
-    add(".github/ISSUE_TEMPLATE/feature.md", ISSUE_FEATURE)
-    add(".github/PULL_REQUEST_TEMPLATE.md", PR_TEMPLATE)
 
     # DB: lock wins, else templates
     lock = dbmod.read_lock(cfg.root)

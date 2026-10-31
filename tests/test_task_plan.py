@@ -83,8 +83,8 @@ def test_done_sets_derived_dates(proj):
     taskmod.done(proj, row["id"])
     p = next((proj.root / "tasks").glob(f"{row['id']}-*.md"))
     text = p.read_text()
-    assert "started: 20" in text
-    assert "done: 20" in text
+    assert "> **started:** 20" in text
+    assert "> **done:** 20" in text
 
 
 def test_attached_tasks_show_in_main_tasklist(proj):
