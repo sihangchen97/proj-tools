@@ -120,8 +120,8 @@ sections:
    - `.env.example`（quality profile scaffold 的 `texts.env_example`）加一行 `PROJ_LOGS=` 占位；`.env` 随项目提交（clone 即得同一默认），本地/CI 用 OS env 覆盖。
    - 与 [`mcp.py`](src/proj/mcp.py) 的 `PROJ_HOME`（OS 级指项目路径）分工：OS 级 = 全局/服务器默认，项目 `.env` = 本项目补空。
 2. **时间存 UTC 时间戳、渲染只显示日期（D10）**：
-   - 现状：[`db.py`](src/proj/core/db.py) `add_log`/`add_changelog_entry` 存 `date.today().isoformat()`（本地日期、无时间）。
-   - 改法：改存 `datetime.now(timezone.utc).isoformat(timespec="seconds")`（UTC 时间戳，可排序）；**渲染** changelog 表 Date 列 = 存值日期部分（`ts[:10]`）。`_done_date`/`first_date_to` 取日期部分比较。
+   - 现状（**5 处** `date.today().isoformat()`，本地日期无时间，全要改）：[`db.py:142`](src/proj/core/db.py:142) `add_log`、[`db.py:166`](src/proj/core/db.py:166) `add_cl_entry`、[`store.py:502`](src/proj/engine/store.py:502) `new` 的 `created`、[`store.py:653`](src/proj/engine/store.py:653) adopt 的 `created`、[`views.py:211`](src/proj/engine/views.py:211) release notes 日期。
+   - 改法：抽一个 `db.now_utc()`（`datetime.now(timezone.utc).isoformat(timespec="seconds")`，UTC 时间戳可排序）替换 5 处；**渲染** changelog 表 Date 列 = 存值日期部分（`ts[:10]`）；`_done_date`/`first_date_to` 取日期部分比较；head 的 `> **created:**`/`> **done:**` 也显示日期部分。
 
 → 改完统一跑一次 `pixi run test` + `pixi run e2e`（沿用 §5 的"最后统一测"纪律）。
 
