@@ -1,10 +1,11 @@
-kind: debt
+record_type: debt
 dir: docs/tech-debt
 numbered: 4
+# status 按时间顺序排列：Open → In Progress → Repaid
 status-allowed:
-  - Proposed
-  - In progress
-  - Repaid
+  - {name: Open, emoji: ⚠️}         # 已记录，未动
+  - {name: In Progress, emoji: 🚧}  # 正在还
+  - {name: Repaid, emoji: ✅}        # 已移除 workaround
 sections:
   - {name: Location, hint: file / module where the hack lives}
   - {name: Reason, hint: why this temporary workaround was introduced}

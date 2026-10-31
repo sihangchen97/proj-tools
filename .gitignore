@@ -1,6 +1,5 @@
-# 功能测试沙盒（pixi run clean-test 清空内容，保留目录）
-testproj/*
-!testproj/.gitkeep
+# 功能测试沙盒（pixi run e2e 每次重建）
+.testproj/
 
 # Python
 __pycache__/
@@ -28,10 +27,11 @@ config.json
 .env
 /.env.example
 
-# 数据库文件（DB 在 <project>/.proj/sqlite，这里兜底防误提交）
+# 数据库文件（DB 在 <project>/.proj.sqlite，默认提交；其余 *.sqlite 兜底防误提交）
 *.sqlite
 *.sqlite3
 *.db
+!.proj.sqlite
 
 # MCP server 本地配置（含路径/密钥，勿提交）
 mcp_settings.json
@@ -51,3 +51,6 @@ reference/
 .DS_Store
 .idea/
 .vscode/
+
+# 删除暂存区（按仓库规则 mv 过来，定期手工清理）
+tobedelete/

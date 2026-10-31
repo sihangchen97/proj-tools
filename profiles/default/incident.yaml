@@ -1,0 +1,15 @@
+record_type: incident
+dir: docs/incidents
+numbered: 4
+verbs:
+  close: {from: Open, to: Closed}
+  reopen: {from: Closed, to: Open}
+# status 按时间顺序排列：Open → Closed
+status-allowed:
+  - {name: Open, emoji: 🚨}    # 故障未恢复，处理中
+  - {name: Closed, emoji: ✅}   # 已恢复并沉淀 Prevention rule
+sections:
+  - {name: Summary, hint: what broke, when, impact}
+  - {name: Root cause}
+  - {name: Actions taken}
+  - {name: Prevention rule, hint: actionable rule added to guidelines to prevent repeat errors}

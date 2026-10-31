@@ -1,0 +1,15 @@
+record_type: decision
+dir: docs/decisions
+numbered: 4
+# status 按时间顺序排列：Proposed → Accepted → Deprecated（被替代时置 Deprecated）
+status-allowed:
+  - {name: Proposed, emoji: 🌱}    # 提案中，等待讨论
+  - {name: Accepted, emoji: ✅}     # 已采纳，当前生效
+  - {name: Deprecated, emoji: 📛}   # 已废弃，被 supersede
+fields:
+  - {name: supersedes, hint: ids of decisions this one replaces, comma-separated (e.g. "0001, 0002"); set by `proj decision new -s 1 -s 2`}
+  - {name: superseded_by, hint: ids of decisions that replaced this one, comma-separated (managed by the engine)}
+sections:
+  - {name: Context, hint: problem statement & constraints}
+  - {name: Decision, hint: chosen solution & why over alternatives}
+  - {name: Consequences, hint: pros, cons, tech debt, follow-ups}

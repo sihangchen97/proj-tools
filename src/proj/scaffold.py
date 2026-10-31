@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 
-from proj import db as dbmod
-from proj import records as rec
-from proj.config import ProjConfig
-from proj.templates import bundled_dir, load_registry
+from proj.core import db as dbmod
+from proj.core.config import ProjConfig
+from proj.core.templates import load_registry
+from proj.engine import store as rec
 
 PROFILE_DIRS = {
     "core": [],
@@ -42,7 +42,8 @@ CONTRIBUTING_INIT = """\
 7. **Commits**: one commit per feature or bugfix. No unrequested reformatting.
 8. **Check**: run `proj check` (also runs in pre-commit) before pushing.
 9. **MD files**: edit `##` section content only, then `proj sync`.
-   Never edit the marker line, `Status:`/field lines or the changelog table.
+   Never edit the front matter (`---` head: uuid marker, status, summary,
+   fields, dates) or the changelog table.
 """
 
 ISSUE_BUG = """\
@@ -102,7 +103,7 @@ SEED_DECISION = {
                     "architectural decisions and the trade-offs behind them."),
         "decision": ("We use decision records managed by the `proj` tool, stored "
                      "as Markdown files under `docs/decisions/` with SQLite as "
-                     "the source of truth (`.proj/sqlite`)."),
+                     "the source of truth (`.proj.sqlite`)."),
         "consequences": ("Every significant decision gets a record before "
                          "production code. Views regenerate via `proj update`."),
     },
@@ -132,23 +133,13 @@ def init(cfg: ProjConfig, profiles: list[str]) -> list[str]:
             p.mkdir(parents=True, exist_ok=True)
             created.append(d + "/")
 
-    # .proj/ — tool-owned
-    cfg.proj_dir.mkdir(parents=True, exist_ok=True)
-    gi = cfg.proj_dir / ".gitignore"
-    if not gi.exists():
-        gi.write_text("sqlite\n", encoding="utf-8")  # DB not committed by default
-        created.append(".proj/.gitignore")
-
-    # templates/ — copy bundled templates the user doesn't have yet
-    tdir = cfg.root / "templates" / "default"
-    if not tdir.is_dir():
-        tdir.mkdir(parents=True, exist_ok=True)
-        created.append("templates/default/")
-    for f in (bundled_dir() / "default").glob("*.yaml"):
-        dst = tdir / f.name
-        if not dst.exists():
-            dst.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
-            created.append(f"templates/default/{f.name}")
+    # record_type profiles — NOT copied into the project: the registry falls back
+    # to the bundled profiles (repo root or site-packages); projects that want to
+    # override a record_type add their own profiles/<profile>/<record_type>.yaml.
+    # The global changelog config IS copied (profiles/changelog.yaml): every project
+    # keeps its own editable copy (categories / unreleased / output file).
+    from proj.core.templates import changelog_path
+    add("profiles/changelog.yaml", changelog_path(None).read_text(encoding="utf-8"))
 
     add("CHANGELOG.md", "")      # rendered from DB on first update
     add("TASKLIST.md", "")       # rendered from DB on first update
@@ -178,7 +169,8 @@ def init(cfg: ProjConfig, profiles: list[str]) -> list[str]:
     if "decision" in specs:
         spec = specs["decision"]
         if not rec.open_db(cfg).all(spec) and not any(
-                (cfg.root / spec.dir).glob("*.md")):
+                x for x in (cfg.root / spec.dir).glob("*.md")
+                if not x.name.startswith("_")):
             row, p = rec.new_record(cfg, "decision", SEED_DECISION["title"], spec=spec)
             rec.status_set(cfg, "decision", row["id"], SEED_DECISION["status"])
             d = rec.open_db(cfg)

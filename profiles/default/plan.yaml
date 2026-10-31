@@ -1,0 +1,22 @@
+record_type: plan
+dir: docs/plans
+numbered: 4
+# status 按生命周期顺序排列：Draft → Active → Pending Review → Shelved | Archived
+# （Shelved/Archived 是并列的终态，从 Pending Review 二选一；Shelved 可 resume 回 Active）
+# state machine verbs (verb: {from, to}); gating behavior lives in record_types/plan.py
+verbs:
+  activate: {from: Draft, to: Active}
+  resume: {from: Shelved, to: Active}
+  review: {from: Active, to: Pending Review}
+  shelve: {from: Pending Review, to: Shelved}
+  archive: {from: Pending Review, to: Archived}
+status-allowed:
+  - {name: Draft, emoji: ✏️}            # 起草中，任务暂不入主 TASKLIST
+  - {name: Active, emoji: 🚧}           # 执行中，任务提升到主 TASKLIST
+  - {name: Pending Review, emoji: 🔍}   # 任务全部 Done，等待评审
+  - {name: Shelved, emoji: 📦}          # 评审暂缓，可 resume 回 Active
+  - {name: Archived, emoji: 🗄️}        # 已归档，终态
+sections:
+  - {name: Goal, hint: what this plan achieves and why now}
+  - {name: Task List, type: task, hint: rendered task subtree (tasks with parent = this plan) - never hand-edit}
+  - {name: Notes, hint: context, constraints, review remarks}

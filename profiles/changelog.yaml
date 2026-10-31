@@ -1,0 +1,13 @@
+# Global changelog config (NOT a record_type — one file per project, lives at
+# the profiles/ root, copied into the project by `proj init`, user-editable).
+changelog:
+  file: CHANGELOG.md            # rendered output file (project root)
+  unreleased: Unreleased        # placeholder version for not-yet-released entries
+  default_category: Changed     # category used for entries without an explicit one
+  categories:                   # whitelist + render order (Keep a Changelog standard)
+    - Added
+    - Changed
+    - Deprecated
+    - Removed
+    - Fixed
+    - Security

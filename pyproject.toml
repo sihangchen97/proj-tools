@@ -18,6 +18,8 @@ proj = "proj.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/proj"]
+# bundled profiles live in the repo root — copy them into the wheel as proj/profiles
+force-include = { "profiles" = "proj/profiles" }
 
 [tool.ruff]
 line-length = 100
@@ -44,11 +46,14 @@ proj = { path = ".", editable = true }
 pytest = "*"
 ruff = "*"
 
+[tool.pixi.feature.dev.pypi-dependencies]
+build = "*"
+
 [tool.pixi.environments]
 dev = ["dev"]
 
 [tool.pixi.tasks]
 test = { cmd = "pytest -q", default-environment = "dev" }
 lint = { cmd = "ruff check src tests", default-environment = "dev" }
-# 清空 testproj 内容，保留目录本身、.git 与 .gitkeep
-clean-test = "mkdir -p testproj && find testproj -mindepth 1 -maxdepth 1 ! -name .gitkeep ! -name .git -exec rm -rf {} + && touch testproj/.gitkeep && git -C testproj init -q 2>/dev/null || true"
+# e2e 冒烟：在 .testproj 沙盒里跑完整 CLI 生命周期（每次重建沙盒）
+e2e = { cmd = "bash scripts/e2e.sh", default-environment = "dev" }

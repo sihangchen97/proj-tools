@@ -1,10 +1,10 @@
 """v3 global CHANGELOG.md from the DB."""
 import pytest
 
-from proj import changelog as cl
-from proj import db as dbmod
-from proj import records as rec
-from proj.views import bump
+from proj.core import db as dbmod
+from proj.engine import store as rec
+from proj.engine.views import bump
+from proj.record_types import changelog as cl
 
 
 def test_parse_summary():
@@ -43,6 +43,17 @@ def test_bump_base_is_highest_version_not_newest_date(proj):
     assert used == "v1.1.0"  # not v0.10.0 (newest-date base)
 
 
+def test_read_versions_numeric_order(proj):
+    # 'v1.10.0' must sort above 'v1.9.0' (semver), not string order
+    from proj.engine import views
+    db = rec.open_db(proj)
+    db.add_cl_entry("v1.9.0", "Added", "x", "2026-01-01")
+    db.add_cl_entry("v1.10.0", "Added", "y", "2026-01-02")
+    versions = [v for v, _ in views.read_versions(proj, db)]
+    db.close()
+    assert versions[0] == "v1.10.0" and versions[1] == "v1.9.0"
+
+
 def test_release_notes(proj):
     cl.add(proj, "Added: x")
     cl.add(proj, "Fixed: y")
@@ -70,9 +81,9 @@ def test_show_versions(proj):
 
 
 def test_incident_and_experiment_kinds(proj):
-    # date-numbered kinds work through the same engine
+    # all record_types are 4-digit (or letter) numbered through the same engine
     row, _ = rec.new_record(proj, "incident", "DB down")
-    assert row["id"].startswith("20")  # date-based id
+    assert row["id"] == "0001"  # incident is 4-digit
     row2, _ = rec.new_record(proj, "experiment", "lr sweep")
     assert row2["id"] == "0001"  # experiments are 4-digit (design table)
     # field round-trips

@@ -8,15 +8,16 @@ from pathlib import Path
 
 import typer
 
-from proj import changelog as cl
-from proj import decision as dec
-from proj import plan as planmod
-from proj import records as rec
 from proj import scaffold
-from proj import task as taskmod
 from proj.check import check as run_checks
-from proj.config import ProjConfig, load_config
+from proj.core.config import ProjConfig, load_config
+from proj.engine import store as rec
+from proj.engine.record import record_for
 from proj.hooks import install as hooks_install
+from proj.record_types import changelog as cl
+from proj.record_types import decision as dec
+from proj.record_types import plan as planmod
+from proj.record_types import task as taskmod
 
 app = typer.Typer(
     help="Project governance: decisions, tasks, plans, changelog, tech debt, "
@@ -88,11 +89,16 @@ def init(profiles: list[str] = typer.Option(
 
 
 @app.command()
-def new(kind: str, title: str,
-        supersede: str | None = typer.Option(None, "--supersede", "-s"),
-        plan: str | None = typer.Option(None, "--plan", help="owning plan id (tasks)"),
+def new(record_type: str, title: str,
+        supersede: list[str] = typer.Option(
+            [], "--supersede", "-s",
+            help="id of a decision this one replaces (repeatable; comma also ok)"),
+        parent: str | None = typer.Option(
+            None, "--parent", help="parent record id, any type (tasks: plan/task/…)"),
         field: list[str] = typer.Option(
-            [], "--field", help="kind field: name=value (repeatable)"),
+            [], "--field", help="record_type field: name=value (repeatable)"),
+        summary: str | None = typer.Option(
+            None, "--summary", help="one-sentence summary (result / progress)"),
         yes: bool = typer.Option(False, "--yes", "-y", help="Don't open editor")):
     """Create a new record from its template (DB insert + render md)."""
     cfg = _cfg()
@@ -102,15 +108,19 @@ def new(kind: str, title: str,
             _fail(f"--field expects name=value, got {f!r}")
         k, v = f.split("=", 1)
         fields[k.strip()] = v.strip()
-    if kind not in rec.load_registry(cfg.root):
-        _fail(f"unknown kind {kind!r} (run `proj info` for registered kinds)")
+    if record_type not in rec.load_registry(cfg.root):
+        _fail(f"unknown record_type {record_type!r} (run `proj info` for registered record_types)")
     try:
-        if kind == "decision" and supersede:
-            _, p = dec.new(cfg, title, supersede)
-        elif kind == "task":
-            _, p = taskmod.new(cfg, title, plan)
+        if record_type == "decision" and supersede:
+            flat: list[str] = []
+            for s in supersede:
+                flat += [x.strip() for x in s.split(",") if x.strip()]
+            _, p = dec.new(cfg, title, flat, summary or "")
+        elif record_type == "task":
+            _, p = taskmod.new(cfg, title, parent, summary or "")
         else:
-            _, p = rec.new_record(cfg, kind, title, fields=fields or None)
+            _, p = rec.new_record(cfg, record_type, title,
+                                  fields=fields or None, summary=summary or "")
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"Created {p.relative_to(cfg.root)}")
@@ -157,7 +167,7 @@ def update():
 
 
 @app.command()
-def render(kind: str | None = None, id_: str | None = None):
+def render(record_type: str | None = None, id_: str | None = None):
     """DB → md (no md input). No args = every record + views."""
     cfg = _cfg()
     try:
@@ -166,11 +176,11 @@ def render(kind: str | None = None, id_: str | None = None):
             typer.echo(f"warning: unsynced md edits will be overwritten by this "
                        f"render: {', '.join(drift)} — run `proj sync` first",
                        err=True)
-        if kind is None:
+        if record_type is None:
             written = rec.render_all(cfg)
             typer.echo(f"Rendered {len(written)} file(s)")
             return
-        spec = rec.load_registry(cfg.root)[kind]
+        spec = rec.load_registry(cfg.root)[record_type]
         db = rec.open_db(cfg)
         if id_ is None:
             rows = db.all(spec)
@@ -178,7 +188,7 @@ def render(kind: str | None = None, id_: str | None = None):
             row = rec.by_id(cfg, spec, db, id_)
             if row is None:
                 db.close()
-                _fail(f"{kind} {id_} not found")
+                _fail(f"{record_type} {id_} not found")
             rows = [row]
         for row in rows:
             p = rec.file_path(cfg, spec, row)
@@ -186,7 +196,7 @@ def render(kind: str | None = None, id_: str | None = None):
             typer.echo(f"Rendered {p.relative_to(cfg.root)}")
         db.close()
     except KeyError as e:
-        _fail(f"unknown kind {e.args[0]!r}")
+        _fail(f"unknown record_type {e.args[0]!r}")
 
 
 @app.command()
@@ -215,37 +225,35 @@ def info(as_json: bool = typer.Option(False, "--json", help="machine-readable"))
 # ---- generic record verbs ---------------------------------------------------------
 
 @app.command("list")
-def list_cmd(kind: str, status: str | None = typer.Option(None, "--status")):
-    """List records of a kind (from DB)."""
+def list_cmd(record_type: str, status: str | None = typer.Option(None, "--status")):
+    """List records of a record_type (from DB)."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
-    if kind not in reg:
-        _fail(f"unknown kind {kind!r} (registered: {', '.join(sorted(reg))})")
-    db = rec.open_db(cfg)
-    rows = db.all(reg[kind])
-    db.close()
-    if status:
-        rows = [r for r in rows if r["status"] == status]
+    if record_type not in reg:
+        _fail(f"unknown record_type {record_type!r} (registered: {', '.join(sorted(reg))})")
+    rec_obj = record_for(record_type, reg)
+    rows = rec_obj.list(cfg, status)
     if not rows:
-        typer.echo(f"(no {kind} records)" + (f" with status {status!r}" if status else ""))
+        typer.echo(f"(no {record_type} records)" + (f" with status {status!r}" if status else ""))
+    spec = rec_obj.spec
     for r in rows:
-        typer.echo(f"{r['id']:<8} {r['status']:<18} {r['title']}")
+        typer.echo(f"{r['id']:<8} {spec.status_display(r['status']):<24} {r['title']}")
 
 
 @app.command()
-def show(kind: str, id_: str,
+def show(record_type: str, id_: str,
          history: bool = typer.Option(False, "--history", help="full changelog")):
     """Show one record (from DB)."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
-    if kind not in reg:
-        _fail(f"unknown kind {kind!r}")
-    spec = reg[kind]
+    if record_type not in reg:
+        _fail(f"unknown record_type {record_type!r}")
+    spec = reg[record_type]
     db = rec.open_db(cfg)
     row = rec.by_id(cfg, spec, db, id_)
     if row is None:
         db.close()
-        _fail(f"{kind} {id_} not found")
+        _fail(f"{record_type} {id_} not found")
     typer.echo(f"id: {row['id']}")
     typer.echo(f"uuid: {row['uuid']}")
     typer.echo(f"title: {row['title']}")
@@ -254,7 +262,7 @@ def show(kind: str, id_: str,
     for f in spec.fields:
         if row.get(f.name):
             typer.echo(f"{f.name}: {row[f.name]}")
-    logs = db.logs(kind, row["uuid"])
+    logs = db.logs(record_type, row["uuid"])
     db.close()
     if history:
         for e in logs:
@@ -262,25 +270,31 @@ def show(kind: str, id_: str,
 
 
 @app.command()
-def status(kind: str, id_: str, new_status: str):
+def status(record_type: str, id_: str, new_status: str):
     """Set a record's status (validated against the template's allowed set)."""
     cfg = _cfg()
+    reg = rec.load_registry(cfg.root)
+    if record_type not in reg:
+        _fail(f"unknown record_type {record_type!r}")
     try:
-        row = rec.status_set(cfg, kind, id_, new_status)
+        row = record_for(record_type, reg).set_status(cfg, id_, new_status)
     except ValueError as e:
         _fail(str(e))
-    typer.echo(f"{kind} {row['id']}: status → {new_status}")
+    typer.echo(f"{record_type} {row['id']}: status → {new_status}")
 
 
 @app.command()
-def log(kind: str, id_: str, summary: str):
+def log(record_type: str, id_: str, summary: str):
     """Append a changelog entry: "Category: one-line summary" (or plain text)."""
     cfg = _cfg()
+    reg = rec.load_registry(cfg.root)
+    if record_type not in reg:
+        _fail(f"unknown record_type {record_type!r}")
     try:
-        rec.add_log(cfg, kind, id_, summary)
+        record_for(record_type, reg).add_log(cfg, id_, summary)
     except ValueError as e:
         _fail(str(e))
-    typer.echo(f"logged on {kind} {id_}")
+    typer.echo(f"logged on {record_type} {id_}")
 
 
 # ---- decision ------------------------------------------------------------------------
@@ -288,11 +302,13 @@ def log(kind: str, id_: str, summary: str):
 @decision_app.command("new")
 def decision_new(title: str,
                  supersede: str | None = typer.Option(None, "--supersede", "-s"),
+                 summary: str | None = typer.Option(None, "--summary"),
                  yes: bool = typer.Option(False, "--yes", "-y")):
     """Create the next decision (with optional supersede)."""
     cfg = _cfg()
+    flat = [x.strip() for x in (supersede or "").split(",") if x.strip()]
     try:
-        _, p = dec.new(cfg, title, supersede)
+        _, p = dec.new(cfg, title, flat or None, summary or "")
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"Created {p.relative_to(cfg.root)}")
@@ -313,9 +329,9 @@ def decision_list(status: str | None = typer.Option(None, "--status")):
 
 @decision_app.command("toc")
 def decision_toc():
-    """Regenerate .proj/toc/decisions.md."""
+    """Regenerate docs/decisions/_TOC.md."""
     cfg = _cfg()
-    out = cfg.proj_dir / "toc" / "decisions.md"
+    out = cfg.root / "docs" / "decisions" / "_TOC.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(dec.toc(cfg), encoding="utf-8")
     typer.echo(f"Wrote {out.relative_to(cfg.root)}")
@@ -348,12 +364,13 @@ def decision_link(target: str, links: list[str]):
 # ---- task ------------------------------------------------------------------------------
 
 @task_app.command("new")
-def task_new(title: str, plan: str | None = typer.Option(None, "--plan"),
+def task_new(title: str, parent: str | None = typer.Option(None, "--parent"),
+             summary: str | None = typer.Option(None, "--summary"),
              yes: bool = typer.Option(False, "--yes", "-y")):
-    """Create a task (optionally attached to a plan)."""
+    """Create a task (optionally attached to a parent record)."""
     cfg = _cfg()
     try:
-        _, p = taskmod.new(cfg, title, plan)
+        _, p = taskmod.new(cfg, title, parent, summary or "")
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"Created {p.relative_to(cfg.root)}")
@@ -377,18 +394,19 @@ def task_list(status: str | None = typer.Option(None, "--status")):
     """List tasks (main + parked)."""
     cfg = _cfg()
     for r in taskmod.list_tasks(cfg, status):
-        plan = f"  (plan {r['plan']})" if r.get("plan") else ""
-        typer.echo(f"{r['id']:<8} {r['status']:<12} {r['title']}{plan}")
+        parent = f"  (parent {r['parent']})" if r.get("parent") else ""
+        typer.echo(f"{r['id']:<8} {r['status']:<12} {r['title']}{parent}")
 
 
 # ---- plan --------------------------------------------------------------------------------
 
 @plan_app.command("new")
-def plan_new(title: str, yes: bool = typer.Option(False, "--yes", "-y")):
+def plan_new(title: str, summary: str | None = typer.Option(None, "--summary"),
+             yes: bool = typer.Option(False, "--yes", "-y")):
     """Create a plan (Draft)."""
     cfg = _cfg()
     try:
-        _, p = planmod.new(cfg, title)
+        _, p = planmod.new(cfg, title, summary or "")
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"Created {p.relative_to(cfg.root)}")
@@ -398,10 +416,10 @@ def plan_new(title: str, yes: bool = typer.Option(False, "--yes", "-y")):
 
 for _verb, _desc in [
     ("activate", "Draft → Active (its tasks appear in the main tasklist)"),
-    ("review", "Active → Pending review (requires all its tasks Done)"),
-    ("shelve", "Pending review → Shelved (its tasks park in the plan)"),
+    ("review", "Active → Pending Review (requires all its tasks Done)"),
+    ("shelve", "Pending Review → Shelved (its tasks park in the plan)"),
     ("resume", "Shelved → Active"),
-    ("archive", "Pending review → Archived (frozen)"),
+    ("archive", "Pending Review → Archived (frozen)"),
 ]:
     def _make(verb=_verb, desc=_desc):
         @plan_app.command(verb)
@@ -427,7 +445,8 @@ def plan_list(status: str | None = typer.Option(None, "--status")):
 # ---- changelog ----------------------------------------------------------------------------
 
 @cl_app.command("add")
-def cl_add(entry: str, version: str = typer.Option("Unreleased", "--version")):
+def cl_add(entry: str, version: str | None = typer.Option(
+        None, "--version", help="default: the changelog's unreleased placeholder")):
     """Add an entry: "Category: text" (Added/Changed/Fixed/...; plain text ok)."""
     cfg = _cfg()
     try:
@@ -472,7 +491,10 @@ def cl_list():
 
 @hooks_app.command("install")
 def hooks_install_cmd():
-    """Install .proj/githooks/pre-commit (runs `proj check`) and core.hooksPath."""
+    """Install .git/hooks/pre-commit (runs `proj check`)."""
     cfg = _cfg()
-    hook = hooks_install(cfg)
+    try:
+        hook = hooks_install(cfg)
+    except ValueError as e:
+        _fail(str(e))
     typer.echo(f"Installed {hook} — pre-commit now runs `proj check`")

@@ -1,14 +1,16 @@
-kind: experiment
+record_type: experiment
 dir: docs/experiments
 numbered: 4
+# status 按时间顺序排列：Proposed → Running → Closed
 status-allowed:
-  - Proposed
-  - Running
-  - Closed
+  - {name: Proposed, emoji: 🌱}   # 已写假设，未开跑
+  - {name: Running, emoji: 🚧}    # 正在跑实验
+  - {name: Closed, emoji: ✅}      # 已出结论（确认/证伪）
 fields:
   - {name: commit, hint: git commit hash the experiment runs on}
 sections:
   - {name: Hypothesis, hint: the claim being tested (write before running)}
+  - {name: Task List, type: task, hint: rendered task subtree (tasks with parent = this experiment) - never hand-edit}
   - {name: Hyperparameters, hint: dataset version, key hyperparameters}
   - {name: Results, hint: metric deltas vs baseline}
   - {name: Conclusion, hint: hypothesis confirmed / refuted, next step}

@@ -1,6 +1,6 @@
 """v3 adoption (pre-existing files) and `proj check` invariants."""
 from proj import check as checkmod
-from proj import records as rec
+from proj.engine import store as rec
 
 
 def test_adopt_existing_file_generates_uuid(proj):
@@ -12,7 +12,8 @@ def test_adopt_existing_file_generates_uuid(proj):
     assert problems == []
     assert any("uuid generated" in n for n in notes)
     text = (d / "0001-old-hack.md").read_text()
-    assert text.startswith("<!-- proj:debt ")
+    assert text.startswith("---")  # re-rendered to front matter (uuid marker inside)
+    assert "<!-- proj:debt " in text
     assert "## Location" in text
     # title had its id prefix stripped
     assert "# 1. Old hack" in text
@@ -77,6 +78,29 @@ def test_check_detects_db_drift(proj):
     assert any("has no md file" in p for p in problems)
 
 
+def test_check_detects_orphans_when_dir_missing(proj):
+    # whole record dir removed → DB rows are still flagged (dir gap must not skip)
+    rec.new_record(proj, "incident", "DB down")
+    d = proj.root / "docs/incidents"
+    for f in d.glob("*.md"):
+        f.unlink()
+    d.rmdir()
+    problems = checkmod.check(proj)
+    assert any("has no md file" in p for p in problems)
+
+
+def test_check_detects_status_not_in_template(proj):
+    # DB row whose status the template no longer allows (status rename scenario)
+    rec.new_record(proj, "decision", "D2")
+    spec = rec.load_registry(proj.root)["decision"]
+    db = rec.open_db(proj)
+    row = db.get(spec, "0002", by="id")
+    db.set(spec, row["uuid"], status="Stale")
+    db.close()
+    problems = checkmod.check(proj)
+    assert any("no longer allowed" in p for p in problems)
+
+
 def test_check_detects_section_drift(proj):
     rec.new_record(proj, "decision", "D2")
     p = next((proj.root / "docs/decisions").glob("0002-*.md"))
@@ -112,15 +136,17 @@ def test_check_detects_deep_steps(proj):
 
 
 def test_check_detects_schema_mismatch(proj):
-    from proj.templates import bundled_dir
-    tdir = proj.root / "templates/default"
-    # add a field to the decision template, keep the old lock/table
-    yaml = (tdir / "decision.yaml").read_text()
+    from proj.core.templates import bundled_dir
+    # project override profile with an extra field; DB table stays as built
+    tdir = proj.root / "profiles" / "default"
+    tdir.mkdir(parents=True)
+    yaml = (bundled_dir() / "default" / "decision.yaml").read_text()
     yaml = yaml.replace("  - {name: supersedes",
                         "  - {name: extra}\n  - {name: supersedes")
     (tdir / "decision.yaml").write_text(yaml)
     problems = checkmod.check(proj)
     assert any("does not match" in p for p in problems)
-    # restore for cleanup sanity
-    (tdir / "decision.yaml").write_text(
-        (bundled_dir() / "default" / "decision.yaml").read_text())
+    # remove the override — check passes again
+    (tdir / "decision.yaml").unlink()
+    tdir.rmdir()
+    assert not any("does not match" in p for p in checkmod.check(proj))

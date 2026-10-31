@@ -1,0 +1,18 @@
+record_type: task
+dir: tasks
+numbered: letter
+# status 按时间顺序排列：Not Started → In Progress → Done（sync 按 checkbox 自动升档）
+status-allowed:
+  - {name: Not Started, emoji: 🕐}   # 未开始，无 checkbox 勾选
+  - {name: In Progress, emoji: 🚧}   # 执行中，有未勾选的 step
+  - {name: Done, emoji: ✅}           # 完成，全部 checkbox 已勾选（且有子任务时子任务全 Done）
+fields:
+  - {name: parent, hint: id of the parent record, any type (plan/task/…); empty = top-level (global tasklist)}
+  - {name: related, hint: overlapping/related record ids, comma-separated (e.g. "1, B"); no state semantics}
+derived:
+  - {name: Started, to-status: In Progress}
+  - {name: Done, to-status: Done}
+sections:
+  - {name: Steps, hint: checkbox list, write order = step order; use parent for real sub-tasks}
+  - {name: Open, hint: open items / decisions needed, one per line}
+  - {name: Notes, hint: results & notes after running}

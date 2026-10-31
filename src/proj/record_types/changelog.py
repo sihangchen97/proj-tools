@@ -1,14 +1,21 @@
-"""`proj changelog` — global CHANGELOG.md, rendered from the DB (v3)."""
+"""`proj changelog` — global CHANGELOG.md, rendered from the DB (v3).
+
+Config (categories, unreleased placeholder, output file) comes from
+profiles/changelog.yaml, not hard-coded here.
+"""
 from __future__ import annotations
 
-from proj import db as dbmod
-from proj import records as rec
-from proj.config import ProjConfig
-from proj.views import read_versions, release, render_changelog_md
+from proj.core import db as dbmod
+from proj.core.config import ProjConfig
+from proj.core.templates import load_changelog_spec
+from proj.engine import store as rec
+from proj.engine.views import read_versions, release, render_changelog_md
 
 
-def add(cfg: ProjConfig, entry: str, version: str = "Unreleased") -> None:
-    category, text = dbmod.parse_summary(entry)
+def add(cfg: ProjConfig, entry: str, version: str | None = None) -> None:
+    cl = load_changelog_spec(cfg.root)
+    version = version or cl.unreleased
+    category, text = dbmod.parse_summary(entry, cl)
     db = rec.open_db(cfg)
     db.add_cl_entry(version, category, text)
     db.close()
@@ -31,6 +38,7 @@ def version_bump(cfg: ProjConfig, version: str | None, bump_level: str | None):
 
 
 def release_notes(cfg: ProjConfig, version: str) -> str:
+    cl = load_changelog_spec(cfg.root)
     db = rec.open_db(cfg)
     key = version.lstrip("v")
     for candidate in (version, key, "v" + key):
@@ -41,7 +49,7 @@ def release_notes(cfg: ProjConfig, version: str) -> str:
             by_cat: dict[str, list[str]] = {}
             for e in rows:
                 by_cat.setdefault(e["category"], []).append(e["text"])
-            for cat in ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"):
+            for cat in cl.categories:
                 if cat in by_cat:
                     lines += [f"### {cat}", ""]
                     lines += [f"- {t}" for t in by_cat[cat]]
@@ -52,4 +60,8 @@ def release_notes(cfg: ProjConfig, version: str) -> str:
 
 
 def show_versions(cfg: ProjConfig) -> list[tuple[str, str]]:
-    return read_versions(cfg, rec.open_db(cfg))
+    db = rec.open_db(cfg)
+    try:
+        return read_versions(cfg, db)
+    finally:
+        db.close()

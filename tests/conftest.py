@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from proj import scaffold
-from proj.config import ProjConfig
+from proj.core.config import ProjConfig
 
 
 @pytest.fixture
