@@ -4,8 +4,8 @@ hierarchy, record_for) lives in record.py — this module calls back lazily.
 
 md file shape (rendered by the engine):
 
-    ---                                    <- line 1: front matter opens (gray box)
-    <!-- proj:decision 3f2a1b4c-... -->    <-   tool-owned uuid marker (a comment)
+    <!-- proj:decision 3f2a1b4c-... -->    <- line 1: tool-owned uuid marker (a comment)
+    ---                                    <- line 2: front matter opens (gray box)
     status: 📛 Deprecated                  <-   emoji + name (status_display)
     supersedes: 0001                       <-   non-empty record_type fields only
     subtask: B                             <-   task's sub-task ids (reverse lookup)
@@ -22,8 +22,10 @@ md file shape (rendered by the engine):
     ## Context                             <- user-owned content (the only
     ...                                    <- part humans/LLMs edit)
 
-Legacy shape (html-comment marker + `Status:` lines) is still parsed; any
-re-rendered file is rewritten to the front-matter shape.
+The front-matter block is pure `key: value` (valid YAML — viewers validate it);
+the uuid marker is the HTML comment ABOVE it. The older shape (marker inside the
+front matter) is still parsed for one transition; any re-rendered file is
+rewritten to the marker-on-line-1 shape.
 
 sync: md → DB (sections win) → render all md (tool-owned parts win).
 """
@@ -39,7 +41,10 @@ from proj.core import db as dbmod
 from proj.core.config import ProjConfig
 from proj.core.templates import RecordTypeSpec, load_registry, slugify
 
-FM_RE = re.compile(r"\A---\n(.*?\n)---\n", re.DOTALL)
+FM_RE = re.compile(
+    r"(?:<!-- proj:[\w-]+ [0-9a-f-]{36} -->[ \t]*\n)?"
+    r"---\n(.*?\n)---\n",
+    re.DOTALL)
 # legacy: html-comment marker
 MARK_RE = re.compile(
     r"^<!-- proj:([\w-]+) "
@@ -98,18 +103,20 @@ def _fm_value(v: str) -> str:
 
 
 def _fm_block(spec: RecordTypeSpec, row: dict, fm: dict) -> str:
-    """YAML front matter block: the tool-owned uuid marker as a YAML comment
-    (line 2, so viewers render the gray box) + fields (stable order, unicode).
-    Hand-written lines, not yaml.safe_dump: PyYAML chokes on 4-byte emoji."""
+    """Tool-owned head: the uuid marker as an HTML comment on line 1, then a
+    YAML front matter block (gray box) of pure key: value fields.
+    Hand-written lines, not yaml.safe_dump: PyYAML chokes on 4-byte emoji.
+    The front matter must stay valid YAML — viewers (VS Code) validate it."""
     body = "\n".join(f"{k}: {_fm_value(v)}" for k, v in fm.items())
-    return (f"---\n<!-- proj:{spec.record_type} {row['uuid']} -->\n{body}\n---\n\n")
+    return (f"<!-- proj:{spec.record_type} {row['uuid']} -->\n"
+            f"---\n{body}\n---\n\n")
 
 
 def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
                   registry: dict[str, RecordTypeSpec] | None = None) -> str:
-    # tool-owned head: front-matter block (gray box: uuid marker comment +
-    # status/fields/subtask/derived); the one-sentence summary lives BELOW the
-    # box (between the heading and the changelog table), not in it.
+    # tool-owned head: uuid marker comment (line 1) + front-matter block
+    # (gray box: status/fields/subtask/derived); the one-sentence summary
+    # lives BELOW the box (between the heading and the changelog table).
     fm = {
         "status": spec.status_display(row["status"]),
     }

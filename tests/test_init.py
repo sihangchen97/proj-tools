@@ -67,13 +67,13 @@ def test_task_kind_registered(proj):
 
 
 def test_front_matter_shape(proj):
-    """Record md head = front matter (gray box): line 1 '---', the uuid
-    marker as a comment line 2, status with emoji, derived rows always shown."""
+    """Record md head: the uuid marker comment on line 1, then a VALID-YAML
+    front matter (gray box): '---', status with emoji, derived rows always shown."""
     row, p = rec.new_record(proj, "task", "F1", summary="s")
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == "---"
-    assert lines[1] == f"<!-- proj:task {row['uuid']} -->"
+    assert lines[0] == f"<!-- proj:task {row['uuid']} -->"
+    assert lines[1] == "---"
     assert "status: 🕐 Not Started" in lines
     assert "started: —" in lines and "done: —" in lines
     # summary lives BELOW the box (heading → summary → changelog), not in it
@@ -89,3 +89,8 @@ def test_front_matter_shape(proj):
     (mk, u), _t, _s = rec.parse_record(legacy)
     assert (mk, u) == ("task", row["uuid"])
     assert rec.md_status(legacy) == "Done"
+    # old shape (marker INSIDE the front-matter block) still parses, too
+    old = (f"---\n<!-- proj:task {row['uuid']} -->\nstatus: Done\n---\n\n# F1\n\n## Steps\n")
+    (mk, u), _t, _s = rec.parse_record(old)
+    assert (mk, u) == ("task", row["uuid"])
+    assert rec.md_status(old) == "Done"

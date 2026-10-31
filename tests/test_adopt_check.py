@@ -12,8 +12,8 @@ def test_adopt_existing_file_generates_uuid(proj):
     assert problems == []
     assert any("uuid generated" in n for n in notes)
     text = (d / "0001-old-hack.md").read_text()
-    assert text.startswith("---")  # re-rendered to front matter (uuid marker inside)
-    assert "<!-- proj:debt " in text
+    assert text.startswith("<!-- proj:debt ")  # re-rendered: marker line 1, valid-YAML front matter
+    assert "\n---\n" in text
     assert "## Location" in text
     # title had its id prefix stripped
     assert "# 1. Old hack" in text
