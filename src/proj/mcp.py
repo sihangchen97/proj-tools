@@ -8,6 +8,7 @@ full error message is returned (agent-readable).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from mcp.server import MCPServer
@@ -26,8 +27,13 @@ mcp = MCPServer("proj")
 
 PLAN_VERBS = ("activate", "review", "shelve", "resume", "archive", "freeze")
 
+#: env var with the absolute project path — used when a tool call omits `root`
+#: (same pattern as ecs-gpu's ECSGPU_HOME). Priority: tool `root` > $PROJ_HOME > cwd.
+PROJ_HOME_ENV = "PROJ_HOME"
+
 
 def _cfg(root: str | None, strict: bool = True):
+    root = root or os.environ.get(PROJ_HOME_ENV)
     return load_config(Path(root) if root else None, strict=strict)
 
 

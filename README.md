@@ -175,6 +175,11 @@ engine functions as the CLI — one tool per CLI verb, each with an optional `ro
 Tools return human-readable text; on validation failure the full error message is
 returned (agent-readable).
 
+The server inherits the client's working directory — if the client runs inside
+your project (e.g. Claude Code from the repo), no config is needed. From a
+global config (client cwd ≠ project), pass `root` (absolute project path) to
+every tool call, or set `"cwd"` in the server entry where your client supports it.
+
 ## Adding a record_type
 
 Drop `profiles/default/<record_type>.yaml` (see existing ones for the format), then
