@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import asdict
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +33,18 @@ SCHEMA_VERSION = 3
 LOCK_FILE = ".proj.lock"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
+
+
+def utc_now() -> str:
+    """D10: timestamps are stored as UTC ISO8601 (second precision, sortable);
+    the DATE part is what gets rendered (show_date)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def show_date(ts: str) -> str:
+    """The date part of a stored timestamp ('2026-10-31T08:23:11+00:00' →
+    '2026-10-31'); plain dates pass through ([:10] is idempotent)."""
+    return (ts or "")[:10]
 
 
 class Db:
@@ -139,7 +151,7 @@ class Db:
         self.conn.execute(
             "INSERT INTO record_changelog (record_id, date, category, comment, "
             "from_status, to_status) VALUES (?,?,?,?,?,?)",
-            (record_id, when or date.today().isoformat(), category, comment,
+            (record_id, when or utc_now(), category, comment,
              from_status, to_status))
         self.conn.commit()
 
@@ -163,7 +175,7 @@ class Db:
         self.conn.execute(
             "INSERT INTO changelog_entries (version, category, text, date) "
             "VALUES (?, ?, ?, ?)",
-            (version, category, text, when or date.today().isoformat()))
+            (version, category, text, when or utc_now()))
         self.conn.commit()
 
     def cl_entries(self, version: str | None = None) -> list[dict]:

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
+from proj.core import db as dbmod  # utc_now / show_date (D10)
 from proj.core.config import ProjConfig
+from proj.core import db as dbmod
 from proj.core.templates import ChangelogSpec, RecordTypeSpec, load_changelog_spec
 from proj.engine.store import checkboxes
 
@@ -135,7 +136,7 @@ def render_changelog_md(cfg: ProjConfig, db, cl: ChangelogSpec | None = None) ->
                                                     for x in re.split(r"[.\-]", v)]
                           , reverse=True):
         entries = by_version[version]
-        newest = max(e["date"] for e in entries)
+        newest = dbmod.show_date(max(e["date"] for e in entries))  # D10: date part
         lines += [f"## [{version}] - {newest}", ""]
         lines += _cl_sections(entries, cl)
     return View(cfg.root / cl.file, "\n".join(lines).rstrip() + "\n")
@@ -161,7 +162,8 @@ def read_versions(cfg: ProjConfig, db, cl: ChangelogSpec | None = None) -> list[
     entries = [e for e in db.cl_entries() if e["version"] != cl.unreleased]
     out: dict[str, str] = {}
     for e in entries:
-        out[e["version"]] = max(out.get(e["version"], ""), e["date"])
+        out[e["version"]] = dbmod.show_date(
+            max(out.get(e["version"], ""), e["date"]))  # D10: date part
     # numeric sort (semver), not string sort — 'v1.10.0' > 'v1.9.0'
     return sorted(out.items(),
                   key=lambda kv: [int(x) for x in re.findall(r"\d+", kv[0])][:3],
@@ -209,6 +211,6 @@ def release(cfg: ProjConfig, db, version: str | None = None,
         (used, cl.unreleased))
     if not entries:
         db.add_cl_entry(used, cl.default_category, f"release {used}",
-                        date.today().isoformat())
+                        dbmod.utc_now())
     db.conn.commit()
     return used

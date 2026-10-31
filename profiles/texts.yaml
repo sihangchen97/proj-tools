@@ -28,9 +28,10 @@ scaffold:
         fence: title, the `> **key:**` blockquote, the italic summary line) or
         the changelog table — change them via `proj` (e.g. `proj <rt> update`).
   env_example: |
-    # Example environment variables (copy to .env, never commit .env)
+    # Example environment variables (copy to .env, committed like the DB)
     # NAMES ONLY — no real values in this file.
     # API_KEY=
+    # PROJ_LOGS=
   seed_decision:
     title: Record architecture decisions
     status: Accepted

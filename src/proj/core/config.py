@@ -1,7 +1,9 @@
-"""Project-root discovery."""
+"""Project-root discovery + the project .env (D6: all config is env vars;
+the .env only supplies project-level defaults)."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,3 +38,21 @@ def find_root(start: Path | None = None, strict: bool = True) -> Path:
 
 def load_config(start: Path | None = None, strict: bool = True) -> ProjConfig:
     return ProjConfig(root=find_root(start, strict=strict))
+
+
+def load_project_env(root: Path) -> None:
+    """Load `<root>/.env` into os.environ (D6): flat KEY=VALUE lines, `#`
+    comments and blank lines skipped, **existing OS env vars are never
+    overridden** (OS env > .env > code default). Idempotent; a missing file
+    is a no-op. ~15 lines, no dotenv dependency."""
+    env = root / ".env"
+    if not env.is_file():
+        return
+    for line in env.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip()
+        if k and k not in os.environ:
+            os.environ[k] = v

@@ -193,7 +193,7 @@ def _link_value(value: str, db: dbmod.Db, registry: dict,
     One id → a single string; several → a list (the head renders it as a
     blockquote item list). Resolves across any record_type (parent→plan)."""
     root = Path(db.path).parent
-    src_file = root / spec.dir / (row["id"] + "-" + slugify(row["title"]) + ".md")
+    src_file = file_path(ProjConfig(root), spec, row)
     ids = [x for x in value.replace(",", " ").split() if x]
     out = []
     for i in ids:
@@ -271,7 +271,8 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     reg = registry if registry is not None else load_registry(Path(db.path).parent)
     fm = {
         "status": spec.status_display(row["status"]),
-        "created": row.get("created") or "—",
+        # D10: stored as a UTC timestamp, shown as the date part
+        "created": dbmod.show_date(row.get("created") or "") or "—",
     }
     done = _done_date(spec, row, db)
     if done:
@@ -309,15 +310,21 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         lines.append(f"_{row['one_sentence']}_")  # one-sentence summary, below
     lines += [HEAD_END, ""]
     limit = _logs_limit()
-    if limit is not 0:
-        logs = db.logs(row["id"], limit=limit)
+    if limit != 0:
+        logs = db.logs(row["id"], limit=limit)  # newest first
         if logs:
-            lines += ["| Date | Category | Change |", "|---|---|---|"]
-            lines += [f"| {dbmod.show_date(e['date'])} | {e['category']} | "
-                      f"{_log_change(e, spec)} |"
-                      for e in logs]
-            from proj.engine.views import status_legend  # lazy: views↔store cycle
-            lines += status_legend(spec)
+            def _entry(e):
+                return f"- **{dbmod.show_date(e['date'])}** {_log_change(e, spec)}"
+            lines.append(_entry(logs[0]))
+            if len(logs) > 1:
+                # older entries collapse; the summary carries the status legend
+                # (emoji → name) so the from-emoji in each line stays decodable
+                older = logs[1:]
+                legend = " · ".join(spec.status_display(s) for s in spec.status_allowed)
+                lines += ["", "<details>",
+                          f"<summary>点击展开历史 ({len(older)} 条) — {legend}</summary>", ""]
+                lines += [_entry(e) for e in older]
+                lines += ["</details>", ""]
             lines.append("")
     sections = json.loads(row["sections"] or "{}")
     for sec in spec.sections:
@@ -662,9 +669,9 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
     from proj.engine.record import record_for  # lazy: record↔store cycle
     record_for(spec).on_ingest(db, db.get(spec, id_),
                                sections, [], p.name)
-    # canonical filename is id + slugify(title); if the user's file used a
-    # different slug, move it so only the rendered name remains
-    canonical = cfg.root / spec.dir / (id_ + "-" + slugify(title) + ".md")
+    # canonical filename (file_path); if the user's file used a different
+    # slug, move it so only the rendered name remains
+    canonical = file_path(cfg, spec, {"id": id_, "title": title})
     if p != canonical and not canonical.exists():
         canonical.parent.mkdir(parents=True, exist_ok=True)
         p.rename(canonical)

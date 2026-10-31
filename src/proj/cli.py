@@ -26,7 +26,8 @@ from typer.main import get_command as _to_click_command
 
 from proj import scaffold
 from proj.check import check as run_checks
-from proj.core.config import ProjConfig, find_root, load_config
+from proj.core.config import ProjConfig, find_root, load_config, load_project_env
+from proj.core.db import show_date
 from proj.core.templates import resolve_record_type
 from proj.engine import store as rec
 from proj.engine.record import record_for
@@ -102,6 +103,9 @@ def _main(ctx: typer.Context,
               False, "--version", callback=_version_callback, is_eager=True,
               help="Print version and exit")):
     _ROOT["root"] = root
+    # D6: the project .env supplies config defaults (OS env wins); loaded once
+    # at the entry point, before any command resolves
+    load_project_env(find_root(root, strict=False))
     if ctx.invoked_subcommand is None and not version:
         # bare `proj` = project status; an uninit dir gets the one-line `error:`
         # (strict discovery, no DB side effects)
@@ -201,7 +205,7 @@ def _dyn_show(name: str, id_: str, history: bool) -> None:
     typer.echo(f"id: {row['id']}")
     typer.echo(f"title: {row['title']}")
     typer.echo(f"status: {row['status']}")
-    typer.echo(f"created: {row['created']}")
+    typer.echo(f"created: {show_date(row['created'])}")
     if row.get("one_sentence"):
         typer.echo(f"one_sentence: {row['one_sentence']}")
     if row.get("commit"):
@@ -215,7 +219,7 @@ def _dyn_show(name: str, id_: str, history: bool) -> None:
     if history:
         for e in logs:
             change = rec._log_change(e, spec)
-            typer.echo(f"  {e['date']}  [{e['category']}] {change}")
+            typer.echo(f"  {show_date(e['date'])}  [{e['category']}] {change}")
 
 
 def _dyn_verb(name: str, verb: str, id_: str, title: str | None, summary: str | None,

@@ -15,7 +15,8 @@ from mcp.server import MCPServer
 
 from proj import scaffold
 from proj.check import check as run_checks
-from proj.core.config import load_config
+from proj.core.config import load_config, load_project_env
+from proj.core.db import show_date
 from proj.core.templates import resolve_record_type
 from proj.engine import store as rec
 from proj.engine.record import record_for
@@ -32,9 +33,11 @@ PROJ_HOME_ENV = "PROJ_HOME"
 def _cfg(root: str | None, strict: bool = True):
     root = root or os.environ.get(PROJ_HOME_ENV)
     try:
-        return load_config(Path(root) if root else None, strict=strict)
+        cfg = load_config(Path(root) if root else None, strict=strict)
     except FileNotFoundError as e:
         raise ValueError(str(e)) from e
+    load_project_env(cfg.root)  # D6: project .env = config defaults (OS env wins)
+    return cfg
 
 
 def _safe(fn, *args) -> str:
@@ -145,7 +148,7 @@ def proj_show(record_type: str, id_: str, root: str | None = None,
         db.close()
         return f"error: {record_type} {id_} not found"
     lines = [f"id: {row['id']}", f"title: {row['title']}",
-             f"status: {row['status']}", f"created: {row['created']}"]
+             f"status: {row['status']}", f"created: {show_date(row['created'])}"]
     if row.get("one_sentence"):
         lines.append(f"one_sentence: {row['one_sentence']}")
     if row.get("commit"):
@@ -156,7 +159,8 @@ def proj_show(record_type: str, id_: str, root: str | None = None,
             lines.append(f"parent: {parent['source']}")
     if history:
         for e in db.logs(row["id"]):
-            lines.append(f"  {e['date']}  [{e['category']}] {rec._log_change(e, spec)}")
+            lines.append(f"  {show_date(e['date'])}  [{e['category']}] "
+                         f"{rec._log_change(e, spec)}")
     db.close()
     return "\n".join(lines)
 
