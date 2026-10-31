@@ -60,8 +60,9 @@ def test_status_change_stored_in_status_columns(proj):
     # the rendered md shows the emoji status change + the status legend row
     p = next((proj.root / "docs/decisions").glob(f"{r['id']}-*.md"))
     text = p.read_text()
-    assert "🌱 Proposed → ✅ Accepted" in text
-    assert "* " + " · ".join(spec.status_display(s) for s in spec.status_allowed) in text
+    # from = emoji only, to = emoji + name (D5); legend is italic small-print
+    assert "🌱 → ✅ Accepted" in text
+    assert "_" + " · ".join(spec.status_display(s) for s in spec.status_allowed) + "_" in text
     # non-status events (created) have NULL status columns and a comment
     assert any(e["from_status"] is None and e["to_status"] is None
                and e["comment"] == "created" for e in logs)

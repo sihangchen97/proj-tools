@@ -47,7 +47,6 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import date
 from pathlib import Path
 
 from proj.core import db as dbmod
@@ -219,7 +218,9 @@ def _done_date(spec: RecordTypeSpec, row: dict, db: dbmod.Db) -> str:
     ('' until then). Entering one done status counts even if it later left it."""
     dates = [db.first_date_to(row["id"], s) for s in spec.status_done]
     dates = [d for d in dates if d]
-    return min(dates) if dates else ""
+    # UTC ISO8601 timestamps compare chronologically as strings; the head row
+    # shows the date part (D10)
+    return dbmod.show_date(min(dates)) if dates else ""
 
 
 def _logs_limit() -> int | None:
@@ -233,12 +234,12 @@ def _logs_limit() -> int | None:
 
 
 def _log_change(e: dict, spec: RecordTypeSpec) -> str:
-    """The Change column (D5): a status change renders as 'emoji → emoji'
-    (the status name is dropped — the legend below the table maps emojis to
-    names) leading the optional comment; any other event shows its comment
-    alone (both status columns NULL)."""
+    """The Change column (D5): a status change renders as '<from emoji> →
+    <to emoji+name>' (the from name is dropped, the legend below the table
+    decodes it; the target keeps its name) leading the optional comment; any
+    other event shows its comment alone (both status columns NULL)."""
     if e["from_status"] and e["to_status"]:
-        change = f"{spec.emojify(e['from_status'])} → {spec.emojify(e['to_status'])}"
+        change = f"{spec.emojify(e['from_status'])} → {spec.status_display(e['to_status'])}"
         if e["comment"]:
             change += f" {e['comment']}"
         return change
@@ -312,7 +313,8 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         logs = db.logs(row["id"], limit=limit)
         if logs:
             lines += ["| Date | Category | Change |", "|---|---|---|"]
-            lines += [f"| {e['date']} | {e['category']} | {_log_change(e, spec)} |"
+            lines += [f"| {dbmod.show_date(e['date'])} | {e['category']} | "
+                      f"{_log_change(e, spec)} |"
                       for e in logs]
             from proj.engine.views import status_legend  # lazy: views↔store cycle
             lines += status_legend(spec)
@@ -499,7 +501,7 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
     db = open_db(cfg)
     id_ = dbmod.next_id(spec, db)
     status = spec.status_allowed[0] if spec.status_allowed else ""
-    created = date.today().isoformat()
+    created = dbmod.utc_now()  # D10: UTC timestamp (rendered as the date part)
     db.insert(spec, id_, title, status, created, summary, commit)
     db.add_log(id_, "created", category="Added", when=created)
     row = db.get(spec, id_)
@@ -650,7 +652,7 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
     # headings often repeat the id prefix ("# DEC-0001 Some Title") — strip it
     title = re.sub(rf"^{re.escape(id_)}[.\s]\s*", "", title)
     status = spec.status_allowed[0] if spec.status_allowed else ""
-    created = date.today().isoformat()
+    created = dbmod.utc_now()  # D10: UTC timestamp (rendered as the date part)
     db.insert(spec, id_, title, status, created, md_summary(text))
     db.add_log(id_, "adopted into proj", category="Added", when=created)
     sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))

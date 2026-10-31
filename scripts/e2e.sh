@@ -81,7 +81,7 @@ printf '\n- [x] first step\n- [ ] second step\n' >> .steps.tmp
 mv .steps.tmp "$TASK_FILE"
 expect_ok "sync auto-promotes task"    "auto status Draft → In Progress" -- $PROJ sync
 # the auto-promotion is stored in from_status/to_status (not concatenated text)
-grep -qF "✏️ Draft → 🚧 In Progress" "$TASK_FILE" \
+grep -qF "✏️ → 🚧 In Progress" "$TASK_FILE" \
   && ok "auto-promotion rendered from status columns" || fail "status columns not rendered"
 expect_ok "task list: In Progress"     "In Progress" -- $PROJ task list
 $PROJ task list | grep -qF "PLN-0001" && ok "task list shows parent" || fail "task list missing parent"
