@@ -17,21 +17,21 @@ class ProjConfig:
 
 
 def find_root(start: Path | None = None, strict: bool = True) -> Path:
-    """Walk up from start (default cwd) looking for a project root.
-
-    A root is a directory containing pyproject.toml, .git, or .proj.sqlite
-    (created by `proj init`). The nearest match wins. With strict=False,
-    fall back to the start directory (used by `init` to bootstrap a brand-new
-    project).
+    """Project root = the start directory (default: cwd) if it is an
+    initialized project, i.e. it holds a `.proj.lock` or `.proj.sqlite`
+    (both created by `proj init`). No walking up: run `proj` from the
+    project root, or pass `--root` for an explicit path. With
+    strict=False, fall back to the start directory unconditionally (used
+    by `init` to bootstrap a brand-new project).
     """
     cur = (start or Path.cwd()).resolve()
-    for candidate in [cur, *cur.parents]:
-        if (candidate / "pyproject.toml").is_file() or (candidate / ".git").exists() \
-                or (candidate / ".proj.sqlite").is_file():
-            return candidate
+    if (cur / ".proj.lock").is_file() or (cur / ".proj.sqlite").is_file():
+        return cur
     if not strict:
         return cur
-    raise FileNotFoundError(f"no project root (pyproject.toml or .git) found from {cur}")
+    raise FileNotFoundError(
+        f"no proj project in {cur} (needs .proj.lock / .proj.sqlite) — "
+        f"run `proj init` here, or pass --root")
 
 
 def load_config(start: Path | None = None, strict: bool = True) -> ProjConfig:

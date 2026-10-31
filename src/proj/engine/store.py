@@ -4,17 +4,21 @@ hierarchy, record_for) lives in record.py — this module calls back lazily.
 
 md file shape (rendered by the engine):
 
-    <!-- proj:decision 3f2a1b4c-... -->    <- line 1: tool-owned uuid marker (a comment,
+    <!-- proj:decision DEC-0001 -->        <- line 1: tool-owned id marker (a comment,
                                              <-   invisible in preview)
-    # 0001. Title                          <- tool-owned heading
-
+    <!-- proj:head:start … TOOL-MANAGED … -->  <- head fence (HEAD_START): everything
+    # 0001. Title                          <-   between start and end is maintained by
+                                             <-   `proj` (title + metadata block + summary);
+                                             <-   the start line says: never hand-edit
     > **status:** 📛 Deprecated             <- tool-owned metadata block (a blockquote,
-    > **supersedes:** [0001](0001-x.md)    <-   NOT front matter — no md frontmatter
-    > **subtask:** B                        <-   validation; renders as a gray sidebar,
-    > **started:** —                        <-   each line hard-wrapped; same-type id
-    > **done:** 2026-10-29                 <-   refs (supersedes/superseded_by) link
-
-    Summary: one sentence                  <- below the box; md wins on sync
+    > **supersedes:** [0001](0001-x.md)    <-   not front matter, so md validators
+    > **subtask:** B                        <-   leave it alone; renders as a gray
+    > **created:** 2026-10-29              <-   sidebar, every line but the last
+    > **done:** 2026-10-29                 <-   hard-wrapped; same-type id refs
+                                             <-   link
+    _one sentence summary_                 <- optional italic line below the block
+                                             <-   (shown only when set; md wins)
+    <!-- proj:head:end -->                 <- head fence end (HEAD_END): region owned
 
     | Date | Category | Change |          <- latest 5 changelog entries (rendered)
     |---|---|---|
@@ -24,10 +28,11 @@ md file shape (rendered by the engine):
     ...                                    <- part humans/LLMs edit)
 
 The metadata block is a blockquote of `> **key:** value` lines — NOT a front
-matter, so md frontmatter validators leave it alone. Each line ends with two
-spaces (markdown hard wrap). Same-type record id refs (supersedes /
-superseded_by, a task's parent / subtask) render as `[id](path)` links to the
-target's md; the uuid marker comment sits on line 1, above the block.
+matter, so md frontmatter validators leave it alone. Every line but the last
+ends with two spaces (markdown hard wrap — a hard wrap on the last line would
+pull the following content into the blockquote). Same-type record id refs
+(supersedes / superseded_by, a task's parent / subtask) render as `[id](path)`
+links to the target's md; the id marker comment sits on line 1, above the block.
 
 sync: md → DB (sections win) → render all md (tool-owned parts win).
 """
@@ -35,7 +40,6 @@ from __future__ import annotations
 
 import json
 import re
-import uuid as _uuid
 from datetime import date
 from pathlib import Path
 
@@ -43,18 +47,31 @@ from proj.core import db as dbmod
 from proj.core.config import ProjConfig
 from proj.core.templates import RecordTypeSpec, load_registry, slugify
 
-# tool-owned uuid marker (an html-comment line, on line 1 above the blockquote head)
-MARK_RE = re.compile(
-    r"^<!-- proj:([\w-]+) "
-    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) -->[ \t]*$",
-    re.MULTILINE)
+# tool-owned id marker (an html-comment line, on line 1 above the blockquote head)
+# id shape: 1-3 letters + '-' + digits, letters+digits == 7 (8 chars total),
+# e.g. DEC-0001, T-000001. Case-insensitive, not glued to other alnums,
+# uppercased on use. MARK_RE wraps this shape in the line-1 head comment.
+_ID_SHAPE = (
+    r"(?<![0-9A-Za-z])([A-Za-z]-[0-9]{6}|[A-Za-z]{2}-[0-9]{5}"
+    r"|[A-Za-z]{3}-[0-9]{4})(?![0-9A-Za-z])"
+)
+MARK_RE = re.compile(rf"^<!-- proj:([\w-]+) {_ID_SHAPE} -->[ \t]*$", re.MULTILINE)
 TITLE_RE = re.compile(r"^# (.+)$", re.MULTILINE)
 SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 CHECKBOX_RE = re.compile(r"^\s*[-*] \[([ xX])\]")
 # template fields whose values are record-id refs (rendered as links in the head)
-RELATION_FIELDS = {"supersedes", "superseded_by", "parent", "related"}
+# record-table fields whose value holds record ids to render as md links
+# (supersedes/superseded_by/related live in the relations table, not as fields)
+RELATION_FIELDS = {"parent"}
 # one head line: `> **key:** value` (+ trailing two spaces = markdown hard wrap)
 HEAD_LINE_RE = re.compile(r"^> \*\*(\w+):\*\*\s*(.*)$")
+# head fence: an invisible comment pair marks the tool-owned head region
+# (id marker above, title + metadata block + optional summary inside). The
+# start line carries a human/agent-readable instruction that the region is
+# maintained by `proj` and must not be hand-edited (edit via `proj` instead).
+HEAD_START = "<!-- proj:head:start — TOOL-MANAGED: title + metadata + summary are " \
+             "maintained by `proj`; never hand-edit this region (use `proj`) -->"
+HEAD_END = "<!-- proj:head:end -->"
 
 
 def open_db(cfg: ProjConfig) -> dbmod.Db:
@@ -70,22 +87,84 @@ def spec_and_db(cfg: ProjConfig, record_type: str):
 
 
 def by_id(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, id_: str) -> dict | None:
-    row = db.get(spec, id_, by="id")
-    if row is None and id_.isdigit() and isinstance(spec.numbered, int):
-        row = db.get(spec, f"{int(id_):0{spec.numbered}d}", by="id")
-    return row
+    row = db.get(spec, id_)
+    if row is not None:
+        return row
+    # tolerant: a bare number ("1"/"0001") resolves to the canonical {code}-{n:0w}
+    if isinstance(spec.numbered, int) and re.fullmatch(r"0*\d+", id_ or ""):
+        return db.get(spec, f"{spec.code}-{int(id_):0{spec.numbered}d}")
+    return None
 
 
 def _display_id(spec: RecordTypeSpec, id_: str) -> str:
-    return str(int(id_)) if id_.isdigit() else id_
+    return id_  # stored canonical ({code}{n:0w}); shown as-is
+
+
+def canonical_id(cfg: ProjConfig, ref: str) -> str:
+    """Resolve a cross-type ref (task parent) to a canonical id (any record_type).
+
+    Exact canonical ids pass through. A bare number ("1") is widened to each
+    record_type's id form; a unique match wins, an ambiguous one is rejected
+    with a hint to pass the canonical id (PLN-0001)."""
+    reg = load_registry(cfg.root)
+    db = open_db(cfg)
+    matches: list[str] = []
+    try:
+        for spec in reg.values():
+            if db.get(spec, ref) is not None:
+                return ref
+        if re.fullmatch(r"0*\d+", ref):
+            for spec in reg.values():
+                if isinstance(spec.numbered, int):
+                    cand = f"{spec.code}-{int(ref):0{spec.numbered}d}"
+                    if db.get(spec, cand) is not None:
+                        matches.append(cand)
+        if len(matches) == 1:
+            return matches[0]
+    finally:
+        db.close()
+    if len(matches) > 1:
+        raise ValueError(f"{ref!r} matches several records ({', '.join(matches)}) "
+                         f"— use the canonical id (e.g. {matches[0]})")
+    raise ValueError(f"{ref!r} does not match any record "
+                     f"— use the canonical id (e.g. PLN-0001)")
+
+
+def ref_record(cfg: ProjConfig, db: dbmod.Db, ref: str):
+    """(spec, row) for a ref across every record_type (None, None when no match).
+    An exact canonical id wins; a bare number ("1") is widened to each type's
+    id form (a task's parent may point at a plan) — an ambiguous bare number
+    raises: pass the canonical id (e.g. DEC-0001)."""
+    reg = load_registry(cfg.root)
+    for spec in reg.values():
+        r = db.get(spec, ref)
+        if r is not None:
+            return spec, r
+    if re.fullmatch(r"0*\d+", ref):
+        matches: list[tuple] = []
+        for spec in reg.values():
+            if isinstance(spec.numbered, int):
+                r = db.get(spec, f"{spec.code}-{int(ref):0{spec.numbered}d}")
+                if r is not None:
+                    matches.append((spec, r))
+        if len(matches) > 1:
+            raise ValueError(f"{ref!r} matches several records "
+                             f"({', '.join(s.record_type + ' ' + r['id'] for s, r in matches)}) "
+                             "\u2014 use the canonical id (e.g. DEC-0001)")
+        if matches:
+            return matches[0]
+    return None, None
 
 
 def _id_prefix_re(spec: RecordTypeSpec) -> re.Pattern:
-    if spec.numbered == "letter":
-        return re.compile(r"^([A-Z]+)-")
-    if isinstance(spec.numbered, int):
-        return re.compile(rf"^(\d{{{spec.numbered}}})-")
-    return re.compile(r"^(\S+)-")
+    """Filename prefix: the spec's own id (code + '-' + N digits, case-insensitive,
+    not glued to alnums) followed by the '-' of the canonical name."""
+    if isinstance(spec.numbered, int) and spec.code:
+        pre, n = re.escape(spec.code) + "-", f"[0-9]{{{spec.numbered}}}"
+    else:
+        pre, n = r"[A-Za-z]{1,3}-", r"[0-9]{4,6}"
+    return re.compile(
+        rf"^((?<![0-9A-Za-z]){pre}{n}(?![0-9A-Za-z]))-", re.IGNORECASE)
 
 
 def file_path(cfg: ProjConfig, spec: RecordTypeSpec, row: dict) -> Path:
@@ -94,9 +173,9 @@ def file_path(cfg: ProjConfig, spec: RecordTypeSpec, row: dict) -> Path:
 
 # ---- rendering -------------------------------------------------------------
 
-def _fm_value(v: str) -> str:
-    """Quote a front-matter value only when needed (colons, quotes, leading
-    dashes) — plain otherwise, so the gray box stays human-readable."""
+def _head_value(v: str) -> str:
+    """Quote a head value only when needed (colons, quotes, leading dashes) —
+    plain otherwise, so the gray sidebar stays human-readable."""
     if re.match(r'^[^\s"\'#][^:\'\']*$', v) and v.strip() == v:
         return v
     return json.dumps(v, ensure_ascii=False)
@@ -127,50 +206,69 @@ def _link_value(value: str, db: dbmod.Db, registry: dict) -> str:
 
 
 def _done_date(spec: RecordTypeSpec, row: dict, db: dbmod.Db) -> str:
-    """The earliest date this record first entered ANY done-status ('—' until
-    then). Entering one done-status counts even if it later left it."""
-    dates = [db.first_date_to(spec.record_type, row["uuid"], s)
-             for s in spec.done_status]
+    """The earliest date this record first entered ANY status with `done: true`
+    ('—' until then). Entering one done status counts even if it later left it."""
+    dates = [db.first_date_to(spec.record_type, row["id"], s)
+             for s in spec.status_done]
     dates = [d for d in dates if d]
     return min(dates) if dates else "—"
 
 
-def _fm_block(spec: RecordTypeSpec, row: dict, fm: dict) -> str:
+def _head_block(spec: RecordTypeSpec, row: dict, fm: dict) -> str:
     """Tool-owned metadata block: a blockquote of `> **key:** value` lines (a
-    gray sidebar, NOT a front matter, so md frontmatter validators leave it
-    alone), rendered below the record title. Each line ends with two spaces
-    (markdown hard wrap). Same-type id refs are pre-linked."""
-    return "\n".join(f"> **{k}:** {_fm_value(v)}  " for k, v in fm.items())
+    gray sidebar), rendered below the record title. Every line but the last
+    ends with two spaces (markdown hard wrap; a hard wrap on the last line
+    would pull the next block into the quote). Same-type id refs are linked."""
+    lines = [f"> **{k}:** {_head_value(v)}" for k, v in fm.items()]
+    if lines:
+        return "\n".join(l + ("  " if i < len(lines) - 1 else "")
+                         for i, l in enumerate(lines))
+    return ""
 
 
 def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
                   registry: dict[str, RecordTypeSpec] | None = None) -> str:
-    # tool-owned head: uuid marker comment (line 1) + blockquote metadata
+    # tool-owned head: id marker comment (line 1) + blockquote metadata
     # (fixed status/created/done rows + fields + subtask, id refs as links);
-    # the one-sentence summary lives BELOW the box.
+    # the one-sentence summary is an italic line below the block (shown only
+    # when set — never a `> **summary:**` row, never a "Summary:" label).
     reg = registry if registry is not None else load_registry(Path(db.path).parent)
     fm = {
         "status": spec.status_display(row["status"]),
         "created": row.get("created") or "—",
         "done": _done_date(spec, row, db),
     }
+    if spec.apply_supersede:
+        sup = [e["target"] for e in db.supersede_of(row["id"])]
+        if sup:
+            fm["supersedes"] = _link_value(", ".join(sup), db, reg)
+        sup_by = [e["source"] for e in db.superseded_by_of(row["id"])]
+        if sup_by:
+            fm["superseded_by"] = _link_value(", ".join(sup_by), db, reg)
+    rel = db.related_of(row["id"])
+    if rel:
+        fm["related"] = _link_value(", ".join(rel), db, reg)
     for f in spec.fields:
         v = row.get(f.name) or ""
         if v:
             fm[f.name] = _link_value(v, db, reg) if f.name in RELATION_FIELDS else v
-    if spec.record_type == "task" and "parent" in row:
-        from proj.engine.views import _norm_id  # lazy: views↔records
+    if spec.apply_task and "parent" in row:
         kids = [r for r in db.all(spec)
-                if _norm_id((r.get("parent") or "").strip()) == _norm_id(row["id"])
+                if (r.get("parent") or "").strip() == row["id"]
                 and r["id"] != row["id"]]
         if kids:
             fm["subtask"] = _link_value(", ".join(k["id"] for k in kids), db, reg)
-    # marker comment (line 1, invisible) → title → metadata block → summary
-    lines = [f"<!-- proj:{spec.record_type} {row['uuid']} -->",
-             f"# {_display_id(spec, row['id'])}. {row['title']}", "",
-             _fm_block(spec, row, fm).rstrip("\n"),
-             f"Summary: {row.get('summary') or '—'}", ""]
-    logs = db.logs(spec.record_type, row["uuid"], limit=5)
+    # marker comment (line 1, invisible) → title → metadata block; the head is
+    # fenced by invisible `<!-- proj:head:start/end -->` comments: everything
+    # between them is tool-owned (managed by `proj`, never hand-edited).
+    lines = [f"<!-- proj:{spec.record_type} {row['id']} -->",
+             HEAD_START,
+             f"# {row['id']}. {row['title']}", "",
+             _head_block(spec, row, fm), ""]
+    if row.get("summary"):
+        lines.append(f"_{row['summary']}_")  # one-sentence summary, below the block
+    lines += [HEAD_END, ""]
+    logs = db.logs(spec.record_type, row["id"], limit=5) if spec.apply_changelog else []
     if logs:
         lines += ["| Date | Category | Change |", "|---|---|---|"]
         lines += [f"| {e['date']} | {e['category']} | {e['summary']} |" for e in logs]
@@ -181,10 +279,10 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         if sec.kind == "task":
             # rendered task subtree: tasks whose parent is this record (DB link),
             # recursively — template data drives the rendering, no class needed
-            from proj.engine.views import _norm_id, task_tree_lines  # lazy: views↔store cycle
+            from proj.engine.views import task_tree_lines  # lazy: views↔store cycle
             task_spec = (registry or load_registry(Path(db.path).parent.parent)).get("task")
             lines += (task_tree_lines(
-                db.all(task_spec) if task_spec else [], None, _norm_id(row["id"]))
+                db.all(task_spec) if task_spec else [], None, row["id"])
                 or ["(no tasks attached)"])
         else:
             lines.append(sections.get(sec.name.lower(), "").strip())
@@ -207,7 +305,7 @@ def md_drift(cfg: ProjConfig) -> list[str]:
             (mk, u), _t, raw_sections = parse_record(text)
             if mk != spec.record_type or not u:
                 continue
-            row = db.get(spec, u, by="uuid")
+            row = db.get(spec, u)
             if row is None:
                 continue
             stored = json.loads(row["sections"] or "{}")
@@ -246,14 +344,14 @@ def render_all(cfg: ProjConfig) -> list[Path]:
 # ---- parsing ----------------------------------------------------------------
 
 def parse_record(text: str):
-    """Extract (record_type, uuid) marker, title and {section_lower: raw} from an md.
+    """Extract (record_type, id) marker, title and {section_lower: raw} from an md.
 
-    The tool-owned head (uuid marker comment + a blockquote of `> **key:** value`
+    The tool-owned head (id marker comment + a blockquote of `> **key:** value`
     lines) sits ABOVE the title and never matches the title/section patterns, so
     the whole text is scanned directly.
     """
     m = MARK_RE.search(text)
-    marker = (m.group(1), m.group(2)) if m else (None, None)
+    marker = (m.group(1), m.group(2).upper()) if m else (None, None)
     tm = TITLE_RE.search(text)
     title = re.sub(r"^[\w-]+\.\s+", "", tm.group(1).strip()) if tm else ""
     matches = list(SECTION_RE.finditer(text))
@@ -308,7 +406,7 @@ def fm_fields(text: str) -> dict:
 
 
 def md_status(text: str) -> str:
-    """Status from the front matter (leading emoji stripped)."""
+    """Status from the record head (leading emoji stripped)."""
     s = str(fm_fields(text).get("status") or "")
     # drop a leading emoji: status_display renders "<emoji> <name>";
     # an emoji is always non-ASCII, a status name always ASCII
@@ -318,12 +416,30 @@ def md_status(text: str) -> str:
     return s
 
 
+# the head block + summary are fenced by invisible comments (tool-owned); the
+# start fence may carry an instruction message after `start`
+HEAD_START_RE = re.compile(r"^<!-- proj:head:start.*?-->[ \t]*$", re.MULTILINE)
+HEAD_END_RE = re.compile(r"^<!-- proj:head:end -->[ \t]*$", re.MULTILINE)
+# one-sentence summary: a single italic line just below the metadata block
+SUMMARY_LINE_RE = re.compile(r"^_([^-_].*|[^_])_$")
+
+
 def md_summary(text: str) -> str:
+    """The one-sentence summary: the italic line inside the head fence (new
+    layout); falls back to the old `> **summary:**` head row for files
+    rendered before the fence existed (md wins either way)."""
+    m_start, m_end = HEAD_START_RE.search(text), HEAD_END_RE.search(text)
+    if m_start and m_end:
+        for line in text[m_start.end():m_end.start()].splitlines():
+            s = SUMMARY_LINE_RE.fullmatch(line.strip())
+            if s:
+                return s.group(1).strip()
+        return ""
     fm = fm_fields(text)
     if "summary" in fm:
-        return str(fm["summary"]).strip()
-    m = re.search(r"^Summary:\s*(.*)$", text, re.MULTILINE)
-    return m.group(1).strip() if m else ""
+        v = str(fm["summary"]).strip()
+        return "" if v == "—" else v  # the placeholder is not real content
+    return ""
 
 
 # ---- mutations ---------------------------------------------------------------
@@ -338,12 +454,11 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
         spec = spec or reg[record_type]
     db = open_db(cfg)
     id_ = dbmod.next_id(spec, db)
-    uuid = str(_uuid.uuid4())
     status = spec.status_allowed[0] if spec.status_allowed else ""
     created = date.today().isoformat()
-    db.insert(spec, uuid, id_, title, status, created, fields, summary)
-    db.add_log(spec.record_type, uuid, "created", category="Added", when=created)
-    row = db.get(spec, uuid, by="uuid")
+    db.insert(spec, id_, title, status, created, fields, summary)
+    db.add_log(spec.record_type, id_, "created", category="Added", when=created)
+    row = db.get(spec, id_)
     p = file_path(cfg, spec, row)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(render_record(spec, row, db), encoding="utf-8")
@@ -364,10 +479,10 @@ def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
         raise ValueError(f"status {status!r} not allowed for {record_type} "
                          f"(allowed: {', '.join(spec.status_allowed)})")
     old = row["status"]
-    db.set(spec, row["uuid"], status=status)
+    db.set(spec, row["id"], status=status)
     if old != status:
-        db.add_log(record_type, row["uuid"], f"status {old} → {status}", "Changed", when)
-    fresh = db.get(spec, row["uuid"], by="uuid")
+        db.add_log(record_type, row["id"], f"status {old} → {status}", "Changed", when)
+    fresh = db.get(spec, row["id"])
     p = file_path(cfg, spec, fresh)
     p.write_text(render_record(spec, fresh, db), encoding="utf-8")
     db.close()
@@ -384,11 +499,43 @@ def add_log(cfg: ProjConfig, record_type: str, id_: str, summary: str,
         raise ValueError(f"{record_type} {id_} not found")
     from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
     cat, text = dbmod.parse_summary(summary, load_changelog_spec(cfg.root))
-    db.add_log(record_type, row["uuid"], text, category or cat)
-    fresh = db.get(spec, row["uuid"], by="uuid")
+    db.add_log(record_type, row["id"], text, category or cat)
+    fresh = db.get(spec, row["id"])
     p = file_path(cfg, spec, fresh)
     p.write_text(render_record(spec, fresh, db), encoding="utf-8")
     db.close()
+
+
+def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None = None,
+                  summary: str | None = None, comment: str | None = None) -> dict:
+    """Update a record's title / summary (and optionally append a changelog entry)."""
+    spec, db = spec_and_db(cfg, record_type)
+    row = by_id(cfg, spec, db, id_)
+    if row is None:
+        db.close()
+        raise ValueError(f"{record_type} {id_} not found")
+    old_p = file_path(cfg, spec, row)  # a title change also renames the md file
+    if title is not None:
+        if not title.strip():
+            db.close()
+            raise ValueError("title must be non-empty")
+        db.set(spec, row["id"], title=title.strip())
+        db.add_log(record_type, row["id"], f"title: {row['title']} → {title.strip()}", "Changed")
+    if summary is not None:
+        db.set(spec, row["id"], summary=summary.strip())
+        db.add_log(record_type, row["id"], "summary updated", "Changed")
+    if comment:
+        from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
+        cat, text = dbmod.parse_summary(comment, load_changelog_spec(cfg.root))
+        db.add_log(record_type, row["id"], text, cat)
+    fresh = db.get(spec, row["id"])
+    p = file_path(cfg, spec, fresh)
+    if p != old_p and old_p.is_file():
+        old_p.rename(p)
+    p.write_text(render_record(spec, fresh, db), encoding="utf-8")
+    db.close()
+    render_all(cfg)
+    return fresh
 
 
 # ---- task checkboxes ----------------------------------------------------------
@@ -414,18 +561,21 @@ def has_checked(section_text: str) -> bool:
 
 def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
                strict: bool) -> tuple[list[str], list[str]]:
-    """Read one md into the DB. strict=True (sync): uuid marker required.
+    """Read one md into the DB. strict=True (sync): id marker required.
     Returns (problems, notes)."""
     text = p.read_text(encoding="utf-8")
     (mk, u), title, raw_sections = parse_record(text)
     if strict:
         if mk != spec.record_type or not u:
-            return [f"{p.name}: missing/foreign uuid marker — run `proj adopt`"], []
-        row = db.get(spec, u, by="uuid")
+            return [f"{p.name}: missing/foreign id marker — run `proj adopt`"], []
+        row = db.get(spec, u)
         if row is None:
-            return [f"{p.name}: uuid {u} not in DB — run `proj adopt`"], []
+            return [f"{p.name}: id {u} not in DB — run `proj adopt`"], []
+        # a renamed filename (id in the marker != the file's id) is a decision
+        # for the user, not something to do silently
         if not p.name.startswith(row["id"] + "-"):
-            return [f"{p.name}: id {row['id']!r} does not match filename"], []
+            return [f"{p.name}: filename id does not match {row['id']} (renamed? "
+                    f"edit the marker or move the file)"], []
         notes = []
         if title and title != row["title"]:
             notes.append(f"{p.name}: title drift in md (DB wins: {row['title']!r})")
@@ -441,30 +591,29 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         record_for(spec).on_ingest(db, row, sections, notes, p.name)
         return [], notes
     # adopt mode
-    if mk == spec.record_type and u and db.get(spec, u, by="uuid"):
+    if mk == spec.record_type and u and db.get(spec, u):
         return [], []  # already in DB
     m = _id_prefix_re(spec).match(p.name)
     if not m:
         return [f"{p.name}: filename does not start with a valid id "
                 f"for record_type {spec.record_type!r}"], []
-    id_ = m.group(1)
-    if db.get(spec, id_, by="id"):
+    id_ = m.group(1).upper()
+    if db.get(spec, id_):
         return [f"{p.name}: duplicate id {id_!r} in {spec.record_type} — resolve manually"], []
     if not title:
         return [f"{p.name}: no '# Title' heading — cannot adopt"], []
-    # headings often repeat the id prefix ("# 0004 Some Title") — strip it
+    # headings often repeat the id prefix ("# DEC-0001 Some Title") — strip it
     title = re.sub(rf"^{re.escape(id_)}[.\s]\s*", "", title)
-    uuid = u or str(_uuid.uuid4())
     status = spec.status_allowed[0] if spec.status_allowed else ""
     created = date.today().isoformat()
-    db.insert(spec, uuid, id_, title, status, created, {}, md_summary(text))
-    db.add_log(spec.record_type, uuid, "adopted into proj", category="Added", when=created)
+    db.insert(spec, id_, title, status, created, {}, md_summary(text))
+    db.add_log(spec.record_type, id_, "adopted into proj", category="Added", when=created)
     sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))
                 for s in spec.sections if s.kind == "text"}
-    db.set(spec, uuid, sections=json.dumps(sections, ensure_ascii=False))
+    db.set(spec, id_, sections=json.dumps(sections, ensure_ascii=False))
     # adopt: same record_type hook, fresh row; promotion notes are dropped
     from proj.engine.record import record_for  # lazy: record↔store cycle
-    record_for(spec).on_ingest(db, db.get(spec, uuid, by="uuid"),
+    record_for(spec).on_ingest(db, db.get(spec, id_),
                                sections, [], p.name)
     # canonical filename is id + slugify(title); if the user's file used a
     # different slug, move it so only the rendered name remains
@@ -472,8 +621,7 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
     if p != canonical and not canonical.exists():
         canonical.parent.mkdir(parents=True, exist_ok=True)
         p.rename(canonical)
-    return [], [f"{p.name}: adopted as {spec.record_type} {id_} (uuid {uuid[:8]}…)"
-                + ("" if u else ", uuid generated")]
+    return [], [f"{p.name}: adopted as {spec.record_type} {id_}"]
 
 
 def _scan_files(cfg: ProjConfig, spec: RecordTypeSpec, files: list[Path] | None):
@@ -505,8 +653,8 @@ def sync(cfg: ProjConfig, files: list[Path] | None = None):
 
 
 def adopt(cfg: ProjConfig, files: list[Path] | None = None):
-    """Absorb existing md files (uuid preferred; missing uuid → id check +
-    generate). Then render everything. Returns (problems, notes)."""
+    """Absorb existing md files (id marker if present; otherwise id check).
+    Then render everything. Returns (problems, notes)."""
     reg = load_registry(cfg.root)
     db = open_db(cfg)
     problems, notes = [], []
@@ -524,11 +672,14 @@ def adopt(cfg: ProjConfig, files: list[Path] | None = None):
 # ---- info ----------------------------------------------------------------------
 
 CHEATSHEET = """\
-Ops cheatsheet:
-  new:        proj new <record_type> TITLE [--field name=value]
-  change:     proj status <record_type> ID STATUS | proj log <record_type> ID "Category: …"
+Ops cheatsheet (RT = a record_type — name or code, case-insensitive; VERB = one from its template):
+  new:        proj RT new TITLE [--field name=value] [--parent N] [-s N]
+  change:     proj RT <VERB> ID [-t X] [-s X] [-c "…"]  (state machine + optional
+                                                         title/summary/comment update)
+  edit:       proj RT update ID [-t X] [-s X] [-c "…"]  (update title / summary /
+                                                         append a changelog entry)
   md edited:  proj sync | proj adopt (first time, unmanaged files)
-  query:      proj list <record_type> | proj show <record_type> ID [--history]
+  query:      proj RT list | proj RT show ID [--history]
   overview:   proj info [--json]"""
 
 

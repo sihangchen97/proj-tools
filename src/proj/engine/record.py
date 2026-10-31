@@ -15,9 +15,23 @@ vanilla `Record`. New record_type = one YAML file, still — a class is optional
 """
 from __future__ import annotations
 
+import json
+
 from proj.core.config import ProjConfig
 from proj.core.templates import RecordTypeSpec
 from proj.engine import store as rec
+from proj.engine import views
+
+
+def _split_ids(v: str) -> list[str]:
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+
+def _append_id(v: str, new_id: str) -> str:
+    ids = _split_ids(v)
+    if new_id not in ids:
+        ids.append(new_id)
+    return ", ".join(ids)
 
 
 class Record:
@@ -36,8 +50,123 @@ class Record:
 
     # ---- generic operations (operate on self.spec) ---------------------------
     def new(self, cfg: ProjConfig, title: str, fields: dict | None = None,
-            summary: str = ""):
-        return rec.new_record(cfg, self.spec, title, fields=fields, summary=summary)
+            summary: str = "", supersede: list[str] | None = None,
+            related: list[str] | None = None):
+        row, p = rec.new_record(cfg, self.spec, title, fields=fields, summary=summary)
+        supersede = supersede or []
+        related = related or []
+        if not supersede and not related:
+            return row, p
+        if not self.spec.apply_supersede and supersede:
+            raise ValueError(f"{self.record_type}: --supersede not supported "
+                             f"(features.supersede is false)")
+        db = rec.open_db(cfg)
+        try:
+            for i, old_id in enumerate(supersede):
+                old = rec.by_id(cfg, self.spec, db, old_id)
+                if old is None:
+                    raise ValueError(f"{self.record_type} {old_id} not found")
+                if old["id"] == row["id"]:
+                    raise ValueError(f"{self.record_type} cannot supersede itself")
+                db.add_relation(row["id"], self.record_type, old["id"],
+                                self.record_type, "supersede", pos=i)
+                db.add_log(self.record_type, old["id"],
+                           f"superseded by {row['id']}", "Changed")
+            if supersede:
+                db.add_log(self.record_type, row["id"],
+                           "supersedes " + ", ".join(
+                               rec.by_id(cfg, self.spec, db, x)["id"] for x in supersede),
+                           "Added")
+            for ref in related:
+                spec, target = rec.ref_record(cfg, db, ref)
+                if target is None:
+                    raise ValueError(f"related {ref!r} does not match any record "
+                                     f"\u2014 use the canonical id (e.g. PLN-0001)")
+                if target["id"] == row["id"]:
+                    raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
+                db.add_relation(row["id"], self.record_type, target["id"],
+                                spec.record_type, "related")
+            if related:
+                db.add_log(self.record_type, row["id"],
+                           "related: " + ", ".join(
+                               t["id"] for _, t in (rec.ref_record(cfg, db, x) for x in related)),
+                           "Added")
+        finally:
+            db.close()
+        rec.render_all(cfg)
+        spec, db = rec.spec_and_db(cfg, self.record_type)
+        fresh = rec.by_id(cfg, spec, db, row["id"])
+        db.close()
+        return fresh, p
+
+    def add_related(self, cfg: ProjConfig, id_: str, refs: list[str]) -> dict:
+        """Attach related records (any type, unordered) to an existing record."""
+        db = rec.open_db(cfg)
+        try:
+            row = rec.by_id(cfg, self.spec, db, id_)
+            if row is None:
+                raise ValueError(f"{self.record_type} {id_} not found")
+            for ref in refs:
+                spec, target = rec.ref_record(cfg, db, ref)
+                if target is None:
+                    raise ValueError(f"related {ref!r} does not match any record "
+                                     "\u2014 use the canonical id (e.g. PLN-0001)")
+                if target["id"] == row["id"]:
+                    raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
+                db.add_relation(row["id"], self.record_type, target["id"],
+                                spec.record_type, "related")
+            db.add_log(self.record_type, row["id"],
+                       "related: " + ", ".join(refs), "Added")
+        finally:
+            db.close()
+        rec.render_all(cfg)
+        spec, db = rec.spec_and_db(cfg, self.record_type)
+        fresh = rec.by_id(cfg, spec, db, id_)
+        db.close()
+        return fresh
+
+    def toc(self, cfg: ProjConfig) -> str:
+        """ID/status/title table + status legend (render.toc record_types)."""
+        title = "# " + self.record_type.title() + "s"
+        header = [title, "", "| ID | Status | Title |", "|---|---|---|"]
+        lines = header
+        for r in self.list(cfg):
+            lines.append(f"| {r['id']} | {self.spec.emojify(r['status'])} | {r['title']} |")
+        lines.append("")
+        lines += views.status_legend(self.spec)
+        return "\n".join(lines) + "\n"
+
+    def graph(self, cfg: ProjConfig) -> str:
+        """Mermaid graph of supersedes edges (apply_supersede record_types)."""
+        lines = ["graph LR"]
+        for r in self.list(cfg):
+            lines.append(f'  {r["id"]}["{r["id"]} {r["title"][:24]}"]')
+        spec, db = rec.spec_and_db(cfg, self.record_type)
+        for r in db.all(spec):
+            for edge in db.supersede_of(r["id"]):
+                lines.append(f"  {edge['target']} --> {r['id']}")
+        db.close()
+        return "\n".join(lines) + "\n"
+
+    def link(self, cfg: ProjConfig, target: str, links: list[str],
+             section: str = "consequences") -> dict:
+        """Append cross-references to a record's `section` body (user text wins)."""
+        spec, db = rec.spec_and_db(cfg, self.record_type)
+        row = rec.by_id(cfg, spec, db, target)
+        if row is None:
+            db.close()
+            raise ValueError(f"{self.record_type} {target} not found")
+        sections = json.loads(row["sections"] or "{}")
+        body = sections.get(section, "").rstrip()
+        refs = list(links)  # ids are stored canonical ({code}{n:0w})
+        ref_line = "See also: " + ", ".join([x for x in refs if x not in body] or [refs[0]])
+        sections[section] = (body + "\n\n" + ref_line) if body else ref_line
+        db.set(spec, row["id"], sections=json.dumps(sections, ensure_ascii=False))
+        fresh = rec.by_id(cfg, spec, db, target)
+        p = rec.file_path(cfg, spec, fresh)
+        p.write_text(rec.render_record(spec, fresh, db), encoding="utf-8")
+        db.close()
+        return row
 
     def list(self, cfg: ProjConfig, status: str | None = None) -> list[dict]:
         spec, db = rec.spec_and_db(cfg, self.record_type)
@@ -50,7 +179,7 @@ class Record:
     def show(self, cfg: ProjConfig, id_: str) -> dict:
         spec, db = rec.spec_and_db(cfg, self.record_type)
         row = rec.by_id(cfg, spec, db, id_)
-        logs = db.logs(self.record_type, row["uuid"]) if row else []
+        logs = db.logs(self.record_type, row["id"]) if row else []
         db.close()
         if row is None:
             raise ValueError(f"{self.record_type} {id_} not found")
@@ -76,7 +205,8 @@ class Record:
             db.close()
             raise ValueError(f"{self.record_type} {id_} not found")
         (from_s, to_s) = self.verbs[verb]
-        if from_s != "Any" and row["status"] != from_s:
+        allowed = from_s if isinstance(from_s, list) else [from_s]
+        if from_s != "Any" and row["status"] not in allowed:
             db.close()
             raise ValueError(f"{self.record_type} {id_} is {row['status']!r}, "
                              f"{verb} requires {from_s!r}")
@@ -88,15 +218,68 @@ class Record:
 
     # ---- extension points (subclasses override) ------------------------------
     def validate_transition(self, cfg: ProjConfig, row: dict, verb: str, db) -> None:
-        """Kind-specific precondition for a status transition."""
+        """Generic gate: entering a done status requires every checkbox checked."""
+        to_s = self.verbs[verb][1]
+        if to_s not in self.spec.status_done:
+            return
+        sections = json.loads(row.get("sections") or "{}")
+        unchecked = [txt for text in sections.values()
+                     for _, c, txt in rec.checkboxes(text) if not c]
+        if unchecked:
+            raise ValueError(
+                f"{self.record_type} {row['id']}: {len(unchecked)} unchecked step(s) "
+                f"block {verb}:\n  " + "\n  ".join(unchecked))
 
     def on_ingest(self, db, row: dict, sections: dict, notes: list[str],
                   source_name: str) -> None:
         """Hook after md ingest (sync/adopt). Base: no-op."""
 
     def check_rows(self, rows: list[dict], db, reg: dict) -> list[str]:
-        """`proj check` invariants for this record_type's rows."""
-        return []
+        """`proj check` invariants: ref integrity + cycle check over the relations
+        table (supersede edges are same-type; related may point at any type)."""
+        all_ids: dict[str, str] = {r["id"]: rt for rt in reg for r in db.all(reg[rt])}
+        problems = []
+        if self.spec.apply_supersede:
+            for r in rows:
+                for edge in db.supersede_of(r["id"]):
+                    if edge["target"] not in all_ids:
+                        problems.append(
+                            f"{self.record_type} {r['id']}: supersedes {edge['target']}, "
+                            f"which does not exist")
+        for r in rows:
+            for ref in db.related_of(r["id"]):
+                if ref not in all_ids:
+                    problems.append(
+                        f"{self.record_type} {r['id']}: related {ref}, which does not exist")
+        if not self.spec.apply_supersede:
+            return list(dict.fromkeys(problems))
+        by_id = {r["id"]: r for r in rows}
+        edges = {
+            i: [e["target"] for e in db.supersede_of(i) if e["target"] in by_id]
+            for i in by_id
+        }
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color = {i: WHITE for i in by_id}
+        for start in by_id:
+            if color[start] != WHITE:
+                continue
+            stack = [(start, iter(edges[start]))]
+            color[start] = GRAY
+            while stack:
+                node, it = stack[-1]
+                advanced = False
+                for nxt in it:
+                    if color[nxt] == GRAY:
+                        problems.append(f"supersede cycle detected: {nxt} → … → {node}")
+                    elif color[nxt] == WHITE:
+                        color[nxt] = GRAY
+                        stack.append((nxt, iter(edges[nxt])))
+                        advanced = True
+                        break
+                if not advanced:
+                    color[node] = BLACK
+                    stack.pop()
+        return list(dict.fromkeys(problems))
 
 
 _kind_classes: dict[str, type[Record]] = {}

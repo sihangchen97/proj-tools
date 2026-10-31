@@ -1,19 +1,26 @@
 record_type: decision
+code: DEC
 dir: docs/decisions
 numbered: 4
+features:
+  supersede: true
+  task: false
+render:
+  toc: true         # 渲染 <dir>/_TOC.md（id/status/title 表）
+  changelog: true
+# 每个状态都有对应的 verb（from 用 Any = 任意当前状态可直达该状态）
 verbs:
+  draft: {from: Any, to: Draft}
+  propose: {from: Any, to: Proposed}
   accept: {from: Any, to: Accepted}
   deprecate: {from: Any, to: Deprecated}
 # status 按时间顺序排列：Draft → Proposed → Accepted → Deprecated（被替代时置 Deprecated）
+# done: true 的状态 = 进入过即算 done（done 行记首次到达日期）
 status-allowed:
-  - {name: Draft, emoji: ✏️}       # 起草中（new 默认）
-  - {name: Proposed, emoji: 🌱}    # 提案中，等待讨论
-  - {name: Accepted, emoji: ✅}     # 已采纳，当前生效
-  - {name: Deprecated, emoji: 📛}   # 已废弃，被 supersede
-done-status: [Accepted]            # 进入过其中任一 status 即算 done（done 行记日期）
-fields:
-  - {name: supersedes, hint: ids of decisions this one replaces, comma-separated (e.g. "0001, 0002"); set by `proj decision new -s 1 -s 2`}
-  - {name: superseded_by, hint: ids of decisions that replaced this one, comma-separated (managed by the engine)}
+  - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
+  - {name: Proposed, emoji: 🌱}        # 提案中，等待讨论
+  - {name: Accepted, emoji: ✅, done: true}    # 已采纳，当前生效
+  - {name: Deprecated, emoji: 📛, done: true}  # 已废弃，被 supersede
 sections:
   - {name: Context, hint: problem statement & constraints}
   - {name: Decision, hint: chosen solution & why over alternatives}

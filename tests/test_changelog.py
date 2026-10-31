@@ -83,14 +83,14 @@ def test_show_versions(proj):
 def test_incident_and_experiment_kinds(proj):
     # all record_types are 4-digit (or letter) numbered through the same engine
     row, _ = rec.new_record(proj, "incident", "DB down")
-    assert row["id"] == "0001"  # incident is 4-digit
+    assert row["id"] == "INC-0001"  # incident is code + 4-digit
     row2, _ = rec.new_record(proj, "experiment", "lr sweep")
-    assert row2["id"] == "0001"  # experiments are 4-digit (design table)
+    assert row2["id"] == "EXP-0001"  # experiments are code + 4-digit (design table)
     # field round-trips
     spec = rec.load_registry(proj.root)["experiment"]
     db = rec.open_db(proj)
-    r = db.get(spec, row2["id"], by="id")
-    db.set(spec, r["uuid"], commit="abc123")
-    r = db.get(spec, row2["id"], by="id")
+    r = db.get(spec, row2["id"])
+    db.set(spec, r["id"], commit="abc123")
+    r = db.get(spec, row2["id"])
     assert r["commit"] == "abc123"
     db.close()

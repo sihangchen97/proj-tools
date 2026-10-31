@@ -1,0 +1,26 @@
+record_type: task
+code: T
+dir: docs/tasks
+numbered: 6
+features:
+  supersede: false
+  task: true
+render:
+  changelog: true
+# task 单独管理（在外层 profiles/，不在 default/）
+# verbs: 每个状态一个 verb；done 的 checkbox 全勾 gate 由 Record.validate_transition 提供
+verbs:
+  start: {from: Any, to: In Progress}
+  done: {from: Any, to: Done}
+  fail: {from: Any, to: Failed}
+# status 按时间顺序排列：Draft → In Progress → Done/Failed（sync 按 checkbox 自动升档）
+status-allowed:
+  - {name: Draft, emoji: ✏️}              # 起草中（new 默认）
+  - {name: In Progress, emoji: 🚧}        # 执行中，有未勾选的 step
+  - {name: Failed, emoji: ❌}             # 失败（无法完成/放弃），不算 done
+  - {name: Done, emoji: ✅, done: true}    # 完成，全部 checkbox 已勾选
+fields: []  # (related 关系走 relations 表，不再是字段)
+sections:
+  - {name: Steps, hint: checkbox list, write order = step order; use parent for real sub-tasks}
+  - {name: Open, hint: open items / decisions needed, one per line}
+  - {name: Notes, hint: results & notes after running}

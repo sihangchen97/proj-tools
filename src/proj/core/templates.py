@@ -1,18 +1,30 @@
 """RecordType registry from YAML profiles (v3: profile = schema, DB = storage).
 
-A profile file declares a record_type's table schema:
+A profile file declares a record_type's table schema and behavior:
 
     record_type: decision
     dir: docs/decisions
     numbered: 4          # 4 = NNNN, "letter" = A..Z/AA.., 0 = none
-    status-allowed:      # each entry: {name: X, emoji: "…"} (emoji optional)
+    code: DEC            # 3-letter record code; used in refs (DEC-0001) and the graph
+    verbs:               # one verb per status: name -> {from, to}; from: Any = any state
+      accept: {from: Any, to: Accepted}
+      deprecate: {from: Any, to: Deprecated}
+    status-allowed:      # each entry: {name, emoji, done} (emoji/done optional)
       - {name: Proposed, emoji: 🌱}
-      - {name: Accepted, emoji: ✅}
+      - {name: Accepted, emoji: ✅, done: true}   # done: true => counts as the "done" state
     fields:              # record_type-specific extra columns (optional)
       - {name: supersedes, hint: ...}
     sections:            # body headings, in render order
       - {name: Context, hint: ...}
-      - {name: Task List, view: tasks}   # view sections: engine-rendered, DB wins
+      - {name: Task List, type: task}   # view section: engine-rendered task tree
+    # behavior toggles — declared explicitly in every template
+    features:
+      supersede: true       # supersede semantics (new -s, bidirectional fields)
+      task: false           # tasks attach (parent -> this): rendered Task List, subtask row
+    # render toggles — which generated views this record_type has
+    render:
+      toc: false            # <dir>/_TOC.md (id/status/title table)
+      changelog: true       # per-record changelog table in the md
 
 Placeholders in rendered managed lines: none — the engine fills values
 directly from the DB row.
@@ -57,10 +69,17 @@ class RecordTypeSpec:
     numbered: int | str = 4   # int (NNNN width) | "letter" | 0 (none)
     status_allowed: list[str] = field(default_factory=list)
     status_emoji: dict[str, str] = field(default_factory=dict)  # status name -> emoji
-    verbs: dict[str, tuple[str, str]] = field(default_factory=dict)  # verb -> (from, to)
+    verbs: dict[str, tuple[object, str]] = field(default_factory=dict)  # verb -> (from, to)
     fields: list[TemplateField] = field(default_factory=list)
     sections: list[TemplateSection] = field(default_factory=list)
-    done_status: list[str] = field(default_factory=list)  # statuses that count as "done"
+    code: str = ""  # 3-letter record code (e.g. DEC); used in refs (DEC-0001) and the graph
+    status_done: list[str] = field(default_factory=list)  # statuses declared done: true
+    # behavior toggles, declared explicitly in every template
+    apply_supersede: bool = False  # supersede: new -s, bidirectional fields
+    apply_task: bool = False       # tasks attach (parent -> this): Task List, subtask row
+    # render toggles (which generated views this record_type has)
+    apply_toc: bool = False        # <dir>/_TOC.md (id/status/title table)
+    apply_changelog: bool = True   # per-record changelog table in the md (latest 5 entries)
 
     @property
     def field_names(self) -> list[str]:
@@ -100,17 +119,28 @@ def parse_template(text: str) -> RecordTypeSpec:
     # in YAML comments, not in the data
     status_allowed: list[str] = []
     status_emoji: dict[str, str] = {}
+    status_done: list[str] = []
     for s in data.get("status-allowed", []):
         if isinstance(s, dict):
             status_allowed.append(str(s["name"]))
             if s.get("emoji"):
                 status_emoji[str(s["name"])] = str(s["emoji"])
+            if s.get("done"):
+                status_done.append(str(s["name"]))
         else:
             status_allowed.append(str(s))
-    # verbs: {verb: {from: X, to: Y}} — state machine steps as template data
-    verbs: dict[str, tuple[str, str]] = {}
+    # verbs: {verb: {from: X, to: Y}} — state machine steps as template data;
+    # from: "Any" | a single status | a list of statuses
+    verbs: dict[str, tuple[object, str]] = {}
     for verb, v in data.get("verbs", {}).items():
-        verbs[str(verb)] = (str(v["from"]), str(v["to"]))
+        frm = v["from"]
+        if str(frm).upper() == "ANY":
+            frm = "Any"
+        elif isinstance(frm, list):
+            frm = [str(s) for s in frm]
+        else:
+            frm = str(frm)
+        verbs[str(verb)] = (frm, str(v["to"]))
     spec = RecordTypeSpec(
         record_type=data["record_type"],
         dir=data.get("dir", f"docs/{data['record_type']}s").rstrip("/"),
@@ -121,12 +151,36 @@ def parse_template(text: str) -> RecordTypeSpec:
         fields=[TemplateField(f["name"], f.get("hint", "")) for f in data.get("fields", [])],
         sections=[TemplateSection(s["name"], s.get("hint", ""), str(s.get("type", "text")))
                   for s in data.get("sections", [])],
-        done_status=[str(s) for s in data.get("done-status", [])],
+        code=str(data.get("code", "")),
+        status_done=status_done,
+        apply_supersede=bool(data.get("features", {}).get("supersede", False)),
+        apply_task=bool(data.get("features", {}).get("task", False)),
+        apply_toc=bool(data.get("render", {}).get("toc", False)),
+        apply_changelog=bool(data.get("render", {}).get("changelog", True)),
     )
-    unknown = [s for s in spec.done_status if s not in spec.status_allowed]
+    # a feature ships its own columns (injected first): the template does not
+    # declare them in fields
+    # a feature may ship its own record-table column (injected first): only task
+    # (parent). supersede/related live in the relations table, not as columns.
+    if spec.apply_task and "parent" not in spec.field_names:
+        spec.fields.insert(0, TemplateField("parent"))
+    unknown = [s for s in spec.status_done if s not in spec.status_allowed]
     if unknown:
-        raise ValueError(f"template {spec.record_type!r}: done-status "
-                         f"{unknown} not in status-allowed")
+        msg = f"template {spec.record_type!r}: status done {unknown} not in status-allowed"
+        raise ValueError(msg)
+    # id layout: {code}{N digits} = 7 chars total (DEC0001, DEB0001, T000001)
+    if spec.numbered == "letter":
+        raise ValueError(f"template {spec.record_type!r}: numbered must be an int, not 'letter'")
+    if not (isinstance(spec.numbered, int) and spec.numbered > 0):
+        raise ValueError(f"template {spec.record_type!r}: numbered must be an int (id width)")
+    if not spec.code.isupper() or not spec.code.isalpha() or not (1 <= len(spec.code) <= 3):
+        raise ValueError(
+            f"template {spec.record_type!r}: code must be 1-3 uppercase letters "
+            f"(got {spec.code!r})")
+    if len(spec.code) + spec.numbered != 7:
+        raise ValueError(
+            f"template {spec.record_type!r}: code + numbered must total 7 "
+            f"(got {len(spec.code)}+{spec.numbered})")
     return spec
 
 
@@ -139,15 +193,39 @@ def bundled_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "profiles"
 
 
-def _scan(base: Path) -> dict[str, RecordTypeSpec]:
-    """Record_type profiles from base-level yamls and subdirectories.
+def default_profile_dirs(project_root: Path | None) -> list[str]:
+    """Selected profile dirs: the profiles list pinned in the lock (always
+    'default' first), or ['default'] before init."""
+    lock = None
+    if project_root is not None:
+        path = project_root / ".proj.lock"
+        if path.is_file():
+            lock = yaml.safe_load(path.read_text(encoding="utf-8"))
+    pinned = list(lock.get("profiles", []) if isinstance(lock, dict) else [])
+    if "default" not in pinned:
+        pinned.insert(0, "default")
+    return pinned
+
+
+def normalize_profiles(profiles: list[str]) -> list[str]:
+    """'default' always first; extras appended, deduplicated."""
+    out = ["default"]
+    for p in profiles:
+        if p != "default" and p not in out:
+            out.append(p)
+    return out
+
+
+def _scan(base: Path, profile_dirs: list[str] | None = None) -> dict[str, RecordTypeSpec]:
+    """Record_type profiles: base-level yamls always + the *selected* profile
+    subdirectories (default_profile_dirs / normalize_profiles decide which).
 
     A base-level file without a `record_type` key (e.g. changelog.yaml) is
     global config — skipped. A file *with* a record_type key must parse
     cleanly; broken profiles are never swallowed silently."""
     out: dict[str, RecordTypeSpec] = {}
     files = sorted(base.glob("*.yaml"))
-    files += [f for d in sorted(p for p in base.iterdir() if p.is_dir())
+    files += [f for d in (base / p for p in profile_dirs) if d.is_dir()
               for f in sorted(d.glob("*.yaml"))]
     for f in files:
         text = f.read_text(encoding="utf-8")
@@ -159,15 +237,36 @@ def _scan(base: Path) -> dict[str, RecordTypeSpec]:
     return out
 
 
-def load_registry(project_root: Path | None = None) -> dict[str, RecordTypeSpec]:
+def load_registry(project_root: Path | None = None,
+                  profiles: list[str] | None = None) -> dict[str, RecordTypeSpec]:
     """RecordType registry: bundled profiles as the base, the project's own
-    profiles/ overrides them per record_type (the profiles/ dir may exist with
-    only changelog.yaml and still keep every bundled record_type)."""
-    registry = _scan(bundled_dir())
+    profiles/ overrides them per record_type. Only the *selected* profile
+    subdirectories are scanned (the lock-pinned list, 'default' first, or the
+    explicit `profiles` when given — init passes it before the lock exists) —
+    unselected profile dirs are inert."""
+    dirs = normalize_profiles(profiles) if profiles else default_profile_dirs(project_root)
+    registry = _scan(bundled_dir(), dirs)
     project = project_root / "profiles" if project_root else None
     if project is not None and project.is_dir():
-        registry.update(_scan(project))
+        registry.update(_scan(project, dirs))
     return registry
+
+
+def resolve_record_type(name: str, registry: dict[str, RecordTypeSpec] | None = None) -> str:
+    """Canonical record_type name. Case-insensitive; accepts the record_type name
+    OR the code (e.g. 'decision'/'DECISION'/'dec'/'DEC' → 'decision', 'T' → 'task')."""
+    reg = registry if registry is not None else load_registry()
+    name = (name or "").strip()
+    if name in reg:
+        return name
+    low = name.lower()
+    if low in reg:
+        return low
+    for rt, spec in reg.items():
+        if spec.code and spec.code.lower() == low:
+            return rt
+    raise ValueError(f"unknown record_type {name!r} "
+                     f"(registered: {', '.join(sorted(reg))})")
 
 
 def changelog_path(root: Path | None) -> Path:
@@ -188,6 +287,19 @@ def load_changelog_spec(root: Path | None = None) -> ChangelogSpec:
         default_category=cl.get("default_category", "Changed"),
         categories=list(cl.get("categories", [])) or ChangelogSpec().categories,
     )
+
+
+def load_texts(root: Path | None = None) -> dict:
+    """profiles/texts.yaml: the human-facing text the tool writes into project
+    files. A project's own copy wins (wholesale), else the bundled one."""
+    texts = (root / "profiles" / "texts.yaml") if root is not None else None
+    if texts is not None and texts.is_file():
+        data = yaml.safe_load(texts.read_text(encoding="utf-8"))
+    else:
+        data = yaml.safe_load((bundled_dir() / "texts.yaml").read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("texts.yaml: expected a mapping at the top level")
+    return data
 
 
 def slugify(title: str) -> str:

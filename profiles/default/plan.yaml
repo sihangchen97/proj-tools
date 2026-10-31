@@ -1,9 +1,13 @@
 record_type: plan
+code: PLN
 dir: docs/plans
 numbered: 4
-# status 按生命周期顺序排列：Draft → Active → Pending Review → Shelved | Archived
-# （Shelved/Archived 是并列的终态；Shelved 可 resume 回 Active 或 freeze 冻结成 Archived）
-# state machine verbs (verb: {from, to}); gating behavior lives in record_types/plan.py
+features:
+  supersede: false
+  task: true
+render:
+  changelog: true
+# 状态机 verbs（from 是具体状态，非 Any）：每个状态都有进入它的动词
 verbs:
   activate: {from: Draft, to: Active}
   resume: {from: Shelved, to: Active}
@@ -11,13 +15,14 @@ verbs:
   shelve: {from: Pending Review, to: Shelved}
   archive: {from: Pending Review, to: Archived}
   freeze: {from: Shelved, to: Archived}
+# status 按生命周期顺序排列：Draft → Active → Pending Review → Shelved | Archived
+# （Shelved/Archived 是并列的终态；Shelved 可 resume 回 Active 或 freeze 冻结成 Archived）
 status-allowed:
-  - {name: Draft, emoji: ✏️}            # 起草中，任务暂不入主 TASKLIST
-  - {name: Active, emoji: 🚧}           # 执行中，任务提升到主 TASKLIST
-  - {name: Pending Review, emoji: 🔍}   # 任务全部 Done，等待评审
-  - {name: Shelved, emoji: 📦}          # 评审暂缓，可 resume 回 Active
-  - {name: Archived, emoji: 🗄️}        # 已归档，终态
-done-status: [Archived, Shelved]       # 两个并列终态都算 done
+  - {name: Draft, emoji: ✏️}               # 起草中，任务暂不入主 TASKLIST
+  - {name: Active, emoji: 🚧}              # 执行中，任务提升到主 TASKLIST
+  - {name: Pending Review, emoji: 🔍}      # 任务全部 Done，等待评审
+  - {name: Shelved, emoji: 📦, done: true} # 评审暂缓，可 resume 回 Active
+  - {name: Archived, emoji: 🗄️, done: true} # 已归档，终态
 sections:
   - {name: Goal, hint: what this plan achieves and why now}
   - {name: Task List, type: task, hint: rendered task subtree (tasks with parent = this plan) - never hand-edit}

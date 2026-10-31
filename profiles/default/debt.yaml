@@ -1,16 +1,23 @@
 record_type: debt
+code: DEB
 dir: docs/tech-debt
 numbered: 4
+features:
+  supersede: false
+  task: false
+render:
+  changelog: true
 verbs:
+  draft: {from: Any, to: Draft}
   open: {from: Any, to: Open}
+  progress: {from: Any, to: In Progress}
   repay: {from: Any, to: Repaid}
 # status 按时间顺序排列：Draft → Open → In Progress → Repaid
 status-allowed:
-  - {name: Draft, emoji: ✏️}       # 起草中（new 默认）
-  - {name: Open, emoji: ⚠️}         # 已记录，未动
-  - {name: In Progress, emoji: 🚧}  # 正在还
-  - {name: Repaid, emoji: ✅}        # 已移除 workaround
-done-status: [Repaid]
+  - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
+  - {name: Open, emoji: ⚠️}            # 已记录，未动
+  - {name: In Progress, emoji: 🚧}     # 正在还
+  - {name: Repaid, emoji: ✅, done: true} # 已移除 workaround
 sections:
   - {name: Location, hint: file / module where the hack lives}
   - {name: Reason, hint: why this temporary workaround was introduced}

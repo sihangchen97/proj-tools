@@ -1,15 +1,22 @@
 record_type: incident
+code: INC
 dir: docs/incidents
 numbered: 4
+features:
+  supersede: false
+  task: false
+render:
+  changelog: true
 verbs:
+  draft: {from: Any, to: Draft}
+  open: {from: Any, to: Open}
   close: {from: Any, to: Closed}
-  reopen: {from: Closed, to: Open}
+  reopen: {from: Any, to: Open}
 # status 按时间顺序排列：Draft → Open → Closed
 status-allowed:
-  - {name: Draft, emoji: ✏️}       # 起草中（new 默认）
-  - {name: Open, emoji: 🚨}        # 故障未恢复，处理中
-  - {name: Closed, emoji: ✅}       # 已恢复并沉淀 Prevention rule
-done-status: [Closed]
+  - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
+  - {name: Open, emoji: 🚨}            # 故障未恢复，处理中
+  - {name: Closed, emoji: ✅, done: true} # 已恢复并沉淀 Prevention rule
 sections:
   - {name: Summary, hint: what broke, when, impact}
   - {name: Root cause}

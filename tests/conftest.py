@@ -21,5 +21,5 @@ def cfg(root):
 @pytest.fixture
 def proj(cfg):
     """A fully initialized project (DB tables, lock, seed decision)."""
-    scaffold.init(cfg, ["core", "quality"])
+    scaffold.init(cfg, ["default", "quality"])
     return cfg

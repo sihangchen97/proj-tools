@@ -48,14 +48,14 @@ def check(cfg: ProjConfig) -> list[str]:
             text = p.read_text(encoding="utf-8")
             (mk, u), _title, raw_sections = rec.parse_record(text)
             if mk != record_type or not u:
-                problems.append(f"{p.name}: missing/foreign uuid marker "
+                problems.append(f"{p.name}: missing/foreign id marker "
                                 f"— run `proj adopt`")
                 continue
-            row = db.get(spec, u, by="uuid")
+            row = db.get(spec, u)
             if row is None:
-                problems.append(f"{p.name}: uuid not in DB — run `proj adopt`")
+                problems.append(f"{p.name}: id not in DB — run `proj adopt`")
                 continue
-            seen.add(row["uuid"])
+            seen.add(row["id"])
             if not p.name.startswith(row["id"] + "-"):
                 problems.append(f"{p.name}: id {row['id']!r} does not match filename")
             if spec.status_allowed and not any(
@@ -72,7 +72,7 @@ def check(cfg: ProjConfig) -> list[str]:
                     problems.append(f"{p.name}: section '{s.name}' differs from DB "
                                     f"— run `proj sync`")
         for row in db.all(spec):
-            if row["uuid"] not in seen:
+            if row["id"] not in seen:
                 problems.append(f"{record_type} {row['id']}: record in DB has no md file")
 
     # per-record_type invariants: the record_type's Record owns its own checks

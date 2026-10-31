@@ -12,7 +12,7 @@ from proj.core.config import ProjConfig
 from proj.core.templates import ChangelogSpec, RecordTypeSpec, load_changelog_spec
 from proj.engine.store import checkboxes
 
-SYM = {"Draft": "○", "In Progress": "◐", "Done": "✓"}
+SYM = {"Draft": "○", "In Progress": "◐", "Failed": "✗", "Done": "✓"}
 
 
 @dataclass
@@ -20,9 +20,6 @@ class View:
     path: Path
     text: str
 
-
-def _norm_id(v: str) -> str:
-    return str(int(v)) if v.isdigit() else v
 
 
 
@@ -58,15 +55,21 @@ def _sub_task_lines(steps: str) -> list[str]:
 
 
 def task_tree_lines(rows: list[dict], task_spec, parent_key: str,
-                    depth: int = 0) -> list[str]:
+                    depth: int = 0, on_path: set[str] | None = None) -> list[str]:
     """Render the tasks whose parent == parent_key ("" = top-level) as a tree:
     each task's local steps below it, then its sub-tasks (parent == this task)
-    indented. Children keep id order (= creation order)."""
+    indented. Children keep id order (= creation order). A task already on the
+    ancestor chain is skipped (guards a numeric parent id that normalizes to
+    the child's own id)."""
+    on_path = set() if on_path is None else on_path
     lines: list[str] = []
     pad = "  " * depth
     for r in rows:
-        if _norm_id((r.get("parent") or "").strip()) != parent_key:
+        if (r.get("parent") or "").strip() != parent_key:
             continue
+        if r["id"] in on_path:  # cycle guard
+            continue
+        child_path = on_path | {r["id"]}
         sections = json.loads(r["sections"] or "{}")
         lines.append(f"{pad}- {SYM.get(r['status'], '?')} **{r['id']}** {r['title']}")
         lines += [f"{pad}  " + s for s in _sub_task_lines(sections.get("steps", ""))]
@@ -74,7 +77,7 @@ def task_tree_lines(rows: list[dict], task_spec, parent_key: str,
         for item in open_items.splitlines():
             if item.strip():
                 lines.append(f"{pad}  - open: {item.strip()}")
-        lines += task_tree_lines(rows, task_spec, _norm_id(r["id"]), depth + 1)
+        lines += task_tree_lines(rows, task_spec, r["id"], depth + 1, child_path)
     return lines
 
 
@@ -89,17 +92,17 @@ def render_tasklist_md(cfg: ProjConfig, db, registry: dict[str, RecordTypeSpec])
     # indented below (DB `parent` link, same mechanism as task→subtask);
     # then parentless tasks.
     for spec in registry.values():
-        if spec.record_type == "task" or not any(s.kind == "task" for s in spec.sections):
+        if spec.record_type == "task" or not spec.apply_task:
             continue
         for r in db.all(spec):
             head = f"- {spec.emojify(r['status'])} **{spec.record_type} {r['id']}** {r['title']}"
             body.append(head)
-            body += task_tree_lines(tasks, None, _norm_id(r["id"]), depth=1)
+            body += task_tree_lines(tasks, None, r["id"], depth=1)
     body += task_tree_lines(
         [t for t in tasks if not (t.get("parent") or "").strip()], None, "")
     lines += body or ["_no tasks_"]
     lines += ["", "_Rendered by `proj update` — never hand-edit. "
-              "Edit task files under `tasks/` instead._"]
+              "Edit task files under `docs/tasks/` instead._"]
     return View(cfg.root / "TASKLIST.md", "\n".join(lines) + "\n")
 
 

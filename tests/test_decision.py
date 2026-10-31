@@ -2,36 +2,39 @@
 import pytest
 
 from proj.engine import store as rec
-from proj.record_types import decision as dec
+from proj.engine.record import record_for
+
+
+def dec_obj(proj):
+    return record_for("decision", rec.load_registry(proj.root))
 
 
 def test_new_creates_record(proj):
     row, p = rec.new_record(proj, "decision", "Use Rust")
-    assert row["id"] == "0002"
+    assert row["id"] == "DEC-0002"
     assert row["status"] == "Draft"  # new default is the first status (Draft)
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == f"<!-- proj:decision {row['uuid']} -->"  # uuid marker comment, line 1
-    assert lines[1] == "# 2. Use Rust"  # title below the marker
+    assert lines[0] == f"<!-- proj:decision {row['id']} -->"  # uuid marker comment, line 1
+    assert lines[1].startswith("<!-- proj:head:start")  # head fence below the marker
+    assert lines[2] == "# DEC-0002. Use Rust"  # title below the head fence
     assert "> **status:** ✏️ Draft  " in lines  # blockquote below the title
-    assert "# 2. Use Rust" in text
+    assert "# DEC-0002. Use Rust" in text
     assert "## Context" in text
     # changelog shows the created entry
     assert "| Added | created |" in text
 
 
-def test_supersede_sets_fields_not_statuses(proj):
-    row, _ = dec.new(proj, "New decision", supersede=["1"])
+def test_supersede_sets_relations_not_statuses(proj):
+    row, _ = dec_obj(proj).new(proj, "New decision", supersede=["1"])
     spec = rec.load_registry(proj.root)["decision"]
     db = rec.open_db(proj)
-    old = db.get(spec, row["supersedes"], by="id")
-    new = db.get(spec, row["id"], by="id")
+    # supersede is an edge in the relations table (not a column); statuses stay untouched
+    assert [e["target"] for e in db.supersede_of(row["id"])] == ["DEC-0001"]
+    assert [e["source"] for e in db.superseded_by_of("DEC-0001")] == ["DEC-0002"]
+    assert db.get(spec, "DEC-0001")["status"] == "Accepted"  # seeded 0001 starts Accepted
+    assert db.get(spec, row["id"])["status"] == "Draft"
     db.close()
-    # supersede is a relationship (fields); statuses stay untouched
-    assert old["superseded_by"] == "0002"
-    assert new["supersedes"] == "0001"
-    assert old["status"] == "Accepted"  # seeded 0001 starts Accepted
-    assert new["status"] == "Draft"
 
 
 def test_status_validates_allowed_set(proj):
@@ -47,61 +50,55 @@ def test_status_change_auto_logs(proj):
     rec.status_set(proj, "decision", row["id"], "Accepted")
     spec = rec.load_registry(proj.root)["decision"]
     db = rec.open_db(proj)
-    r = db.get(spec, row["id"], by="id")
-    logs = db.logs("decision", r["uuid"])
+    r = db.get(spec, row["id"])
+    logs = db.logs("decision", r["id"])
     db.close()
     assert any("→ Accepted" in e["summary"] for e in logs)
 
 
 def test_supersede_multi_and_append(proj):
-    dec.new(proj, "B")  # 0002
-    dec.new(proj, "C")  # 0003
+    dec_obj(proj).new(proj, "B")  # 0002
+    dec_obj(proj).new(proj, "C")  # 0003
     # one new decision replaces several old ones
-    row, _ = dec.new(proj, "Consolidate", supersede=["1", "3"])  # 0004
-    spec = rec.load_registry(proj.root)["decision"]
+    row, _ = dec_obj(proj).new(proj, "Consolidate", supersede=["1", "3"])  # 0004
     db = rec.open_db(proj)
-    new = db.get(spec, row["id"], by="id")
-    d1 = db.get(spec, "0001", by="id")
+    assert [e["target"] for e in db.supersede_of(row["id"])] == ["DEC-0001", "DEC-0003"]
+    assert [e["source"] for e in db.superseded_by_of("DEC-0001")] == ["DEC-0004"]
     db.close()
-    assert new["supersedes"] == "0001, 0003"
-    assert d1["superseded_by"] == "0004"
     # a later decision appending to the same old one keeps both refs
-    dec.new(proj, "Even newer", supersede=["1"])  # 0005
+    dec_obj(proj).new(proj, "Even newer", supersede=["1"])  # 0005
     db = rec.open_db(proj)
-    d1 = db.get(spec, "0001", by="id")
+    assert [e["source"] for e in db.superseded_by_of("DEC-0001")] == ["DEC-0004", "DEC-0005"]
     db.close()
-    assert d1["superseded_by"] == "0004, 0005"
 
 
 def test_check_flags_dangling_and_cycle(proj):
     from proj import check as checkmod
-    dec.new(proj, "B")  # 0002
-    spec = rec.load_registry(proj.root)["decision"]
+    dec_obj(proj).new(proj, "B")  # 0002
     db = rec.open_db(proj)
-    # dangling forward ref
-    row = db.get(spec, "0002", by="id")
-    db.set(spec, row["uuid"], supersedes="0099")
+    # dangling forward ref: an edge whose target does not exist
+    db.add_relation("DEC-0002", "decision", "DEC-0099", "decision", "supersede")
+    db.close()
     problems = checkmod.check(proj)
-    assert any("supersedes 0099" in p for p in problems)
+    assert any("supersedes DEC-0099" in p for p in problems)
     # manual cycle: 0002 → 0001 and 0001 → 0002
-    d1 = db.get(spec, "0001", by="id")
-    db.set(spec, row["uuid"], supersedes="0001")
-    db.set(spec, d1["uuid"], supersedes="0002")
+    db = rec.open_db(proj)
+    db.add_relation("DEC-0002", "decision", "DEC-0001", "decision", "supersede")
+    db.add_relation("DEC-0001", "decision", "DEC-0002", "decision", "supersede")
     db.close()
     problems = checkmod.check(proj)
     assert any("cycle" in p for p in problems)
-    assert any("superseded_by is missing" in p for p in problems)
 
 
 def test_toc_and_graph(proj):
-    dec.new(proj, "Second", supersede=["1"])
-    g = dec.graph(proj)
+    dec_obj(proj).new(proj, "Second", supersede=["1"])
+    g = dec_obj(proj).graph(proj)
     assert "graph LR" in g
-    assert "D0001 --> D0002" in g
-    t = dec.toc(proj)
+    assert "DEC-0001 --> DEC-0002" in g
+    t = dec_obj(proj).toc(proj)
     # table format; Status column shows emoji only (emojify); supersede is a field
     assert "| ID | Status | Title |" in t
-    assert "| 0002 | ✏️ | Second |" in t  # new records start Draft
+    assert "| DEC-0002 | ✏️ | Second |" in t  # new records start Draft
     assert "Superseded" not in t and "Supersedes" not in t
     # one-line legend below the record table (table views only): emoji + name
     assert "✏️ Draft" in t and "✅ Accepted" in t and "📛 Deprecated" in t
@@ -113,11 +110,11 @@ def test_toc_and_graph(proj):
 
 
 def test_link_appends_to_consequences(proj):
-    dec.new(proj, "Third")
-    dec.link(proj, "1", ["3"])
+    dec_obj(proj).new(proj, "Third")
+    dec_obj(proj).link(proj, "DEC-0001", ["DEC-0003"])
     spec = rec.load_registry(proj.root)["decision"]
     db = rec.open_db(proj)
-    row = db.get(spec, "0001", by="id")
+    row = db.get(spec, "DEC-0001")
     db.close()
     import json
-    assert "See also: DEC-3" in json.loads(row["sections"])["consequences"]
+    assert "See also: DEC-0003" in json.loads(row["sections"])["consequences"]

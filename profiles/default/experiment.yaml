@@ -1,16 +1,23 @@
 record_type: experiment
+code: EXP
 dir: docs/experiments
 numbered: 4
+features:
+  supersede: false
+  task: true
+render:
+  changelog: true
 verbs:
+  draft: {from: Any, to: Draft}
+  propose: {from: Any, to: Proposed}
   run: {from: Any, to: Running}
   close: {from: Any, to: Closed}
 # status 按时间顺序排列：Draft → Proposed → Running → Closed
 status-allowed:
-  - {name: Draft, emoji: ✏️}       # 起草中（new 默认）
-  - {name: Proposed, emoji: 🌱}   # 已写假设，未开跑
-  - {name: Running, emoji: 🚧}    # 正在跑实验
-  - {name: Closed, emoji: ✅}      # 已出结论（确认/证伪）
-done-status: [Closed]
+  - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
+  - {name: Proposed, emoji: 🌱}        # 已写假设，未开跑
+  - {name: Running, emoji: 🚧}         # 正在跑实验
+  - {name: Closed, emoji: ✅, done: true}  # 已出结论（确认/证伪）
 fields:
   - {name: commit, hint: git commit hash the experiment runs on}
 sections:
