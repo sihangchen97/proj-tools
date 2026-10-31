@@ -3,16 +3,18 @@
 v3 已按 `v3-sqlite-core.md` 实现（39 tests, lint 绿）。以下偏差全部是**有意简化**，
 按 ponytail 原则最小可用；升级路径已注明。
 
-## 1. DB 位置与 git 策略
+## 1. DB 位置与 git 策略（2026-10-29 定稿）
 
-- 设计：`.proj.sqlite`（根目录），建议提交。
-- 实现：`.proj/sqlite`，且 `.proj/.gitignore` 默认**不提交**（`.proj/` 只提交
-  lock/toc/githooks）。
-- 理由：DB 不提交 → clone 后 `proj init` 走 adopt 重建（该路径已实现并测试）；
-  提交则 DB 与 md 可能漂移。不提交更安全。
-- 后果：md 的 changelog 表格只有最新 5 条，更早历史在未提交的 DB 里，
-  换机器后丢失（设计 §4 已知）。
-- 升级：想提交 DB 时删掉 `.proj/.gitignore` 里的 `sqlite` 一行即可。
+- DB = **`.proj.sqlite`**（项目根单个文件；2026-10-29 由 `.proj/sqlite`
+  改名，`.proj/` 文件夹取消），**默认提交**（设计 §4 建议；clone 即用，
+  md 之外的 changelog 全量历史不丢）。
+- hooks 装进 `.git/hooks/pre-commit`（不需要 core.hooksPath）；decision toc
+  写到 `docs/decisions/TOC.md`。
+- 仓库根 `.gitignore` 的 `*.sqlite` 兜底会匹配 `.proj.sqlite`，已加
+  `!.proj.sqlite` 例外保证 DB 默认提交。
+- 风险：DB 进 git 后，多人同时 sync 会 last-write-wins 互相覆盖——
+  协作前需并发保护。
+- 升级：无。
 
 ## 2. `archive` 的来源状态
 
@@ -49,17 +51,30 @@ v3 已按 `v3-sqlite-core.md` 实现（39 tests, lint 绿）。以下偏差全�
 - `--root PATH` 全局选项：设计为 MCP 预留，CLI 一并加上（`cli.py:_ROOT`）。
 - 字段名加 SQL 引号：`experiment.commit` 撞 SQLite 保留字，`db.py:_q()` 统一引号。
 - 内置模板移到仓库根 `templates/`（用户要求），`bundled_dir()` 优先仓库根、
-  回退包内。**wheel 打包未配置** `artifacts`，`uv tool install` 场景下新
-  init 的 bundled 复制会缺文件——当前只用 pixi editable 开发，暂不处理；
-  发布前需在 pyproject 加 `artifacts = ["templates/**/*.yaml"]` 并改回退逻辑。
+  回退包内。wheel 已配 `force-include = { "templates" = "proj/templates" }`
+  并在干净 venv 验证（init/supersede/check 全流程过）。
 - plan id 比较统一归一化（`"1"` vs `"0001"`）：`views.py:_norm_id` /
   `plan.py:transition`，用户传 `--plan 1` 或 `--plan 0001` 都成立。
 - changelog category 白名单：`Added/Changed/Deprecated/Removed/Fixed/Security`，
   未知 category 报错（防拼写污染）；小写自动规范化（`added:` → `Added`）。
 - 变更操作（new/status_set）后自动重渲染视图：TASKLIST/plan 章节即时一致，
   不等下一次 `proj sync`。
+- status 命名（2026-10-29 用户拍板）：`Proposed` → **`Pending`**
+  （decision/debt/experiment）；emoji 方案 = 模板 `status-allowed` 条目可带
+  `{name, emoji}`（可选），"进行中" 状态统一 🚧（task/debt In progress、
+  experiment Running、plan Active）；emoji 只出现在视图（_TOC/list），
+  md 的 `Status:` 行保持纯文字；emoji 随 lock 持久化。
+- supersede 从 status 改为**多值字段**（`supersedes`/`superseded_by`，
+  逗号分隔）：一个决策可取代多个，一个旧的也可被多个取代（追加不覆盖）；
+  存储用规范化 id（`-s 1` → `"0001"`）；decision 只剩
+  Pending/Accepted/Deprecated 三态；`proj check` 校验悬挂引用、
+  双向一致性（A supersedes B ⇒ B.superseded_by 含 A）、环（DFS）。
+- init **不拷** `templates/` 进项目：registry 回退 bundled；项目想覆盖
+  kind 自建 `templates/<profile>/<kind>.yaml`（load_registry 项目目录优先）。
+- 渲染视图文件约定：托管目录里 `_` 前缀 = 视图（如 `docs/decisions/_TOC.md`），
+  check/sync/adopt/seed 全部跳过 `_` 前缀文件。
 
-## 7. 已验证（testproj 冒烟 + 39 单测）
+## 7. 已验证（.testproj 冒烟，scripts/e2e.sh + 单测）
 
 init（含 seed 决策 0001 + 幂等）→ supersede 双向状态 → plan/task 关联 →
 sync 自动 In progress → task done 校验 → 状态机全路径（含非法迁移拒绝）→

@@ -28,7 +28,7 @@ proj new decision "Use pixi"        # opens $EDITOR on docs/decisions/0001-*.md
 proj sync                           # after editing md: md → DB → re-render md
 proj new task "Data pipeline"       # tasks/A-data-pipeline.md
 proj new plan "Ship v1"
-proj new task "Baseline" --plan 1   # parks in the plan until it activates
+proj new task "Baseline" --parent 1   # attaches to the plan (its Task List)
 proj plan activate 1                # its tasks appear in TASKLIST.md
 # ... edit steps, check boxes ...
 proj sync
@@ -43,19 +43,19 @@ proj check                          # invariants; also runs in pre-commit hook
 
 ## Core model
 
-- **Source of truth = `.proj/sqlite`** (SQLite, one table per kind + one
-  changelog table per kind). The md files are **input channel + rendered
-  output**: edit `##` section content → `proj sync` reads it back, then
-  re-renders every md from the DB.
-- **Templates are YAML schema** (`templates/default/<kind>.yaml`, copied into
-  the project at init, user-editable). A template declares: kind, dir,
-  numbering, allowed statuses, extra fields, sections (+ hints). New kind =
+- **Source of truth = `.proj.sqlite`** (project root — one table per record_type +
+  one changelog table per record_type; committed by default).
+  The md files are **input channel + rendered output**: edit `##` section
+  content → `proj sync` reads it back, then re-renders every md from the DB.
+- **Templates are YAML schema** (`profiles/default/<record_type>.yaml`, copied into
+  the project at init, user-editable). A template declares: record_type, dir,
+  numbering, allowed statuses, extra fields, sections (+ hints). New record_type =
   drop one YAML file, zero code changes.
-- **`<kind>.lock` = `.proj.lock`** (committed) pins which templates + schema
+- **`<record_type>.lock` = `.proj.lock`** (committed) pins which templates + schema
   the DB was built from. `proj init` with a lock follows the lock; without,
-  it builds from `templates/` and writes the lock.
+  it builds from `profiles/` and writes the lock.
 - **UUIDs live only in the DB**; each md carries them as an invisible first
-  line `<!-- proj:<kind> <uuid> -->` for cross-validation (uuid → id must
+  line `<!-- proj:<record_type> <uuid> -->` for cross-validation (uuid → id must
   match the filename prefix).
 - **Rendered views, never hand-edit**: `TASKLIST.md`, `CHANGELOG.md`, the
   `Task List` section of plans.
@@ -64,14 +64,27 @@ proj check                          # invariants; also runs in pre-commit hook
 
 ## Kinds
 
-| kind | dir | id | statuses |
+| record_type | dir | id | statuses |
 |---|---|---|---|
-| `decision` | `docs/decisions/` | NNNN | Proposed, Accepted, Deprecated, `Superseded by DEC-{id}`, `Supersedes DEC-{id}` |
+| `decision` | `docs/decisions/` | NNNN | Proposed, Accepted, Deprecated (supersede = fields, see below) |
 | `task` | `tasks/` | A, B, … AA | Not started, In progress, Done |
 | `plan` | `docs/plans/` | NNNN | Draft, Active, Pending review, Shelved, Archived |
-| `debt` | `docs/tech-debt/` | NNNN | Proposed, In progress, Repaid |
+| `debt` | `docs/tech-debt/` | NNNN | Open, In progress, Repaid |
 | `incident` | `docs/incidents/` | YYYY-MM-DD | Open, Closed |
 | `experiment` | `docs/experiments/` | NNNN | Proposed, Running, Closed |
+
+Statuses show an emoji in views (`_TOC.md`, `proj list`) when the template
+defines one; the md `Status:` line stays plain text.
+
+### Decisions supersede (multi-valued)
+
+Supersede is a relationship, not a status: one decision can replace several
+old ones, and one old one can be replaced by several new ones.
+
+- `proj new decision TITLE -s 1 -s 2` (repeatable; `-s "1,2"` also works)
+  sets `supersedes` on the new record and appends to each old record's
+  `superseded_by`.
+- `proj check` enforces: no dangling refs, A↔B mutual consistency, no cycles.
 
 ### Plans drive task visibility (no file moving)
 
@@ -102,15 +115,15 @@ Pending review →(shelve) Shelved →(resume) Active`;
 
 ```
 proj init [--profile X] [--root P]
-proj new <kind> TITLE [-s N] [--plan N] [--field k=v] [-y]
+proj new <record_type> TITLE [-s N] [--parent N] [--field k=v] [-y]
 proj sync [FILE…]          # md → DB → md
 proj adopt [FILE…]         # absorb pre-existing md (generates uuids)
-proj render [kind [ID]]    # DB → md only
+proj render [record_type [ID]]    # DB → md only
 proj update                # sync + all views
-proj list <kind> [--status S]
-proj show <kind> ID [--history]
-proj status <kind> ID STATUS   # validated; auto changelog entry
-proj log <kind> ID "Category: …"
+proj list <record_type> [--status S]
+proj show <record_type> ID [--history]
+proj status <record_type> ID STATUS   # validated; auto changelog entry
+proj log <record_type> ID "Category: …"
 proj check                 # md↔DB, filename↔id, schema↔template, nesting
 proj info [--json]         # what this dir manages + ops cheatsheet
 proj decision toc|graph|link
@@ -120,9 +133,9 @@ proj changelog add|version|release-notes|list
 proj hooks install         # pre-commit → proj check
 ```
 
-## Adding a kind
+## Adding a record_type
 
-Drop `templates/default/<kind>.yaml` (see existing ones for the format), then
+Drop `profiles/default/<record_type>.yaml` (see existing ones for the format), then
 `proj init` (or `proj render` after `proj sync` if tables exist). That's it —
 the engine is fully generic.
 
