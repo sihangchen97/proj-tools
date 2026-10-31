@@ -4,13 +4,14 @@ hierarchy, record_for) lives in record.py — this module calls back lazily.
 
 md file shape (rendered by the engine):
 
-    <!-- proj:decision 3f2a1b4c-... -->    <- line 1: tool-owned uuid marker (a comment)
-    ---                                    <- line 2: front matter opens (gray box)
+    ---                                    <- line 1: front matter opens (gray box)
     status: 📛 Deprecated                  <-   emoji + name (status_display)
     supersedes: 0001                       <-   non-empty record_type fields only
     subtask: B                             <-   task's sub-task ids (reverse lookup)
     started: 2026-10-29                    <-   derived, always shown ('—' until set)
     ---
+    <!-- proj:decision 3f2a1b4c-... -->    <- tool-owned uuid marker (a comment,
+                                             <-   invisible in preview)
 
     # 0001. Title                          <- tool-owned heading
     Summary: one sentence                  <- below the box; md wins on sync
@@ -22,10 +23,12 @@ md file shape (rendered by the engine):
     ## Context                             <- user-owned content (the only
     ...                                    <- part humans/LLMs edit)
 
-The front-matter block is pure `key: value` (valid YAML — viewers validate it);
-the uuid marker is the HTML comment ABOVE it. The older shape (marker inside the
-front matter) is still parsed for one transition; any re-rendered file is
-rewritten to the marker-on-line-1 shape.
+The front-matter block is pure `key: value` (valid YAML — viewers validate it,
+gray box rendered); the uuid marker is the HTML comment just AFTER it
+(invisible in preview, position not significant for the parser). Both older
+shapes (marker line 1 above the front matter; marker inside the front matter)
+are still parsed for the transition; any re-rendered file is rewritten to the
+marker-below shape.
 
 sync: md → DB (sections win) → render all md (tool-owned parts win).
 """
@@ -103,13 +106,13 @@ def _fm_value(v: str) -> str:
 
 
 def _fm_block(spec: RecordTypeSpec, row: dict, fm: dict) -> str:
-    """Tool-owned head: the uuid marker as an HTML comment on line 1, then a
-    YAML front matter block (gray box) of pure key: value fields.
-    Hand-written lines, not yaml.safe_dump: PyYAML chokes on 4-byte emoji.
-    The front matter must stay valid YAML — viewers (VS Code) validate it."""
+    """Tool-owned head: a YAML front matter block (gray box) of pure key: value
+    fields, then the uuid marker as an HTML comment just below it (invisible in
+    preview). Hand-written lines, not yaml.safe_dump: PyYAML chokes on 4-byte
+    emoji. The front matter must stay valid YAML — viewers (VS Code) validate it."""
     body = "\n".join(f"{k}: {_fm_value(v)}" for k, v in fm.items())
-    return (f"<!-- proj:{spec.record_type} {row['uuid']} -->\n"
-            f"---\n{body}\n---\n\n")
+    return (f"---\n{body}\n---\n"
+            f"<!-- proj:{spec.record_type} {row['uuid']} -->\n\n")
 
 
 def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
@@ -216,9 +219,10 @@ def render_all(cfg: ProjConfig) -> list[Path]:
 def parse_record(text: str):
     """Extract (record_type, uuid) marker, title and {section_lower: raw} from an md.
 
-    The uuid marker is a comment line — inside the front-matter block (current
-    shape) or as the first line (legacy shape); the front matter itself is
-    tool-owned and ignored here (managed lines live in fm_fields).
+    The uuid marker is a comment line — just below the front-matter block
+    (current shape), line 1 above it, or inside the block (older shapes); the
+    front matter itself is tool-owned and ignored here (managed lines live in
+    fm_fields).
     """
     m = MARK_RE.search(text)
     marker = (m.group(1), m.group(2)) if m else (None, None)

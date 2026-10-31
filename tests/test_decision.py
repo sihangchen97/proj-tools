@@ -11,8 +11,8 @@ def test_new_creates_record(proj):
     assert row["status"] == "Proposed"
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == f"<!-- proj:decision {row['uuid']} -->"  # uuid marker comment, line 1
-    assert lines[1] == "---"  # front matter (valid YAML below the marker)
+    assert lines[0] == "---"  # front matter (valid YAML, gray box)
+    assert f"<!-- proj:decision {row['uuid']} -->" in lines  # uuid marker comment below the box
     assert "# 2. Use Rust" in text
     assert "status: 🌱 Proposed" in text
     assert "## Context" in text

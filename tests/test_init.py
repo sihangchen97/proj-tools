@@ -67,14 +67,16 @@ def test_task_kind_registered(proj):
 
 
 def test_front_matter_shape(proj):
-    """Record md head: the uuid marker comment on line 1, then a VALID-YAML
-    front matter (gray box): '---', status with emoji, derived rows always shown."""
+    """Record md head: a VALID-YAML front matter (gray box) on line 1 ('---',
+    status with emoji, derived rows always shown), the uuid marker comment
+    just below the closing '---' (invisible in preview)."""
     row, p = rec.new_record(proj, "task", "F1", summary="s")
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == f"<!-- proj:task {row['uuid']} -->"
-    assert lines[1] == "---"
-    assert "status: 🕐 Not Started" in lines
+    assert lines[0] == "---"
+    assert lines[1] == "status: 🕐 Not Started"
+    assert f"<!-- proj:task {row['uuid']} -->" in lines
+    assert lines.index("---") < lines.index(f"<!-- proj:task {row['uuid']} -->")
     assert "started: —" in lines and "done: —" in lines
     # summary lives BELOW the box (heading → summary → changelog), not in it
     assert "Summary: s" in lines
