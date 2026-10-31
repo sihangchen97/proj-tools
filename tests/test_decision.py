@@ -8,12 +8,12 @@ from proj.record_types import decision as dec
 def test_new_creates_record(proj):
     row, p = rec.new_record(proj, "decision", "Use Rust")
     assert row["id"] == "0002"
-    assert row["status"] == "Proposed"
+    assert row["status"] == "Draft"  # new default is the first status (Draft)
     text = p.read_text()
     lines = text.splitlines()
     assert lines[0] == f"<!-- proj:decision {row['uuid']} -->"  # uuid marker comment, line 1
     assert lines[1] == "# 2. Use Rust"  # title below the marker
-    assert "> **status:** 🌱 Proposed  " in lines  # blockquote below the title
+    assert "> **status:** ✏️ Draft  " in lines  # blockquote below the title
     assert "# 2. Use Rust" in text
     assert "## Context" in text
     # changelog shows the created entry
@@ -31,7 +31,7 @@ def test_supersede_sets_fields_not_statuses(proj):
     assert old["superseded_by"] == "0002"
     assert new["supersedes"] == "0001"
     assert old["status"] == "Accepted"  # seeded 0001 starts Accepted
-    assert new["status"] == "Proposed"
+    assert new["status"] == "Draft"
 
 
 def test_status_validates_allowed_set(proj):
@@ -42,14 +42,15 @@ def test_status_validates_allowed_set(proj):
 
 
 def test_status_change_auto_logs(proj):
-    row, _ = rec.new_record(proj, "decision", "D2")  # starts Proposed
+    row, _ = rec.new_record(proj, "decision", "D2")  # starts Draft
+    rec.status_set(proj, "decision", row["id"], "Proposed")
     rec.status_set(proj, "decision", row["id"], "Accepted")
     spec = rec.load_registry(proj.root)["decision"]
     db = rec.open_db(proj)
     r = db.get(spec, row["id"], by="id")
     logs = db.logs("decision", r["uuid"])
     db.close()
-    assert any("Proposed → Accepted" in e["summary"] for e in logs)
+    assert any("→ Accepted" in e["summary"] for e in logs)
 
 
 def test_supersede_multi_and_append(proj):
@@ -100,10 +101,10 @@ def test_toc_and_graph(proj):
     t = dec.toc(proj)
     # table format; Status column shows emoji only (emojify); supersede is a field
     assert "| ID | Status | Title |" in t
-    assert "| 0002 | 🌱 | Second |" in t
+    assert "| 0002 | ✏️ | Second |" in t  # new records start Draft
     assert "Superseded" not in t and "Supersedes" not in t
     # one-line legend below the record table (table views only): emoji + name
-    assert "* 🌱 Proposed · ✅ Accepted · 📛 Deprecated" in t
+    assert "✏️ Draft" in t and "✅ Accepted" in t and "📛 Deprecated" in t
     # emojify compares slug + lowercase: case/space variants still map
     from proj.core.templates import load_registry
     spec = load_registry(proj.root)["decision"]

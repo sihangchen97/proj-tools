@@ -48,12 +48,15 @@ proj new TYPE TITLE [-s N] [--parent N] [--field k=v]… [--summary S] [-y]
 proj list TYPE [--status S]         # 列出某 record_type 的记录（DB）
 proj show TYPE ID [--history]       # 看单条记录（+ --history 显示完整 changelog）
 proj status TYPE ID NEW_STATUS      # 改状态（对照模板允许集校验）
+proj verb TYPE NAME ID              # 跑模板动词（状态机一步；from: Any = 任意状态可触发）
 proj log TYPE ID "Category: 摘要"   # 追加一条 changelog（纯文本 = 默认 category）
 ```
 
 - 新建默认打开 `$EDITOR`/`$VISUAL`；`-y` 跳过。
-- 状态机类型（plan）的状态变更建议走专门动词（`proj plan activate 1`），
-  因为动词带**门禁**（如 review 要求名下任务全 Done）；`proj status` 是裸改。
+- **动词**在模板 `verbs:` 里声明（`name: {from, to}`）；`from: Any` 表示任意当前
+  状态都能触发（直达目标，如 `deprecate`/`close`）。`proj verb TYPE NAME ID` 通用驱动，
+  等价于 `record.transition(cfg, name, id)`；plan 另有 `proj plan <verb>` 子命令
+  （带**门禁**，如 review 要求名下任务全 Done）；`proj status` 是裸改。
 
 ## task（任务）
 
@@ -65,7 +68,7 @@ proj task done ID       # → Done：要求 ① 自己的 Steps 全勾上 ② �
 proj task list [--status S]
 ```
 
-- 状态：`Not Started 🕐 → In Progress 🚧 → Done ✅`。
+- 状态：`Draft ✏️ → In Progress 🚧 → Done ✅`（new 默认 Draft）。
 - 第一次勾 checkbox 后 `sync` 自动升 In Progress（on_ingest 钩子）。
 - 主区 `TASKLIST.md` 只放**顶层任务**（无 parent）；挂了 parent 的任务渲染在
   父记录的 `Task List` 章节（plan 是 `## Task List`，task 的子任务直接缩进）。

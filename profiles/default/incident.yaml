@@ -2,12 +2,14 @@ record_type: incident
 dir: docs/incidents
 numbered: 4
 verbs:
-  close: {from: Open, to: Closed}
+  close: {from: Any, to: Closed}
   reopen: {from: Closed, to: Open}
-# status 按时间顺序排列：Open → Closed
+# status 按时间顺序排列：Draft → Open → Closed
 status-allowed:
-  - {name: Open, emoji: 🚨}    # 故障未恢复，处理中
-  - {name: Closed, emoji: ✅}   # 已恢复并沉淀 Prevention rule
+  - {name: Draft, emoji: ✏️}       # 起草中（new 默认）
+  - {name: Open, emoji: 🚨}        # 故障未恢复，处理中
+  - {name: Closed, emoji: ✅}       # 已恢复并沉淀 Prevention rule
+done-status: [Closed]
 sections:
   - {name: Summary, hint: what broke, when, impact}
   - {name: Root cause}

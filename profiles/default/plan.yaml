@@ -17,6 +17,7 @@ status-allowed:
   - {name: Pending Review, emoji: 🔍}   # 任务全部 Done，等待评审
   - {name: Shelved, emoji: 📦}          # 评审暂缓，可 resume 回 Active
   - {name: Archived, emoji: 🗄️}        # 已归档，终态
+done-status: [Archived, Shelved]       # 两个并列终态都算 done
 sections:
   - {name: Goal, hint: what this plan achieves and why now}
   - {name: Task List, type: task, hint: rendered task subtree (tasks with parent = this plan) - never hand-edit}

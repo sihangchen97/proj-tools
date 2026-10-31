@@ -20,8 +20,11 @@ from proj.engine import store as rec
 from proj.engine.record import record_for
 from proj.record_types import changelog as cl
 from proj.record_types import decision as dec
-from proj.record_types import plan as planmod
 from proj.record_types import task as taskmod
+
+# plan has no Record subclass: its state machine comes straight from the template yaml
+def _plan(root: str | None = None):
+    return record_for("plan", rec.load_registry(_cfg(root).root))
 
 mcp = MCPServer("proj")
 
@@ -211,7 +214,7 @@ def proj_plan_verb(verb: str, id_: str, root: str | None = None) -> str:
         return f"error: plan verb must be one of {', '.join(PLAN_VERBS)}, got {verb!r}"
     cfg = _cfg(root)
     try:
-        row = planmod.transition(cfg, verb, id_)
+        row = _plan(root).transition(cfg, verb, id_)
     except ValueError as e:
         return f"error: {e}"
     return f"plan {row['id']}: status → {row['status']}"

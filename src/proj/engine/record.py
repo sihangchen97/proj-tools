@@ -76,7 +76,7 @@ class Record:
             db.close()
             raise ValueError(f"{self.record_type} {id_} not found")
         (from_s, to_s) = self.verbs[verb]
-        if row["status"] != from_s:
+        if from_s != "Any" and row["status"] != from_s:
             db.close()
             raise ValueError(f"{self.record_type} {id_} is {row['status']!r}, "
                              f"{verb} requires {from_s!r}")

@@ -12,7 +12,7 @@ from proj.core.config import ProjConfig
 from proj.core.templates import ChangelogSpec, RecordTypeSpec, load_changelog_spec
 from proj.engine.store import checkboxes
 
-SYM = {"Not Started": "○", "In Progress": "◐", "Done": "✓"}
+SYM = {"Draft": "○", "In Progress": "◐", "Done": "✓"}
 
 
 @dataclass
@@ -55,9 +55,6 @@ def _sub_task_lines(steps: str) -> list[str]:
         else:
             out.append(f"    - {'✓' if checked else '○'} {line}")
     return out
-
-
-# (view rendering moved to the record_type's Record.render_view, e.g. record_types.plan.Plan)
 
 
 def task_tree_lines(rows: list[dict], task_spec, parent_key: str,

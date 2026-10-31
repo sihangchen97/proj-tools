@@ -41,11 +41,11 @@ class Task(Record):
     # ---- engine hooks ---------------------------------------------------------
     def on_ingest(self, db, row: dict, sections: dict, notes: list[str],
                   source_name: str) -> None:
-        # first checkbox tick auto-promotes Not Started → In Progress
-        if row["status"] == "Not Started" and rec.has_checked(sections.get("steps", "")):
+        # first checkbox tick auto-promotes Draft → In Progress
+        if row["status"] == "Draft" and rec.has_checked(sections.get("steps", "")):
             db.set(self.spec, row["uuid"], status="In Progress")
-            db.add_log(self.record_type, row["uuid"], "status Not Started → In Progress", "Changed")
-            notes.append(f"{source_name}: auto status Not Started → In Progress")
+            db.add_log(self.record_type, row["uuid"], "status Draft → In Progress", "Changed")
+            notes.append(f"{source_name}: auto status Draft → In Progress")
 
     def check_rows(self, rows: list[dict], db, reg: dict) -> list[str]:
         problems: list[str] = []

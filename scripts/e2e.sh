@@ -61,7 +61,7 @@ expect_ok "decision toc"               "Wrote" -- $PROJ decision toc
 grep -qF "0003" docs/decisions/_TOC.md && ok "toc lists 0003" || fail "toc missing 0003"
 grep -qF "| 0001 | ✅ |" docs/decisions/_TOC.md \
   && ok "toc status emoji-only" || fail "toc status not emoji-only"
-grep -qF "* 🌱 Proposed · ✅ Accepted · 📛 Deprecated" \
+grep -qF "* ✏️ Draft · 🌱 Proposed · ✅ Accepted · 📛 Deprecated" \
   docs/decisions/_TOC.md && ok "toc one-line legend" || fail "toc missing one-line legend"
 expect_ok "decision graph"             "D0002 --> D0003" -- $PROJ decision graph
 expect_fail "bogus status rejected"    -- $PROJ status decision 0002 Bogus
@@ -80,7 +80,7 @@ TASK_FILE=$(ls tasks/A-*.md)
 head -n "$(grep -n '^## Steps' "$TASK_FILE" | cut -d: -f1)" "$TASK_FILE" > .steps.tmp
 printf '\n- [x] first step\n- [ ] second step\n' >> .steps.tmp
 mv .steps.tmp "$TASK_FILE"
-expect_ok "sync auto-promotes task"    "auto status Not Started → In Progress" -- $PROJ sync
+expect_ok "sync auto-promotes task"    "auto status Draft → In Progress" -- $PROJ sync
 expect_ok "task list: In Progress"     "In Progress" -- $PROJ task list
 $PROJ task list | grep -qF "(parent 1)" && ok "task list shows parent" || fail "task list missing (parent 1)"
 expect_fail "done with unchecked step" -- $PROJ task done A

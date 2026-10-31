@@ -16,8 +16,11 @@ from proj.engine.record import record_for
 from proj.hooks import install as hooks_install
 from proj.record_types import changelog as cl
 from proj.record_types import decision as dec
-from proj.record_types import plan as planmod
 from proj.record_types import task as taskmod
+
+# plan has no Record subclass: its state machine comes straight from the template yaml
+def _plan(cfg):
+    return record_for("plan", rec.load_registry(cfg.root))
 
 app = typer.Typer(
     help="Project governance: decisions, tasks, plans, changelog, tech debt, "
@@ -299,6 +302,20 @@ def status(record_type: str, id_: str, new_status: str):
 
 
 @app.command()
+def verb(record_type: str, name: str, id_: str):
+    """Run a template verb (a state-machine step; `from: Any` = from any status)."""
+    cfg = _cfg()
+    reg = rec.load_registry(cfg.root)
+    if record_type not in reg:
+        _fail(f"unknown record_type {record_type!r}")
+    try:
+        row = record_for(record_type, reg).transition(cfg, name, id_)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(f"{record_type} {row['id']}: status → {row['status']}")
+
+
+@app.command()
 def log(record_type: str, id_: str, summary: str):
     """Append a changelog entry: "Category: one-line summary" (or plain text)."""
     cfg = _cfg()
@@ -421,7 +438,7 @@ def plan_new(title: str, summary: str | None = typer.Option(None, "--summary"),
     """Create a plan (Draft)."""
     cfg = _cfg()
     try:
-        _, p = planmod.new(cfg, title, summary or "")
+        _, p = _plan(cfg).new(cfg, title, summary or "")
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"Created {p.relative_to(cfg.root)}")
@@ -443,7 +460,7 @@ for _verb, _desc in [
             """desc"""
             cfg = _cfg()
             try:
-                row = planmod.transition(cfg, verb, id_)
+                row = _plan(cfg).transition(cfg, verb, id_)
             except ValueError as e:
                 _fail(str(e))
             typer.echo(f"plan {row['id']}: status → {row['status']}")
@@ -454,7 +471,7 @@ for _verb, _desc in [
 def plan_list(status: str | None = typer.Option(None, "--status")):
     """List plans."""
     cfg = _cfg()
-    for r in planmod.list_plans(cfg, status):
+    for r in _plan(cfg).list(cfg, status):
         typer.echo(f"{r['id']:<8} {r['status']:<16} {r['title']}")
 
 

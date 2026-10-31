@@ -51,12 +51,6 @@ class TemplateSection:
 
 
 @dataclass
-class TemplateDerived:
-    name: str           # managed line label, e.g. "Started"
-    to_status: str      # first changelog entry with this `to` provides the date
-
-
-@dataclass
 class RecordTypeSpec:
     record_type: str
     dir: str
@@ -66,7 +60,7 @@ class RecordTypeSpec:
     verbs: dict[str, tuple[str, str]] = field(default_factory=dict)  # verb -> (from, to)
     fields: list[TemplateField] = field(default_factory=list)
     sections: list[TemplateSection] = field(default_factory=list)
-    derived: list[TemplateDerived] = field(default_factory=list)
+    done_status: list[str] = field(default_factory=list)  # statuses that count as "done"
 
     @property
     def field_names(self) -> list[str]:
@@ -117,7 +111,7 @@ def parse_template(text: str) -> RecordTypeSpec:
     verbs: dict[str, tuple[str, str]] = {}
     for verb, v in data.get("verbs", {}).items():
         verbs[str(verb)] = (str(v["from"]), str(v["to"]))
-    return RecordTypeSpec(
+    spec = RecordTypeSpec(
         record_type=data["record_type"],
         dir=data.get("dir", f"docs/{data['record_type']}s").rstrip("/"),
         numbered=numbered,
@@ -127,8 +121,13 @@ def parse_template(text: str) -> RecordTypeSpec:
         fields=[TemplateField(f["name"], f.get("hint", "")) for f in data.get("fields", [])],
         sections=[TemplateSection(s["name"], s.get("hint", ""), str(s.get("type", "text")))
                   for s in data.get("sections", [])],
-        derived=[TemplateDerived(d["name"], d["to-status"]) for d in data.get("derived", [])],
+        done_status=[str(s) for s in data.get("done-status", [])],
     )
+    unknown = [s for s in spec.done_status if s not in spec.status_allowed]
+    if unknown:
+        raise ValueError(f"template {spec.record_type!r}: done-status "
+                         f"{unknown} not in status-allowed")
+    return spec
 
 
 def bundled_dir() -> Path:

@@ -126,6 +126,15 @@ def _link_value(value: str, db: dbmod.Db, registry: dict) -> str:
     return ", ".join(out) if out else value
 
 
+def _done_date(spec: RecordTypeSpec, row: dict, db: dbmod.Db) -> str:
+    """The earliest date this record first entered ANY done-status ('—' until
+    then). Entering one done-status counts even if it later left it."""
+    dates = [db.first_date_to(spec.record_type, row["uuid"], s)
+             for s in spec.done_status]
+    dates = [d for d in dates if d]
+    return min(dates) if dates else "—"
+
+
 def _fm_block(spec: RecordTypeSpec, row: dict, fm: dict) -> str:
     """Tool-owned metadata block: a blockquote of `> **key:** value` lines (a
     gray sidebar, NOT a front matter, so md frontmatter validators leave it
@@ -137,11 +146,13 @@ def _fm_block(spec: RecordTypeSpec, row: dict, fm: dict) -> str:
 def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
                   registry: dict[str, RecordTypeSpec] | None = None) -> str:
     # tool-owned head: uuid marker comment (line 1) + blockquote metadata
-    # (status/fields/subtask/derived, id refs as links); the one-sentence
-    # summary lives BELOW the box (between the heading and the changelog table).
+    # (fixed status/created/done rows + fields + subtask, id refs as links);
+    # the one-sentence summary lives BELOW the box.
     reg = registry if registry is not None else load_registry(Path(db.path).parent)
     fm = {
         "status": spec.status_display(row["status"]),
+        "created": row.get("created") or "—",
+        "done": _done_date(spec, row, db),
     }
     for f in spec.fields:
         v = row.get(f.name) or ""
@@ -154,10 +165,6 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
                 and r["id"] != row["id"]]
         if kids:
             fm["subtask"] = _link_value(", ".join(k["id"] for k in kids), db, reg)
-    for d in spec.derived:
-        # derived rows always show (placeholder '—' until the event happened)
-        v = db.first_date_to(spec.record_type, row["uuid"], d.to_status)
-        fm[d.name.lower()] = v or "—"
     # marker comment (line 1, invisible) → title → metadata block → summary
     lines = [f"<!-- proj:{spec.record_type} {row['uuid']} -->",
              f"# {_display_id(spec, row['id'])}. {row['title']}", "",

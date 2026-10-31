@@ -233,7 +233,7 @@ def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]
             "verbs": {v: {"from": f, "to": t} for v, (f, t) in s.verbs.items()},
             "fields": [asdict(f) for f in s.fields],
             "sections": [asdict(x) for x in s.sections],
-            "derived": [asdict(d) for d in s.derived],
+            "done_status": list(s.done_status),
         } for s in specs.values()},
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
@@ -249,14 +249,7 @@ def read_lock(root: Path) -> dict | None:
 
 
 def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
-    from proj.core.templates import TemplateDerived, TemplateField, TemplateSection
-
-    def _section(s: dict) -> TemplateSection:
-        # lock migration: old `view` key ("" or a renderer name) → new `kind`
-        data = {k: v for k, v in s.items() if k != "view"}
-        if s.get("view") and "kind" not in data:
-            data["kind"] = "task"
-        return TemplateSection(**data)
+    from proj.core.templates import TemplateField, TemplateSection
 
     out: dict[str, RecordTypeSpec] = {}
     for record_type, d in lock.get("record_types", {}).items():
@@ -268,7 +261,7 @@ def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
             status_emoji=dict(d.get("status_emoji", {})),
             verbs={v: (x["from"], x["to"]) for v, x in d.get("verbs", {}).items()},
             fields=[TemplateField(**f) for f in d.get("fields", [])],
-            sections=[_section(s) for s in d.get("sections", [])],
-            derived=[TemplateDerived(**x) for x in d.get("derived", [])],
+            sections=[TemplateSection(**s) for s in d.get("sections", [])],
+            done_status=list(d.get("done_status", [])),
         )
     return out

@@ -80,8 +80,9 @@ def test_head_blockquote_shape(proj):
     lines = text.splitlines()
     assert lines[0] == f"<!-- proj:task {row['uuid']} -->"
     assert lines[1] == "# A. F1"  # title directly below the marker (tasks use letters)
-    assert "> **status:** 🕐 Not Started  " in lines  # blockquote below the title
-    assert "> **started:** —  " in lines and "> **done:** —  " in lines
+    assert "> **status:** ✏️ Draft  " in lines  # blockquote below the title (Draft default)
+    assert any(line.startswith("> **created:**") for line in lines)  # fixed three rows
+    assert "> **done:** —  " in lines
     # summary lives BELOW the head (heading → summary → changelog)
     assert "Summary: s" in lines
     assert lines.index(f"<!-- proj:task {row['uuid']} -->") < lines.index("Summary: s")
@@ -90,5 +91,5 @@ def test_head_blockquote_shape(proj):
     # round-trip: the marker and managed values survive parse
     (mk, u), _t, _s = rec.parse_record(text)
     assert (mk, u) == ("task", row["uuid"])
-    assert rec.md_status(text) == "Not Started"
+    assert rec.md_status(text) == "Draft"
     assert rec.md_summary(text) == "s"
