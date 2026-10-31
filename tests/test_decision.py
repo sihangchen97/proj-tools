@@ -83,19 +83,24 @@ def test_supersede_multi_and_append(proj):
     db.close()
 
 
-def test_check_flags_dangling_and_cycle(proj):
+def test_fk_rejects_dangling_edge(proj):
+    """D8: the relations FK references records(id) — an edge to a nonexistent
+    id is refused at the DB layer (dangling refs die at the write-side guards)."""
+    import sqlite3
+    dec_obj(proj).new(proj, "B")  # 0002
+    db = rec.open_db(proj)
+    with pytest.raises(sqlite3.IntegrityError):
+        db.add_relation("DEC-0002", "DEC-0099", "supersede")
+    db.close()
+
+
+def test_check_flags_supersede_cycle(proj):
     from proj import check as checkmod
     dec_obj(proj).new(proj, "B")  # 0002
     db = rec.open_db(proj)
-    # dangling forward ref: an edge whose target does not exist
-    db.add_relation("DEC-0002", "decision", "DEC-0099", "decision", "supersede")
-    db.close()
-    problems = checkmod.check(proj)
-    assert any("supersedes DEC-0099" in p for p in problems)
-    # manual cycle: 0002 → 0001 and 0001 → 0002
-    db = rec.open_db(proj)
-    db.add_relation("DEC-0002", "decision", "DEC-0001", "decision", "supersede")
-    db.add_relation("DEC-0001", "decision", "DEC-0002", "decision", "supersede")
+    # manual cycle: 0002 → 0001 and 0001 → 0002 (both ids exist → FK passes)
+    db.add_relation("DEC-0002", "DEC-0001", "supersede")
+    db.add_relation("DEC-0001", "DEC-0002", "supersede")
     db.close()
     problems = checkmod.check(proj)
     assert any("cycle" in p for p in problems)

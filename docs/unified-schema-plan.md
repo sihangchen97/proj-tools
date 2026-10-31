@@ -1,7 +1,7 @@
 # Plan: 统一 record/changelog 表 + parent 入 relations + template 去 features
 
 > 状态：**已完成**（2026-11-01；本仓库是 proj 工具的 dev 仓库，非 proj 项目，不在根目录 dogfood）
-> 实施记录：统一 `records`（`one_sentence`/`commit` 通用列）+ 单 `record_changelog`（`from_status`/`to_status`/`comment`）+ parent 入 relations（source=父）+ supersede 通用化（D1/D7）+ `contain_task` 替代 `features:` + `PROJ_LOGS` env + head 需求 8（关系链接文本 = 目标文件名**不带 .md 后缀**、路径相对记录自身文件；任务树留在 contain_task 记录的可编辑 `## Task List` section）+ `SCHEMA_VERSION=2`（无 migrate）。验证：`pixi run test` 63 passed；`pixi run e2e` 69 断言全绿（已适配需求 8 head 新格式 + status 图例 + PROJ_LOGS 三态）。
+> 实施记录：统一 `records`（`one_sentence`/`commit` 通用列）+ 单 `record_changelog`（`from_status`/`to_status`/`comment`）+ parent 入 relations（source=父）+ supersede 通用化（D1/D7）+ `contain_task` 替代 `features:` + `PROJ_LOGS` env + head 需求 8（关系链接文本 = 目标文件名**不带 .md 后缀**、路径相对记录自身文件；任务树留在 contain_task 记录的可编辑 `## Task List` section）+ `SCHEMA_VERSION=3`（无 migrate）。追加实施 D8（`relations` 去 `source_type`/`target_type` 列——type 从 id 前缀解析；`source`/`target` 加 FK `REFERENCES records(id) ON DELETE CASCADE`，dangling 边在 DB 层被拒、删记录自动删边，`db.delete` 手动清边代码已删）+ D9（`numbered` 必须 int>0，`parse_template` 校验，`next_id`/`max_int_id` 的 0/letter 分支与 `_letter_value`/`_value_letter` 死代码已删）。验证：`pixi run test` 65 passed（含 FK 拒 dangling、supersede 环、numbered 校验 3 个新测）；`pixi run e2e` 69 断言全绿（已适配需求 8 head 新格式 + status 图例 + PROJ_LOGS 三态）。
 > **实施后修正（待改）**：① `PROJ_LOGS` 改从**项目 `.env`（当前工作目录）**读（D6 修订：proj 之后管理自己，项目级配置走 `.env`，沿用 CONTRIBUTING"从环境读、只提交 .env.example"约定），OS 环境变量作回退；② `record_changelog` 存 **UTC 时间戳**，渲染才只显示日期（D10）。
 > 本文件是**实施规划**，给实施 agent 照做。规划人负责本文件，实施负责改代码。
 > **dev 阶段，不做数据迁移、不兼容历史 `.proj.sqlite`**——直接换 schema 重建。

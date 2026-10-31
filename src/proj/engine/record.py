@@ -71,20 +71,18 @@ class Record:
                                      f"not a {self.record_type} — same type required")
                 if old["id"] == row["id"]:
                     raise ValueError(f"{self.record_type} cannot supersede itself")
-                db.add_relation(row["id"], self.record_type, old["id"],
-                                self.record_type, "supersede", pos=i)
+                db.add_relation(row["id"], old["id"], "supersede", pos=i)
                 db.add_log(old["id"], f"superseded by {row['id']}", "Changed")
             if supersede:
                 db.add_log(row["id"], "supersedes " + ", ".join(supersede), "Added")
             for ref in related:
-                spec, target = rec.ref_record(cfg, db, ref)
+                _spec, target = rec.ref_record(cfg, db, ref)
                 if target is None:
                     raise ValueError(f"related {ref!r} does not match any record "
                                      f"\u2014 use the canonical id (e.g. PLN-0001)")
                 if target["id"] == row["id"]:
                     raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
-                db.add_relation(row["id"], self.record_type, target["id"],
-                                spec.record_type, "related")
+                db.add_relation(row["id"], target["id"], "related")
             if related:
                 db.add_log(row["id"], "related: " + ", ".join(related), "Added")
         finally:
@@ -103,14 +101,13 @@ class Record:
             if row is None:
                 raise ValueError(f"{self.record_type} {id_} not found")
             for ref in refs:
-                spec, target = rec.ref_record(cfg, db, ref)
+                _spec, target = rec.ref_record(cfg, db, ref)
                 if target is None:
                     raise ValueError(f"related {ref!r} does not match any record "
                                      "\u2014 use the canonical id (e.g. PLN-0001)")
                 if target["id"] == row["id"]:
                     raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
-                db.add_relation(row["id"], self.record_type, target["id"],
-                                spec.record_type, "related")
+                db.add_relation(row["id"], target["id"], "related")
             db.add_log(row["id"], "related: " + ", ".join(refs), "Added")
         finally:
             db.close()

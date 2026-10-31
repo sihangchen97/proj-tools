@@ -739,8 +739,7 @@ def info(cfg: ProjConfig) -> dict:
         by_status: dict[str, int] = {}
         for r in rows:
             by_status[r["status"]] = by_status.get(r["status"], 0) + 1
-        num = ("letter" if spec.numbered == "letter"
-               else "NNNN" if isinstance(spec.numbered, int) else "none")
+        num = f"{spec.numbered}"  # D9: numbered is always an int
         record_types[record_type] = {
             "count": len(rows), "dir": spec.dir, "numbered": num,
             "statuses": by_status,

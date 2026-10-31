@@ -18,7 +18,7 @@ proj init [--profile <PROFILES…>]
 proj sync [<FILES>]
 proj adopt [<FILES>]
 proj update
-proj render [--record-type <RECORD_TYPE>] [--id- <ID_>]
+proj render [--record-type <RECORD_TYPE>] [--id <ID>]
 proj check
 proj info [--json]
 proj docs
@@ -40,11 +40,12 @@ proj docs
 ```
 proj task new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj task list [--status <STATUS>]
-proj task show <ID_> [--history]
-proj task update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj task start <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj task done <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj task fail <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj task show <ID> [--history]
+proj task update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj task render [id <ID>]
+proj task start <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj task done <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj task fail <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 - 状态：`Draft ✏️ → In Progress 🚧 → Done ✅ / Failed ❌`（new 默认 Draft）。
@@ -63,13 +64,14 @@ proj task fail <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c
 ```
 proj debt new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj debt list [--status <STATUS>]
-proj debt show <ID_> [--history]
-proj debt update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj debt draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj debt open <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj debt progress <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj debt repay <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj debt waive <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj debt show <ID> [--history]
+proj debt update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj debt render [id <ID>]
+proj debt draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj debt open <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj debt progress <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj debt repay <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj debt waive <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 ## decision
@@ -77,13 +79,14 @@ proj debt waive <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -
 ```
 proj decision new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj decision list [--status <STATUS>]
-proj decision show <ID_> [--history]
-proj decision update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj decision draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj decision propose <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj decision accept <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj decision reject <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj decision deprecate <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj decision show <ID> [--history]
+proj decision update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj decision render [id <ID>]
+proj decision draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj decision propose <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj decision accept <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj decision reject <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj decision deprecate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 - 状态：`Proposed 🌱 → Accepted ✅ → Deprecated 📛`。
@@ -96,13 +99,14 @@ proj decision deprecate <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--c
 ```
 proj experiment new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj experiment list [--status <STATUS>]
-proj experiment show <ID_> [--history]
-proj experiment update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj experiment draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj experiment propose <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj experiment run <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj experiment close <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj experiment abandon <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj experiment show <ID> [--history]
+proj experiment update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj experiment render [id <ID>]
+proj experiment draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj experiment propose <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj experiment run <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj experiment close <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj experiment abandon <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 ## incident
@@ -110,13 +114,14 @@ proj experiment abandon <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--c
 ```
 proj incident new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj incident list [--status <STATUS>]
-proj incident show <ID_> [--history]
-proj incident update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj incident draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj incident open <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj incident mitigate <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj incident close <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj incident reopen <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj incident show <ID> [--history]
+proj incident update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj incident render [id <ID>]
+proj incident draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj incident open <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj incident mitigate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj incident close <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj incident reopen <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 ## plan
@@ -124,14 +129,15 @@ proj incident reopen <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comm
 ```
 proj plan new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj plan list [--status <STATUS>]
-proj plan show <ID_> [--history]
-proj plan update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj plan activate <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj plan resume <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj plan review <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj plan shelve <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj plan archive <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
-proj plan freeze <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj plan show <ID> [--history]
+proj plan update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj plan render [id <ID>]
+proj plan activate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj plan resume <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj plan review <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj plan shelve <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj plan archive <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj plan freeze <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 ```

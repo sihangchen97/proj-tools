@@ -36,7 +36,7 @@ def _param_token(p: click.Parameter) -> str:
     short = next((f for f in p.opts if len(f) == 2), "")
     opt = " ".join(x for x in (flags, short) if x)
     if not getattr(p, "is_flag", False):
-        name = p.name.upper()
+        name = p.name.rstrip("_").upper()  # `id_` param → `<ID>` (Python-name leak)
         arg = f"<{name}…>" if getattr(p, "multiple", False) else f"<{name}>"
         val = f"{opt} {arg}".strip()
         return val if p.required else f"[{val}]"

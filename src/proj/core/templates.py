@@ -4,7 +4,8 @@ A profile file declares a record_type's table schema and behavior:
 
     record_type: decision
     dir: docs/decisions
-    numbered: 4          # 4 = NNNN, "letter" = A..Z/AA.., 0 = none
+    numbered: 4          # 4 = NNNN (digits width); must be an int > 0 (D9:
+    # the id prefix {code}-{digits} is how relations rows resolve a record's type)
     code: DEC            # 3-letter record code; used in refs (DEC-0001) and the graph
     verbs:               # one verb per status: name -> {from, to}; from: Any = any state
       accept: {from: Any, to: Accepted}
@@ -55,7 +56,7 @@ class TemplateSection:
 class RecordTypeSpec:
     record_type: str
     dir: str
-    numbered: int | str = 4   # int (NNNN width) | "letter" | 0 (none)
+    numbered: int = 4   # int (NNNN width), must be > 0 (D9)
     status_allowed: list[str] = field(default_factory=list)
     status_emoji: dict[str, str] = field(default_factory=dict)  # status name -> emoji
     verbs: dict[str, tuple[object, str]] = field(default_factory=dict)  # verb -> (from, to)
@@ -92,9 +93,9 @@ def parse_template(text: str) -> RecordTypeSpec:
     if not isinstance(data, dict) or "record_type" not in data:
         raise ValueError(f"template missing 'record_type' key: {data!r:.80}")
     numbered = data.get("numbered", 4)
-    if numbered != "letter" and not isinstance(numbered, int):
+    if not isinstance(numbered, int):
         raise ValueError(
-            f"record_type {data['record_type']!r}: numbered must be int (width) or 'letter'")
+            f"record_type {data['record_type']!r}: numbered must be an int (id width)")
     # status entries: plain string, or {name: X, emoji: "🟢"} (emoji optional);
     # {name: X, emoji: ""} explicitly means "no emoji"; per-status remarks belong
     # in YAML comments, not in the data
@@ -140,11 +141,12 @@ def parse_template(text: str) -> RecordTypeSpec:
     if unknown:
         msg = f"template {spec.record_type!r}: status done {unknown} not in status-allowed"
         raise ValueError(msg)
-    # id layout: {code}{N digits} = 7 chars total (DEC0001, DEB0001, T000001)
-    if spec.numbered == "letter":
-        raise ValueError(f"template {spec.record_type!r}: numbered must be an int, not 'letter'")
+    # id layout: {code}-{N digits} = 7 chars total (DEC-0001, DEB-0001, T-000001)
+    # D9: numbered must be an int > 0 — every record id then carries a
+    # resolvable {code}-{digits} prefix (relations FK rows resolve type from it)
     if not (isinstance(spec.numbered, int) and spec.numbered > 0):
-        raise ValueError(f"template {spec.record_type!r}: numbered must be an int (id width)")
+        raise ValueError(
+            f"template {spec.record_type!r}: numbered must be an int > 0 (id width)")
     if not spec.code.isupper() or not spec.code.isalpha() or not (1 <= len(spec.code) <= 3):
         raise ValueError(
             f"template {spec.record_type!r}: code must be 1-3 uppercase letters "

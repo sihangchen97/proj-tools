@@ -81,7 +81,7 @@ def test_show_versions(proj):
 
 
 def test_incident_and_experiment_kinds(proj):
-    # all record_types are 4-digit (or letter) numbered through the same engine
+    # all record_types are digit-numbered (int > 0, D9) through the same engine
     row, _ = rec.new_record(proj, "incident", "DB down")
     assert row["id"] == "INC-0001"  # incident is code + 4-digit
     row2, _ = rec.new_record(proj, "experiment", "lr sweep")

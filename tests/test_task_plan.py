@@ -1,4 +1,4 @@
-"""v3 task/plan: letter ids, checkboxes, auto-promote, plan state machine,
+"""v3 task/plan: digit ids, checkboxes, auto-promote, plan state machine,
 task visibility in rendered views."""
 import pytest
 
@@ -24,7 +24,7 @@ def _write_task_steps(proj, task_id, steps: str) -> None:
     p.write_text(head + steps)
 
 
-def test_letter_ids_increment(proj):
+def test_digit_ids_increment(proj):
     r1, _ = rec.new_record(proj, "task", "T1")
     r2, _ = rec.new_record(proj, "task", "T2")
     r3, _ = rec.new_record(proj, "task", "T3")
@@ -240,20 +240,21 @@ def test_task_rejects_ghost_parent_ref(proj):
     taskmod.new(proj, "T2")
 
 
-def test_check_flags_dangling_parent(proj):
+def test_fk_rejects_dangling_parent(proj):
+    """D8: a parent edge to a nonexistent record is refused by the FK (the
+    write-side guard rejects it before ever reaching the DB)."""
+    import sqlite3
     _plan(proj).new(proj, "P1")
     row, _ = rec.new_record(proj, "task", "T1")
     db = rec.open_db(proj)
-    db.add_relation("PLN-0099", "plan", row["id"], "task", "parent")  # dangling
+    with pytest.raises(sqlite3.IntegrityError):
+        db.add_relation("PLN-0099", row["id"], "parent")
     db.close()
-    problems = checkmod.check(proj)
-    assert any("parent PLN-0099 does not exist" in p for p in problems)
-    # healthy refs pass once the dangling one is repointed
+    # a valid parent edge passes
     db = rec.open_db(proj)
-    db.remove_relation("PLN-0099", "plan", row["id"], "parent")
-    db.add_relation("PLN-0001", "plan", row["id"], "task", "parent")
+    db.add_relation("PLN-0001", row["id"], "parent")
     db.close()
-    assert not any("does not exist" in p for p in checkmod.check(proj))
+    assert checkmod.check(proj) == []
 
 
 def test_done_not_blocked_by_subtasks(proj):

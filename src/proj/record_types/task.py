@@ -21,9 +21,9 @@ class Task(Record):
             canonical = rec.canonical_id(cfg, parent)
             db = rec.open_db(cfg)
             try:
-                # kind=parent: source=parent, target=this task (single parent)
-                db.add_relation(canonical, self._parent_type(cfg, db, canonical),
-                                row["id"], self.record_type, "parent")
+                # kind=parent: source=parent, target=this task (single parent);
+                # the edge's FK requires both ids to exist (D8)
+                db.add_relation(canonical, row["id"], "parent")
                 db.add_log(row["id"], f"parent: {canonical}", "Added")
             finally:
                 db.close()
@@ -93,12 +93,6 @@ class Task(Record):
             f"parent {parent!r} not found in any record_type "
             f"({', '.join(reg)}) — create it first or drop --parent")
 
-    def _parent_type(self, cfg: ProjConfig, db, parent_id: str) -> str:
-        reg = rec.load_registry(cfg.root)
-        for spec in reg.values():
-            if rec.by_id(cfg, spec, db, parent_id) is not None:
-                return spec.record_type
-        raise ValueError(f"parent {parent_id!r} not found in any record_type")
 
 
 # ---- module-level delegations (stable call shape for cli/tests) --------------

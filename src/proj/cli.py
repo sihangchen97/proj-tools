@@ -285,6 +285,11 @@ def _build_record_group(name: str):
         """Update a record's title / summary (+ optional changelog entry)."""
         _dyn_update(name, id_, title, summary, comment)
 
+    @sub.command()
+    def render(id: str | None = typer.Argument(None, help="record id (bare number or full); omitted = all of this type")):
+        """DB → md for this type (no md input)."""
+        _render_type(_cfg(), name, id)
+
     if spec is not None:
         for verb in spec.verbs:
             def _make(v=verb):
@@ -359,9 +364,30 @@ def update():
     typer.echo("OK — updated")
 
 
+def _render_type(cfg: ProjConfig, name: str, id_: str | None) -> None:
+    """DB → md for one record (or all of a type). Shared by `proj render --record-type`
+    and the per-type `proj <rt> render` (a bare number or full id, via by_id)."""
+    spec = rec.load_registry(cfg.root)[name]
+    db = rec.open_db(cfg)
+    if id_ is None:
+        rows = db.all(spec)
+    else:
+        row = rec.by_id(cfg, spec, db, id_)
+        if row is None:
+            db.close()
+            _fail(f"{name} {id_} not found")
+        rows = [row]
+    for row in rows:
+        p = rec.file_path(cfg, spec, row)
+        p.write_text(rec.render_record(spec, row, db), encoding="utf-8")
+        typer.echo(f"Rendered {p.relative_to(cfg.root)}")
+    db.close()
+
+
 @app.command()
-def render(record_type: str | None = None, id_: str | None = None):
-    """DB → md (no md input). No args = every record + views."""
+def render(record_type: str | None = typer.Option(None, "--record-type"),
+           id: str | None = typer.Option(None, "--id")):
+    """DB → md (no md input). No args = every record + views; else one type/record."""
     cfg = _cfg()
     try:
         drift = rec.md_drift(cfg)
@@ -373,21 +399,7 @@ def render(record_type: str | None = None, id_: str | None = None):
             written = rec.render_all(cfg)
             typer.echo(f"Rendered {len(written)} file(s)")
             return
-        spec = rec.load_registry(cfg.root)[record_type]
-        db = rec.open_db(cfg)
-        if id_ is None:
-            rows = db.all(spec)
-        else:
-            row = rec.by_id(cfg, spec, db, id_)
-            if row is None:
-                db.close()
-                _fail(f"{record_type} {id_} not found")
-            rows = [row]
-        for row in rows:
-            p = rec.file_path(cfg, spec, row)
-            p.write_text(rec.render_record(spec, row, db), encoding="utf-8")
-            typer.echo(f"Rendered {p.relative_to(cfg.root)}")
-        db.close()
+        _render_type(cfg, record_type, id)
     except KeyError as e:
         _fail(f"unknown record_type {e.args[0]!r}")
 

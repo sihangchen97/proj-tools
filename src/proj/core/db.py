@@ -1,6 +1,6 @@
 """SQLite core (.proj.sqlite) — the single source of truth (v3).
 
-Unified tables (schema v2, no migration — dev phase, rebuild .proj.sqlite):
+Unified tables (schema v3, no migration — dev phase, rebuild .proj.sqlite):
 
     records(id PK, type, title, status, one_sentence, commit, created, sections JSON)
     record_changelog(id PK, record_id, date, category, comment, from_status, to_status)
@@ -29,7 +29,7 @@ import yaml
 
 from proj.core.templates import RecordTypeSpec
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LOCK_FILE = ".proj.lock"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
@@ -49,10 +49,15 @@ class Db:
         # inter-record relations: one row per edge. kind "supersede": same-type,
         # ordered (pos); "related": any type, unordered; "parent": source=parent,
         # target=child task (any parent type), single parent enforced in the app.
+        # D8: no type columns — the record type resolves from the id prefix
+        # (registry code→type); FK CASCADE deletes edges with their record.
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS relations "
-            "(id INTEGER PRIMARY KEY, source TEXT NOT NULL, source_type TEXT NOT NULL, "
-            "target TEXT NOT NULL, target_type TEXT NOT NULL, kind TEXT NOT NULL, "
+            "(id INTEGER PRIMARY KEY, source TEXT NOT NULL "
+            "REFERENCES records(id) ON DELETE CASCADE, "
+            "target TEXT NOT NULL "
+            "REFERENCES records(id) ON DELETE CASCADE, "
+            "kind TEXT NOT NULL, "
             "pos INTEGER NOT NULL DEFAULT 0, UNIQUE(source, target, kind))")
         # unified record storage: one table per type was replaced by a type column
         self.conn.execute(
@@ -109,15 +114,12 @@ class Db:
 
     def delete(self, spec: RecordTypeSpec, id_: str) -> None:
         self.conn.execute("DELETE FROM record_changelog WHERE record_id = ?", (id_,))
-        self.conn.execute("DELETE FROM relations WHERE source = ?", (id_,))
-        self.conn.execute("DELETE FROM relations WHERE target = ?", (id_,))
+        # relations edges cascade with the record (D8 FK), no manual cleanup
         self.conn.execute("DELETE FROM records WHERE type=? AND id=?",
                           (spec.record_type, id_))
         self.conn.commit()
 
     def max_int_id(self, spec: RecordTypeSpec) -> int:
-        if spec.numbered == 0:
-            return 0
         row = self.conn.execute(
             "SELECT id FROM records WHERE type=?", (spec.record_type,)).fetchall()
         best = 0
@@ -176,58 +178,59 @@ class Db:
 
     # ---- relations (supersede + related) -----------------------------------
 
-    def add_relation(self, source: str, source_type: str, target: str,
-                     target_type: str, kind: str, pos: int = 0) -> None:
+    def add_relation(self, source: str, target: str, kind: str, pos: int = 0) -> None:
         """One edge. kind "supersede": same-type, ordered by pos, source supersedes target.
-        kind "related": any type, unordered (pos ignored)."""
+        kind "related": any type, unordered (pos ignored). kind "parent":
+        source=parent, target=child task. FK: both ids must be existing records
+        (D8) — write-side guards keep dangling refs out at the CLI/MCP surface."""
         self.conn.execute(
-            "INSERT OR REPLACE INTO relations "
-            "(source, source_type, target, target_type, kind, pos) VALUES (?,?,?,?,?,?)",
-            (source, source_type, target, target_type, kind, pos))
+            "INSERT OR REPLACE INTO relations (source, target, kind, pos) "
+            "VALUES (?,?,?,?)",
+            (source, target, kind, pos))
         self.conn.commit()
 
-    def remove_relation(self, source: str, source_type: str, target: str, kind: str) -> None:
+    def remove_relation(self, source: str, target: str, kind: str) -> None:
         self.conn.execute(
-            "DELETE FROM relations WHERE source=? AND source_type=? AND target=? AND kind=?",
-            (source, source_type, target, kind))
+            "DELETE FROM relations WHERE source=? AND target=? AND kind=?",
+            (source, target, kind))
         self.conn.commit()
 
     def supersede_of(self, source_id: str) -> list[dict]:
         """Targets this record supersedes (kind=supersede, source=row), in pos order."""
         return [dict(r) for r in self.conn.execute(
-            "SELECT target, target_type, pos FROM relations "
+            "SELECT target, pos FROM relations "
             "WHERE source=? AND kind='supersede' ORDER BY pos, id", (source_id,))]
 
     def superseded_by_of(self, target_id: str) -> list[dict]:
         """Records that supersede this one (kind=supersede, target=row), in pos order."""
         return [dict(r) for r in self.conn.execute(
-            "SELECT source, source_type, pos FROM relations "
+            "SELECT source, pos FROM relations "
             "WHERE target=? AND kind='supersede' ORDER BY pos, id", (target_id,))]
 
-    def related_of(self, record_id: str) -> dict[str, str]:
-        """Other records sharing a related edge (either direction), {other_id: type}.
-        Unordered."""
-        out: dict[str, str] = {}
+    def related_of(self, record_id: str) -> list[str]:
+        """Other records sharing a related edge (either direction). Unordered."""
+        out: list[str] = []
         for r in self.conn.execute(
-                "SELECT target AS other, target_type AS otype FROM relations "
+                "SELECT target AS other FROM relations "
                 "WHERE source=? AND kind='related'", (record_id,)):
-            out[r["other"]] = r["otype"]
+            out.append(r["other"])
         for r in self.conn.execute(
-                "SELECT source AS other, source_type AS otype FROM relations "
+                "SELECT source AS other FROM relations "
                 "WHERE target=? AND kind='related'", (record_id,)):
-            out.setdefault(r["other"], r["otype"])
+            if r["other"] not in out:
+                out.append(r["other"])
         return out
 
     def children_of(self, parent_id: str) -> list[dict]:
         """Direct children this record parents (kind=parent, source=row)."""
         return [dict(r) for r in self.conn.execute(
-            "SELECT target, target_type FROM relations "
+            "SELECT target FROM relations "
             "WHERE source=? AND kind='parent' ORDER BY target", (parent_id,))]
 
     def parent_of(self, child_id: str) -> dict | None:
-        """This task's parent (kind=parent, target=row): {source, source_type} or None."""
+        """This task's parent (kind=parent, target=row): {source} or None."""
         row = self.conn.execute(
-            "SELECT source, source_type FROM relations "
+            "SELECT source FROM relations "
             "WHERE target=? AND kind='parent' LIMIT 1", (child_id,)).fetchone()
         return dict(row) if row else None
 
@@ -235,28 +238,10 @@ class Db:
         self.conn.close()
 
 
-def _letter_value(s: str) -> int:
-    """A=1..Z=26, AA=27... (spreadsheet-style)."""
-    v = 0
-    for ch in s:
-        v = v * 26 + (ord(ch) - ord("A") + 1)
-    return v
-
-
-def _value_letter(n: int) -> str:
-    s = ""
-    while n:
-        n, r = divmod(n - 1, 26)
-        s = chr(ord("A") + r) + s
-    return s
-
-
 def next_id(spec: RecordTypeSpec, db: Db) -> str:
-    if spec.numbered == 0:
-        return ""
+    """D9: numbered is always an int > 0 (validated in parse_template), so every
+    record id is {code}-{n:0w} and the prefix always resolves back to a type."""
     n = db.max_int_id(spec) + 1
-    if spec.numbered == "letter":
-        return _value_letter(n)
     return f"{spec.code}-{n:0{int(spec.numbered)}d}"
 
 

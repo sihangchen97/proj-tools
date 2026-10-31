@@ -1,9 +1,10 @@
 """v3 init: scaffold, lock, seed, adoption, idempotence."""
+import pytest
 import yaml
 
 from proj import scaffold
 from proj.core import db as dbmod
-from proj.core.templates import load_registry
+from proj.core.templates import bundled_dir, load_registry
 from proj.engine import store as rec
 
 
@@ -44,7 +45,7 @@ def test_seed_decision_content(proj):
 def test_lock_written_and_consistent(proj):
     lock = dbmod.read_lock(proj.root)
     assert lock is not None
-    assert lock["schema_version"] == 2
+    assert lock["schema_version"] == 3
     assert "decision" in lock["record_types"]
     # lock spec round-trips to the same schema
     specs = dbmod.specs_from_lock(lock)
@@ -111,6 +112,21 @@ def test_head_blockquote_shape(proj):
     assert "_s_" not in lines2  # no summary line
     assert "<!-- proj:head:end -->" in lines2  # fence end still present
     assert rec.md_summary(text2) == ""
+
+
+def test_numbered_must_be_positive_int(proj):
+    """D9: numbered must be an int > 0 (the id prefix resolves a record's type);
+    0 and non-int are rejected when the registry loads."""
+    import yaml as _yaml
+    d = proj.root / "profiles" / "default"
+    d.mkdir(parents=True)
+    base = (bundled_dir() / "default" / "debt.yaml").read_text()
+    (d / "debt.yaml").write_text(base.replace("numbered: 4", "numbered: 0"))
+    with pytest.raises(ValueError, match="numbered"):
+        load_registry(proj.root)
+    (d / "debt.yaml").write_text(base.replace("numbered: 4", "numbered: 'letter'"))
+    with pytest.raises(ValueError, match="numbered"):
+        load_registry(proj.root)
 
 
 def test_profile_dir_inert_until_selected(proj):
