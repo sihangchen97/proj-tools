@@ -65,6 +65,10 @@ def init(cfg: ProjConfig, profiles: list[str]) -> list[str]:
     add("TASKLIST.md", "")       # rendered from DB on first update
     if "quality" in profiles:
         add(".env.example", texts["scaffold"]["env_example"])
+        # D6: the project .env is committed like the DB (clone = same defaults);
+        # an empty PROJ_LOGS line documents the available config var
+        add(".env", "# project config defaults (D6): OS env > .env > code default\n"
+                    "# PROJ_LOGS=\n")
     add("CONTRIBUTING.md", texts["scaffold"]["contributing"])
 
     db = rec.open_db(cfg)

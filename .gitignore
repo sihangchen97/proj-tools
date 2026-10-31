@@ -24,8 +24,8 @@ config.toml
 config.json
 !config.example.toml
 !config.example.json
-.env
-/.env.example
+# 注意：项目级 .env 与 .env.example 默认提交（D6：随项目提交，clone 即得同一
+# 渲染默认；本地/CI 用 OS env 覆盖）——勿在此排除
 
 # 数据库文件（DB 在 <project>/.proj.sqlite，默认提交；其余 *.sqlite 兜底防误提交）
 *.sqlite
