@@ -59,7 +59,7 @@ expect_ok "decision supersede (-s 3)"  "Created docs/decisions/DEC-0004-" -- $PR
 expect_ok "supersede link rendered"    "> **supersedes:** [DEC-0002-" -- cat docs/decisions/DEC-0003-*.md
 # a status legend line sits below the changelog table (decision has never
 # changed status here — its transition rows are asserted below, on the task)
-grep -qE '^\* ✏️ Draft' docs/decisions/DEC-0003-*.md \
+grep -qE '^_✏️ Draft' docs/decisions/DEC-0003-*.md \
   && ok "status legend below changelog" || fail "status legend line missing"
 expect_ok "decision show"              "DEC-0001" -- $PROJ decision show DEC-0001
 expect_fail "unknown verb rejected"    -- $PROJ decision explode DEC-0002

@@ -233,12 +233,12 @@ def _logs_limit() -> int | None:
 
 
 def _log_change(e: dict, spec: RecordTypeSpec) -> str:
-    """The Change column (D5): a status change renders as an emoji-prefixed
-    '<from> → <to>' leading the optional comment; any other event shows its
-    comment alone (both status columns NULL)."""
+    """The Change column (D5): a status change renders as 'emoji → emoji'
+    (the status name is dropped — the legend below the table maps emojis to
+    names) leading the optional comment; any other event shows its comment
+    alone (both status columns NULL)."""
     if e["from_status"] and e["to_status"]:
-        change = (f"{spec.status_display(e['from_status'])} → "
-                  f"{spec.status_display(e['to_status'])}")
+        change = f"{spec.emojify(e['from_status'])} → {spec.emojify(e['to_status'])}"
         if e["comment"]:
             change += f" {e['comment']}"
         return change

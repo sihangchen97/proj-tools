@@ -24,10 +24,11 @@ class View:
 
 
 def status_legend(spec: RecordTypeSpec) -> list[str]:
-    """One-line legend for below status tables (table views only):
-    '* 🌱 Proposed · ✅ Accepted ...' — every allowed status, so the
-    emoji-only Status column stays decodable."""
-    return ["* " + " · ".join(f"{spec.emojify(s)} {s}" for s in spec.status_allowed)]
+    """One-line legend for below status tables (table views only), rendered
+    *italic* (markdown's 'small print' — like the one-sentence summary line)
+    so the emoji-only Status/Change columns stay decodable:
+    '_🌱 Proposed · ✅ Accepted ..._' — every allowed status."""
+    return ["_" + " · ".join(f"{spec.emojify(s)} {s}" for s in spec.status_allowed) + "_"]
 
 
 def _sub_task_lines(steps: str) -> list[str]:
