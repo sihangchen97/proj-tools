@@ -1,37 +1,9 @@
-# Human-facing text the tool writes into project files — the single place to
-# edit it (scaffold templates, seed content, rendered md heads/footers, view
-# headers). Bundled with the package; a project's own profiles/texts.yaml
-# overrides this file wholesale (like changelog.yaml).
+# Human-facing text the tool writes into project files (seed content; the
+# scaffold templates .env.example / CONTRIBUTING.md / the zoo rule are real
+# files in the repo's templates/ instead). Bundled with the package; a
+# project's own profiles/texts.yaml overrides this file wholesale (like
+# changelog.yaml).
 scaffold:
-  contributing: |
-    # Contributing
-
-    ## Workflow rules
-
-    1. **Decision first**: before significant architectural, dependency or API
-       changes, create a decision (`proj new decision "Title"`) and get it
-       Accepted. Do not write production code for big changes until it is accepted.
-    2. **Task tracking**: multi-step work lives as task records
-       (`proj new task "Title"`). Mark steps `[x]` only after local verification
-       (tests/lint). Finish with `proj task done <ID>`.
-    3. **Plans**: attach tasks to a plan with `--parent PLN-NNNN`; promote/shelve
-        them by moving the plan (`proj plan activate|shelve N`).
-    4. **Changelog**: on milestones add an entry: `proj changelog add "Added: …"`.
-    5. **Tech debt**: temporary hacks get their own record
-       (`proj new debt "Title"`) with Location, Reason, and Trigger for removal.
-    6. **Secrets**: never hardcode secrets, private IPs or tokens. Read from the
-       environment; commit only `.env.example`.
-    7. **Commits**: one commit per feature or bugfix. No unrequested reformatting.
-    8. **Check**: run `proj check` (also runs in pre-commit) before pushing.
-    9. **MD files**: edit `##` section content only, then `proj sync`.
-        Never hand-edit the tool-owned head (the `<!-- proj:head:start … -->`
-        fence: title, the `> **key:**` blockquote, the italic summary line) or
-        the changelog table — change them via `proj` (e.g. `proj <rt> update`).
-  env_example: |
-    # Example environment variables (copy to .env, committed like the DB)
-    # NAMES ONLY — no real values in this file.
-    # API_KEY=
-    # PROJ_LOGS=
   seed_decision:
     title: Record architecture decisions
     status: Accepted

@@ -1,0 +1,504 @@
+schema_version: 3
+profiles:
+- default
+record_types:
+  task:
+    dir: docs/tasks
+    numbered: 6
+    status_allowed:
+    - Draft
+    - In Progress
+    - Failed
+    - Done
+    status_emoji:
+      Draft: ✏️
+      In Progress: 🚧
+      Failed: ❌
+      Done: ✅
+    verbs:
+      start:
+        from: Any
+        to: In Progress
+      done:
+        from: Any
+        to: Done
+      fail:
+        from: Any
+        to: Failed
+    sections:
+    - name: Goal
+      hint: The outcome this task delivers and why it matters, in 1-3 sentences (what
+        changes for the user/system when it is done). Link the driving record if any
+        (plan, decision DEC-xxxx, incident INC-xxxx, debt DEB-xxxx). If the goal needs
+        more than ~1 day of focused work or several people, split it into sub-tasks
+        (proj task new ... --parent T-xxxxxx); this task then covers only the integration
+        of its sub-tasks.
+      kind: text
+    - name: Acceptance Criteria
+      hint: The definition of done as verifiable checkboxes, one per observable result,
+        e.g. "- [ ] `pixi run test` passes", "- [ ] /health returns 200 in staging",
+        "- [ ] docs updated". Each must be checkable by someone else without asking
+        you. Tick a box only after verifying it; `proj task done` is refused while
+        any box (here or in Steps) is unticked.
+      kind: text
+    - name: Steps
+      hint: 'How THIS task gets done, as an ordered checkbox list (write order = execution
+        order). Step vs sub-task: a step has no id or status of its own, is done by
+        this task''s executor in one sitting, and only matters inside this task (e.g.
+        "- [ ] add migration", "- [ ] write unit test"). Make it a sub-task instead
+        (proj task new ... --parent T-xxxxxx) when it needs its own status, owner
+        or acceptance criteria, can be blocked independently, or takes more than about
+        half a day. At most 2 levels: `- [ ] step` with indented `  - [ ] sub-step`;
+        a 3rd level fails `proj check`. Tick `[x]` only after the step is done and
+        verified locally; the first tick auto-moves the task Draft → In Progress on
+        sync.'
+      kind: text
+    - name: Open
+      hint: Unresolved questions, blockers and decisions needed — one per line, plain
+        text (no checkboxes), each naming who/what can unblock it, e.g. "Need DB credentials
+        for staging (ask ops)". These lines are shown in the parent's task tree and
+        TASKLIST.md, so keep them short. Delete a line once resolved and record the
+        answer in Notes.
+      kind: text
+    - name: Notes
+      hint: 'Working log and results: what was tried, what worked or failed and why,
+        commands/configs used, measurements, links to commits/PRs, answers to former
+        Open items. If the task is marked Failed, write the reason and any salvageable
+        findings here.'
+      kind: text
+    code: T
+    status_done:
+    - Done
+    contain_task: true
+    render:
+      toc: false
+  debt:
+    dir: docs/tech-debt
+    numbered: 4
+    status_allowed:
+    - Draft
+    - Open
+    - In Progress
+    - Repaid
+    - Waived
+    status_emoji:
+      Draft: ✏️
+      Open: ⚠️
+      In Progress: 🚧
+      Repaid: ✅
+      Waived: 🤝
+    verbs:
+      draft:
+        from: Any
+        to: Draft
+      open:
+        from: Any
+        to: Open
+      progress:
+        from: Any
+        to: In Progress
+      repay:
+        from: Any
+        to: Repaid
+      waive:
+        from: Any
+        to: Waived
+    sections:
+    - name: Location
+      hint: 'Exactly where the debt lives so anyone can find it: file paths with line
+        or symbol (`src/api/users.py:list_users`), modules, configs, infra resources.
+        Mark the code itself with a `TODO(DEB-xxxx)` comment so the record and the
+        code point at each other.'
+      kind: text
+    - name: Reason
+      hint: Why the shortcut was taken and whether it was deliberate (deadline, missing
+        knowledge, upstream bug, prototype that shipped). Describe what the proper
+        solution would be and what made it impossible at the time. Link the decision/incident/task
+        that caused it (DEC-/INC-/T-xxxx).
+      kind: text
+    - name: Impact
+      hint: 'First line: `Severity: high | medium | low` — high = blocks features,
+        causes incidents or is a security risk; medium = slows work noticeably; low
+        = cosmetic or local. Then the "interest" being paid: concrete costs such as
+        slower builds, repeated bugs, manual steps, onboarding confusion, performance
+        or security exposure. Quantify where possible (minutes per deploy, bugs per
+        month) and say who is affected.'
+      kind: text
+    - name: Trigger for removal
+      hint: 'The condition that makes repayment mandatory, specific enough to notice:
+        a date, a version, a scale threshold ("> 10k users"), an upstream fix being
+        released, or "before feature X starts". If the trigger fires, move the record
+        to In Progress (`proj debt progress ID`).'
+      kind: text
+    - name: Repayment Plan
+      hint: 'First line: `Effort: S (< 1 day) | M (1-5 days) | L (> 1 week)`. Then
+        how to pay it back, as a checkbox list of steps (including tests and removing
+        the TODO marker); `proj debt repay` is refused until every box is ticked.
+        For L-sized debt create real tasks instead (proj task new ... --related DEB-xxxx)
+        and list their ids here as plain text. If you decide to live with it (`proj
+        debt waive`), write why here.'
+      kind: text
+    code: DEB
+    status_done:
+    - Repaid
+    - Waived
+    contain_task: false
+    render:
+      toc: false
+  decision:
+    dir: docs/decisions
+    numbered: 4
+    status_allowed:
+    - Draft
+    - Proposed
+    - Accepted
+    - Rejected
+    - Deprecated
+    status_emoji:
+      Draft: ✏️
+      Proposed: 🌱
+      Accepted: ✅
+      Rejected: 🚫
+      Deprecated: 📛
+    verbs:
+      draft:
+        from: Any
+        to: Draft
+      propose:
+        from: Any
+        to: Proposed
+      accept:
+        from: Any
+        to: Accepted
+      reject:
+        from: Any
+        to: Rejected
+      deprecate:
+        from: Any
+        to: Deprecated
+    sections:
+    - name: Context
+      hint: 'The problem that forces a decision, written so a newcomer understands
+        it a year from now. First line: `Deciders: <names or roles who own/approve
+        this>`. Then cover: what is happening now and why it is a problem; the constraints
+        (technical, budget, deadline, team skills, compliance); the scope (what this
+        decision covers and explicitly does not). State facts and forces only — no
+        solution here. 3-10 sentences or bullets.'
+      kind: text
+    - name: Decision Drivers
+      hint: The criteria used to judge options, most important first, as plain bullets
+        (e.g. "- p99 latency < 100ms", "- no new paid service", "- team already knows
+        Python"). Every option below is weighed against this list. Plain bullets only
+        — an unchecked `- [ ]` here blocks accept/reject.
+      kind: text
+    - name: Considered Options
+      hint: 'At least two real options (including "do nothing / keep current" when
+        relevant). For each: a `### Option name` sub-heading, one-line description,
+        then `Pros:` / `Cons:` bullets scored against the Decision Drivers. Note rough
+        cost/effort and any spike or benchmark evidence (link it). No checkboxes.'
+      kind: text
+    - name: Decision
+      hint: The chosen option in one active-voice sentence ("We will use X for Y."),
+        then why it beats the others with reference to the Decision Drivers. Add any
+        conditions or boundaries (where it applies, what stays out of scope). Keep
+        implementation detail to what is needed to apply the decision.
+      kind: text
+    - name: Consequences
+      hint: 'What becomes easier and what becomes harder once this is in effect —
+        list positives, negatives and accepted trade-offs honestly. Name the follow-up
+        work (create tasks: proj task new ... --related DEC-xxxx), any tech debt it
+        introduces (proj debt new ... --related DEC-xxxx), and migration or rollback
+        notes. `proj decision link` appends "See also:" refs here. No checkboxes (they
+        block accept) — track work as tasks.'
+      kind: text
+    - name: Confirmation
+      hint: 'How we will know the decision was right and is being followed: the metric,
+        review, test or lint rule that verifies it, and the trigger to revisit it
+        (a date, a scale threshold, a dependency change). If the trigger fires, write
+        a new decision with -s to supersede this one.'
+      kind: text
+    code: DEC
+    status_done:
+    - Accepted
+    - Rejected
+    - Deprecated
+    contain_task: false
+    render:
+      toc: true
+  experiment:
+    dir: docs/experiments
+    numbered: 4
+    status_allowed:
+    - Draft
+    - Proposed
+    - Running
+    - Closed
+    - Abandoned
+    status_emoji:
+      Draft: ✏️
+      Proposed: 🌱
+      Running: 🧪
+      Closed: ✅
+      Abandoned: 🗑️
+    verbs:
+      draft:
+        from: Any
+        to: Draft
+      propose:
+        from: Any
+        to: Proposed
+      run:
+        from: Any
+        to: Running
+      close:
+        from: Any
+        to: Closed
+      abandon:
+        from: Any
+        to: Abandoned
+    sections:
+    - name: Hypothesis
+      hint: 'One falsifiable statement written BEFORE running: "Changing <X> will
+        improve <metric> by <amount> on <dataset/population> because <reason>." Add
+        the motivation (link a decision/incident/plan if any) and what you will do
+        if it is confirmed vs refuted. Do not edit after the run starts — add notes
+        in Analysis instead.'
+      kind: text
+    - name: Success Criteria
+      hint: 'Decided before running, as plain bullets: the baseline compared against
+        (previous EXP-xxxx, commit, model/config name, or production), the primary
+        metric and the threshold that confirms the hypothesis (e.g. "- val mAP +1.0
+        over baseline"), guardrail metrics that must not regress (latency, memory,
+        cost), and the minimum sample size / seeds / duration for a valid result.
+        Plain bullets — unticked checkboxes block close.'
+      kind: text
+    - name: Setup
+      hint: 'Everything needed to reproduce the run: the code version (create the
+        record with `--commit <hash>` so it shows in the head), dataset name + version/split,
+        environment (hardware, library versions), full config or hyperparameters that
+        differ from the baseline (diff or table), random seeds, run command, and where
+        logs/artifacts/checkpoints are stored (paths or tracker URLs).'
+      kind: text
+    - name: Task List
+      hint: 'Not a body section: the task tree (tasks with parent = this experiment)
+        is rendered by proj in the head block''s `subtask:` row — never hand-edit
+        it. The experiment''s work is tasks, not checkboxes in this record: one task
+        per phase that has its own status or result, e.g. data prep, implementation,
+        baseline run, treatment runs, evaluation — `proj task new "Title" --parent
+        EXP-xxxx`. The detailed procedure of each phase (commands, configs to try)
+        goes into that task''s own `## Steps` checkboxes. Task = tracked unit with
+        id and status; step = checklist item inside one task.'
+      kind: task
+    - name: Results
+      hint: 'Raw outcomes only, no interpretation: a table of every run (including
+        failed or bad ones) with the primary and guardrail metrics vs the baseline,
+        deltas, and variance across seeds. Link plots, dashboards and artifacts. Note
+        anything that went wrong during the run.'
+      kind: text
+    - name: Analysis
+      hint: 'Interpretation: are the deltas real (beyond noise / significant)? Why
+        did it work or not — evidence from error analysis, ablations, examples? Threats
+        to validity (leakage, small sample, confounders, mismatched baseline). Surprises
+        worth a follow-up experiment.'
+      kind: text
+    - name: Conclusion
+      hint: 'Verdict against the Success Criteria: confirmed / refuted / inconclusive,
+        in one line, then the decision it leads to (adopt, iterate, drop) and next
+        steps — follow-up experiments (EXP-), tasks (T-), or a decision record (DEC-)
+        if it changes the approach. If Abandoned, state why and what was learned.'
+      kind: text
+    code: EXP
+    status_done:
+    - Closed
+    - Abandoned
+    contain_task: true
+    render:
+      toc: false
+  incident:
+    dir: docs/incidents
+    numbered: 4
+    status_allowed:
+    - Draft
+    - Open
+    - Mitigated
+    - Closed
+    status_emoji:
+      Draft: ✏️
+      Open: 🚨
+      Mitigated: 🩹
+      Closed: ✅
+    verbs:
+      draft:
+        from: Any
+        to: Draft
+      open:
+        from: Any
+        to: Open
+      mitigate:
+        from: Any
+        to: Mitigated
+      close:
+        from: Any
+        to: Closed
+      reopen:
+        from: Any
+        to: Open
+    sections:
+    - name: Summary
+      hint: 'First line: `Severity: SEV1 | SEV2 | SEV3 | SEV4` — SEV1 = outage, data
+        loss or security breach (all hands); SEV2 = major feature broken or many users
+        affected; SEV3 = degraded, workaround exists; SEV4 = minor or internal only.
+        Then 3-5 sentences a non-engineer can read: what broke, when it started and
+        ended (with timezone), who/what was affected, and the current state. Write
+        it first while the incident is Open and keep it updated; blameless — describe
+        systems and decisions, not people.'
+      kind: text
+    - name: Impact
+      hint: 'Quantified damage: duration of user-facing impact, number/percent of
+        users or requests affected, failed jobs, data lost or corrupted, money, SLO/error-budget
+        burned, customer tickets. Say "unknown" rather than guessing, and list what
+        was NOT affected if that matters.'
+      kind: text
+    - name: Timeline
+      hint: 'Chronological bullets `- YYYY-MM-DD HH:MM TZ — event`, covering: trigger
+        (e.g. deploy), first symptom, detection (alert or report), responder engaged,
+        key diagnosis steps, mitigation applied (`proj incident mitigate`), recovery
+        confirmed. End with time-to-detect and time-to-mitigate.'
+      kind: text
+    - name: Root cause
+      hint: 'The underlying cause(s), not just the trigger: ask "why" until you reach
+        a process or system gap (5 Whys). Separate the trigger (what started it),
+        the root cause (why it was possible), and contributing factors (why it was
+        worse or slower to fix). Fill after mitigation; mark hypotheses as such until
+        confirmed.'
+      kind: text
+    - name: Actions taken
+      hint: What responders did during the incident and the effect of each action
+        (rollback, failover, config change, restart, customer comms), including attempts
+        that did not help. Note any temporary fix that must be undone later — record
+        it as debt (proj debt new ... --related INC-xxxx).
+      kind: text
+    - name: Lessons learned
+      hint: 'Three short bullet lists: `Went well:` (detection, tooling, teamwork),
+        `Went poorly:` (gaps, slow steps, missing alerts/runbooks), `Got lucky:` (things
+        that limited damage by chance — these are hidden risks).'
+      kind: text
+    - name: Action Items
+      hint: 'Follow-ups that stop recurrence or reduce impact, as checkboxes: `- [
+        ] <action> — owner — due` (e.g. add alert, add test, fix root cause, write
+        runbook). Prefer prevent > detect > mitigate. Larger items become tasks (proj
+        task new ... --related INC-xxxx) referenced by id. `proj incident close` is
+        refused while any box is unticked.'
+      kind: text
+    - name: Prevention rule
+      hint: The durable, actionable rule distilled from this incident that is added
+        to the project's guidelines (CONTRIBUTING, runbook, checklist, lint/CI check),
+        phrased as an instruction an agent or engineer can follow, e.g. "Every migration
+        must be tested against a production-sized snapshot before deploy." Say where
+        it was added.
+      kind: text
+    code: INC
+    status_done:
+    - Closed
+    contain_task: false
+    render:
+      toc: false
+  plan:
+    dir: docs/plans
+    numbered: 4
+    status_allowed:
+    - Draft
+    - Active
+    - Pending Review
+    - Shelved
+    - Archived
+    status_emoji:
+      Draft: ✏️
+      Active: 🚧
+      Pending Review: 🔍
+      Shelved: 📦
+      Archived: 🗄️
+    verbs:
+      activate:
+        from: Draft
+        to: Active
+      resume:
+        from: Shelved
+        to: Active
+      review:
+        from: Active
+        to: Pending Review
+      shelve:
+        from: Pending Review
+        to: Shelved
+      archive:
+        from: Pending Review
+        to: Archived
+      freeze:
+        from: Shelved
+        to: Archived
+    sections:
+    - name: Goal
+      hint: 'First line: `Owner: <the single accountable person> · Target: <date or
+        release>`. Then the outcome this plan achieves and why now, in 2-4 sentences:
+        the problem or opportunity, who benefits, and what is different when the plan
+        succeeds. Link the decisions/incidents/ experiments that motivate it (DEC-xxxx,
+        INC-xxxx, EXP-xxxx). Outcome, not activity ("checkout p95 under 1s", not "optimize
+        checkout").'
+      kind: text
+    - name: Scope
+      hint: 'Two plain bullet lists: `In scope:` (deliverables this plan commits to)
+        and `Out of scope:` (related work explicitly not done here, so nobody assumes
+        it). Note fixed constraints: deadline, budget, people, systems that must not
+        change. Changing scope after activation: write the change and the date here
+        and log it with `proj plan update ID -c "..."`.'
+      kind: text
+    - name: Success Criteria
+      hint: 'Measurable conditions that decide at review time whether the goal was
+        met, as plain bullets with a number or a yes/no test (e.g. "- error rate <
+        0.1% for 7 days", "- 3 pilot users onboarded"). Do NOT use checkboxes: unticked
+        boxes block shelve/archive. Evaluate each one in Review.'
+      kind: text
+    - name: Milestones
+      hint: 'The intermediate checkpoints in order, as plain bullets: `- <date or
+        week>: <observable result> (T-xxxxxx, T-yyyyyy)` (e.g. "- W2: schema migrated
+        in staging (T-000004)"). A milestone is a checkpoint, not work: the work behind
+        it lives in tasks (see Task List), referenced by id. Mark slips inline ("(slipped
+        to W4: reason)") rather than deleting.'
+      kind: text
+    - name: Task List
+      hint: 'Rendered by proj from the DB (tasks with parent = this plan, recursively)
+        — an editable block right below the head fence and before the other sections,
+        collapsed by default: tick a task checkbox here and run `proj sync` to store
+        it. The head''s `subtask:` row links the direct children. The Task List holds
+        TASKS, not steps: a plan has no steps or checkboxes of its own, ALL of its
+        work is tasks. A task is tracked (its own id, status, owner and `## Steps`
+        checkboxes, shown in TASKLIST.md while the plan is Active, gates `proj plan
+        review`); a step is one checkbox item inside a single task''s Steps — done
+        by that task''s executor in one sitting, never listed here. In short: the
+        plan''s work lives in this Task List; each task''s how-to lives in that task''s
+        Steps. Create one task per deliverable that needs its own status, owner or
+        acceptance criteria, or takes more than about half a day: `proj task new "Title"
+        --parent PLN-xxxx`. Break a large task into sub-tasks with `proj task new
+        "T" --parent T-xxxxxx`.'
+      kind: task
+    - name: Risks & Dependencies
+      hint: 'What could make the plan late or fail, as bullets: `- Risk: <what> —
+        likelihood H/M/L, impact H/M/L — mitigation: <action> — owner`. List external
+        dependencies (other teams, vendors, approvals, other plans) with the date
+        each is needed by. Revisit when the plan is resumed.'
+      kind: text
+    - name: Review
+      hint: 'Filled at `proj plan review`: for each Success Criterion — met / not
+        met with evidence (numbers, links). Then a short retrospective: what went
+        well, what did not, what to change next time, and the verdict (archive = done,
+        shelve = pause with reason and resume condition). Turn lasting lessons into
+        decisions or tasks.'
+      kind: text
+    code: PLN
+    status_done:
+    - Shelved
+    - Archived
+    contain_task: true
+    render:
+      toc: false
