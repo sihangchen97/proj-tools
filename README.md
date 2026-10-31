@@ -4,10 +4,10 @@ Project governance CLI: decisions (ADR), tasks, plans, changelog, tech debt,
 incidents, experiments. One generic engine, YAML templates as schema,
 SQLite as source of truth, Markdown as the human/LLM input channel.
 
-Design docs: [`plans/v3-sqlite-core.md`](plans/v3-sqlite-core.md) (current),
-[`plans/v2-templates-and-index.md`](plans/v2-templates-and-index.md) (superseded
-core premise), [`plans/architecture.md`](plans/architecture.md) (v1).
-Implementation deviations: [`plans/v3-implementation-notes.md`](plans/v3-implementation-notes.md).
+Design docs (kept outside the git repo, in `plans/` locally):
+`v3-sqlite-core.md` (current), `v2-templates-and-index.md` (superseded core
+premise), `architecture.md` (v1). Implementation deviations:
+`v3-implementation-notes.md`.
 
 ## Install / develop
 
@@ -16,8 +16,13 @@ pixi install            # dev environment (project root)
 pixi run proj --help    # the CLI itself
 ```
 
-`pyproject.toml` registers the `proj` entry point; for other projects:
-`uv tool install proj` (once packaged).
+`pyproject.toml` registers the `proj` and `proj-mcp` entry points. Not on PyPI
+yet (in development) — install a wheel into any environment:
+
+```bash
+hatch build                    # in this repo (or: python -m build)
+pip install dist/proj-*.whl   # installs `proj` + `proj-mcp`
+```
 
 ## Quick start
 
@@ -86,13 +91,16 @@ old ones, and one old one can be replaced by several new ones.
   `superseded_by`.
 - `proj check` enforces: no dangling refs, A↔B mutual consistency, no cycles.
 
-### Plans drive task visibility (no file moving)
+### Tasks link to any record via `parent`
 
-Tasks are independent records; `task.plan` links them to a plan.
+Tasks are independent records; `task.parent` (a template field, any record type)
+links them to a plan, a parent task (sub-task), or an experiment. No file
+moving; children are resolved at render time.
 
-- `plan` empty → task always in `TASKLIST.md`
-- plan **Active** → task in `TASKLIST.md` (promoted)
-- plan anything else → task only in that plan's `Task List` section (parked)
+- `parent` empty → task in the global `TASKLIST.md`
+- `parent` = an **Active** plan → task also promoted into `TASKLIST.md`, and
+  drawn in that plan's `Task List` section with its sub-task tree
+- `parent` = any other record → task parked in that record's `Task List` section
 
 State machine: `Draft →(activate) Active →(review: all tasks Done)
 Pending review →(shelve) Shelved →(resume) Active`;
@@ -133,6 +141,40 @@ proj changelog add|version|release-notes|list
 proj hooks install         # pre-commit → proj check
 ```
 
+## MCP
+
+`proj-mcp` ships a stdio MCP server (`mcp` 2.x, `MCPServer`) exposing the same
+engine functions as the CLI — one tool per CLI verb, each with an optional `root`
+(absolute project path, = the CLI `--root`) so it works from any cwd:
+
+```json
+{
+ "mcpServers": {
+   "proj": { "command": "proj-mcp" }
+ }
+}
+```
+
+| tool | equivalent CLI |
+|---|---|
+| `proj_init` | `proj init --profile X` |
+| `proj_new` | `proj new TYPE TITLE [-s …] [--parent N] [--field k=v]` |
+| `proj_sync` | `proj sync [FILE…]` |
+| `proj_check` | `proj check` |
+| `proj_list` | `proj list TYPE [--status S]` |
+| `proj_show` | `proj show TYPE ID [--history]` |
+| `proj_status` | `proj status TYPE ID STATUS` |
+| `proj_log` | `proj log TYPE ID "…"` |
+| `proj_update` | `proj update` |
+| `proj_info` | `proj info [--json]` |
+| `proj_task_done` | `proj task done ID` |
+| `proj_plan_verb` | `proj plan activate|review|shelve|resume|archive|freeze ID` |
+| `proj_decision_supersede` | `proj decision new TITLE -s …` |
+| `proj_changelog_add` | `proj changelog add "…"` |
+
+Tools return human-readable text; on validation failure the full error message is
+returned (agent-readable).
+
 ## Adding a record_type
 
 Drop `profiles/default/<record_type>.yaml` (see existing ones for the format), then
@@ -142,6 +184,7 @@ the engine is fully generic.
 ## Tests / lint
 
 ```bash
-pixi run test        # pytest, 39 tests
+pixi run test        # pytest
 pixi run lint        # ruff
+pixi run e2e         # bash full-lifecycle smoke (.testproj sandbox, rebuilt each run)
 ```

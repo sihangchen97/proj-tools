@@ -1,10 +1,12 @@
 # 发布计划（2026-10-31）
 
-> 目标：从"一团乱的工作树"到"PyPI 可安装 + GitHub release"。
+> 目标：从"一团乱的工作树"到"可安装（wheel）+ CI 绿 + 文档真实"。
+> **2026-10-31 拍板：不发 PyPI、版本号保留 0.1.0（仍在开发期）**——Phase 2 整体砍掉，
+> 1.2 的 CHANGELOG 版本化改为"填 [Unreleased]，不打版本号"。
 > 现状基线：pytest 50 全绿；工作树未提交 40 文件（v3 分层重构 + profiles 搬家）；
 > 无 CI；CHANGELOG Unreleased 为空；版本 0.1.0；README 安装段还写着 "once packaged"。
 
-原则：**先落袋、再提质量、最后发布**。Phase 0/1 都不改一行 `src/` 逻辑，
+原则：**先落袋、再提质量**。Phase 0/1 都不改一行 `src/` 逻辑，
 只动 git 状态、CI、文档 —— 风险最低。
 
 ---
@@ -47,7 +49,8 @@
 
 设计（同 ecs-gpu 模式：CLI + MCP 双入口，引擎函数薄封装）：
 
-- [ ] **1.5.1 模块** `src/proj/mcp.py`：FastMCP（`mcp` 包）stdio server
+- [x] **1.5.1 模块** `src/proj/mcp.py`：`mcp` 2.x `MCPServer` stdio server（2026-10-31：
+  `mcp>=2`；1.x 的 `FastMCP` 在 2.x 改名为 `MCPServer`，`from mcp.server import MCPServer`）
   - 工具集 = CLI 域函数 1:1 映射（复用 cli.py 已调用的同一批函数，不新写逻辑）：
     `proj_init` / `proj_new` / `proj_sync` / `proj_check` / `proj_list` / `proj_show` /
     `proj_status` / `proj_log` / `proj_update` / `proj_info` /
@@ -55,11 +58,11 @@
     `proj_decision_supersede` / `proj_changelog_add`
   - 每个工具带可选 `root: str | None`（= CLI 的 `--root`，MCP 从任意 cwd 调）
   - 返回：人类可读文本（与 CLI stdout 一致），校验失败返回完整错误信息（agent 可读）
-- [ ] **1.5.2 入口**：pyproject `[project.scripts] proj-mcp = "proj.mcp:main"`；
-  依赖加 `mcp>=1.0`（或 `fastmcp`——先查当前生态哪个是 stdio 事实标准，二选一，最小依赖）
-- [ ] **1.5.3 测试** `tests/test_mcp.py`：tmp proj 沙盒里直调工具函数（不走 stdio 协议），
-  覆盖 init→new→status→check 一条链 + 一个错误路径
-- [ ] **1.5.4 README**：加 "MCP" 节（配置片段 + 工具清单），CLI 表不变
+- [x] **1.5.2 入口**：pyproject `[project.scripts] proj-mcp = "proj.mcp:main"`；
+  依赖加 `mcp>=2`（同仓库 ecs-gpu 同款：官方 `mcp` 包即 stdio 事实标准，未加 fastmcp）
+- [x] **1.5.3 测试** `tests/test_mcp.py`：tmp proj 沙盒里直调纯函数 `mcp.proj_*`（不走 stdio 协议），
+  覆盖 init→new→show→status→plan activate→check 一条链 + 6 个错误路径
+- [x] **1.5.4 README**：加 "MCP" 节（配置片段 + 工具↔CLI 映射表），CLI 表不变
 - verify: `pixi run test && pixi run lint` 全绿；wheel 干净 venv 里 `proj-mcp --help` 可跑
 
 ## 执行顺序（最终）
@@ -96,14 +99,12 @@
   - 3 job：lint（ruff）/ test（pytest）/ e2e（bash scripts/e2e.sh），matrix：ubuntu + macos-arm64
   - 用 `pixi install`（`pixi-distribution/setup-pixi`）复用 pyproject 的 pixi workspace，CI 与本地同源
   - verify: push 后 CI 全绿；本地 `bash scripts/e2e.sh` 与 CI 同款命令
-- [ ] **1.2 版本号决策 + CHANGELOG**
-  - v3 重构对已有用户是破坏性变更（目录结构变、模板键名变）→ 建议直接 **1.0.0**（首次正式发布即稳定基线）；
-    若想留余量就 0.2.0。二选一，定下来写进 pyproject.toml
-  - 填 CHANGELOG `[Unreleased]` → 移到 `[1.0.0] - 2026-10-31`：v3 SQLite core、YAML 模板即 schema、
-    分层架构、profiles 搬家、pre-commit hook、--root 全局选项
-  - verify: `pip install -e .` 后 `proj --version` 输出新号（如 CLI 还没 `--version`，typer 加一行 `@app.callback(invoke_without_command=True)`）
-- [ ] **1.3 README 发布化**
-  - 删 "once packaged" 措辞，安装段改为真实命令：`uv tool install proj` / `uvx proj`
+- [x] **1.2 版本号决策 + CHANGELOG**（2026-10-31 拍板：**保留 0.1.0，不发 PyPI**）
+  - `proj --version` 已加（cli.py `@app.callback(invoke_without_command=True)` + eager callback）
+  - 待办：填 CHANGELOG `[Unreleased]`（v3 SQLite core、YAML 模板即 schema、分层架构、
+    profiles 搬家、pre-commit hook、--root 全局选项、MCP server）——不打版本号
+- [ ] **1.3 README 发布化**（不发 PyPI，改为"真实可跑"）
+  - 删 "once packaged" 措辞；安装段如实写 wheel 安装路径（`hatch build` + `pip install dist/*.whl`）
   - 设计文档链接补上 `plans/tasklist-design.md`（task 关系模型）
   - verify: 按 README 逐条跑一遍 quick start（在 .testproj 里），全部真实可跑
 - [ ] **1.4 打包预检**（不等发布）
@@ -111,20 +112,14 @@
   - 干净 venv：`pip install dist/proj-*.whl && proj --help && proj init` 在临时目录跑通
   - verify: 干净环境不依赖 pixi/仓库路径可用
 
-## Phase 2：发布（~半天，需要你提供 PyPI 凭证）
+## Phase 2：~~发布~~（2026-10-31 砍掉：不发 PyPI，版本号保留 0.1.0）
 
-- [ ] **2.1 PyPI 账号**：user 提供 `pypi.org` 账号 + API token（我只在本地用 `twine upload`，token 不落仓库）
-- [ ] **2.2 `twine check dist/*.whl && twine upload dist/*`**
-  - verify: `uvx proj --help` 在任意干净机器可跑（真实用户路径）
-- [ ] **2.3 git tag + GitHub Release**
-  - `git tag -a v1.0.0 -m "..."`，release body = CHANGELOG 该版本段
-  - verify: release 页 + PyPI 页 + `uv tool install proj` 三方版本一致
-- [ ] **2.4 发布后回归**：CI 加 release 触发（tag push 时重跑全量），确认 tag commit 绿
+- ~~2.1-2.4 PyPI / tag / release~~ —— 留作将来真要发布时的清单（保留在上面 git history）
 
 ## Phase 3：发布后还债（不阻塞发布）
 
 - [ ] 3.1 `.proj.lock` 旧键 `kinds:` 向后兼容（`specs_from_lock` 一行 fallback）—— 只有已有人用过旧 lock 才做
 - [ ] 3.2 `record_types/__init__.py` 星号导入收紧
 - [ ] 3.3 CLI 统一：task/decision 命令走 `record_for(kind)` 类调用（现 plan 已走类，task/decision 还走模块级委托）
-- [ ] 3.4 MCP server 包（README 提到 `--root` for MCP 但仓库内无 MCP 入口）
+- [x] 3.4 MCP server（2026-10-31 提前进 1.0：`src/proj/mcp.py` + `proj-mcp` 入口 + 测试 + README）
 - [ ] 3.5 空壳删除后给 5 个 record_type 各留一条**真实**示例记录（dogfood 自证 + README 截图素材）

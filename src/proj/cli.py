@@ -39,9 +39,23 @@ app.add_typer(hooks_app, name="hooks")
 _ROOT: dict[str, Path | None] = {"root": None}  # set by --root callback (MCP reuses)
 
 
-@app.callback()
-def _main(root: Path | None = typer.Option(
-        None, "--root", help="project root (default: discover by walking up)")):
+def _version_callback(v: bool):
+    if v:
+        import importlib.metadata
+        typer.echo(f"proj {importlib.metadata.version('proj')}")
+        raise typer.Exit()
+
+
+@app.callback(invoke_without_command=True)
+def _main(ctx: typer.Context,
+          root: Path | None = typer.Option(
+              None, "--root", help="project root (default: discover by walking up)"),
+          version: bool = typer.Option(
+              False, "--version", callback=_version_callback, is_eager=True,
+              help="Print version and exit")):
+    if ctx.invoked_subcommand is None and not version:
+        ctx.get_help()
+        raise typer.Exit()
     _ROOT["root"] = root
 
 
