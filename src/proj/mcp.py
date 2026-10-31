@@ -160,7 +160,7 @@ def proj_show(record_type: str, id_: str, root: str | None = None,
     if history:
         for e in db.logs(row["id"]):
             lines.append(f"  {show_date(e['date'])}  [{e['category']}] "
-                         f"{rec._log_change(e, spec)}")
+                         f"{rec._log_body(e, spec)}")
     db.close()
     return "\n".join(lines)
 

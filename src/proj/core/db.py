@@ -3,10 +3,11 @@
 Unified tables (schema v3, no migration — dev phase, rebuild .proj.sqlite):
 
     records(id PK, type, title, status, one_sentence, commit, created, sections JSON)
-    record_changelog(id PK, record_id, date, category, comment, from_status, to_status)
+    record_changelog(id PK, record_id, date, category, comment, status)
 
-record_changelog: status changes fill from_status/to_status (the Change column
-renders them, D5); non-status events leave both NULL and carry a comment.
+record_changelog: every row stores the record's status AFTER that event
+(`status` = the new state on a status change, the unchanged state on any
+other event), so a changelog line renders as `- `date - emoji status``.
 
 Plus the global changelog: changelog_entries(id, version, category, text, date).
 
@@ -79,7 +80,7 @@ class Db:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS record_changelog "
             "(id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, date TEXT, "
-            "category TEXT, comment TEXT, from_status TEXT, to_status TEXT)")
+            "category TEXT, comment TEXT, status TEXT)")
 
     # ---- template-driven schema -------------------------------------------
 
@@ -143,20 +144,23 @@ class Db:
                 best = max(best, int(tail))
         return best
 
-    # ---- record changelog (single table; status changes in two columns) ----
+    # ---- record changelog (single table; one status column per row) ----
 
     def add_log(self, record_id: str, comment: str = "",
-                category: str = "Changed", when: str | None = None,
-                from_status: str | None = None, to_status: str | None = None) -> None:
+                category: str = "Changed", when: str | None = None) -> None:
+        # the row stores the record's status AFTER this event: callers set the
+        # status first (a change) or leave it untouched (any other event)
+        row = self.conn.execute("SELECT status FROM records WHERE id=?",
+                                (record_id,)).fetchone()
+        status = row[0] if row else ""
         self.conn.execute(
             "INSERT INTO record_changelog (record_id, date, category, comment, "
-            "from_status, to_status) VALUES (?,?,?,?,?,?)",
-            (record_id, when or utc_now(), category, comment,
-             from_status, to_status))
+            "status) VALUES (?,?,?,?,?)",
+            (record_id, when or utc_now(), category, comment, status))
         self.conn.commit()
 
     def logs(self, record_id: str, limit: int | None = None) -> list[dict]:
-        q = ("SELECT date, category, comment, from_status, to_status "
+        q = ("SELECT date, category, comment, status "
              "FROM record_changelog WHERE record_id=? ORDER BY date DESC, id DESC")
         if limit:
             q += f" LIMIT {int(limit)}"
@@ -164,7 +168,7 @@ class Db:
 
     def first_date_to(self, record_id: str, to_status: str) -> str:
         row = self.conn.execute(
-            "SELECT date FROM record_changelog WHERE record_id=? AND to_status=? "
+            "SELECT date FROM record_changelog WHERE record_id=? AND status=? "
             "ORDER BY date, id", (record_id, to_status)).fetchone()
         return row[0] if row else ""
 

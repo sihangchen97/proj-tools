@@ -15,14 +15,14 @@ def test_new_creates_record(proj):
     assert row["status"] == "Draft"  # new default is the first status (Draft)
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == f"<!-- proj:decision {row['id']} -->"  # uuid marker comment, line 1
-    assert lines[1].startswith("<!-- proj:head:start")  # head fence below the marker
-    assert lines[2] == "# DEC-0002. Use Rust"  # title below the head fence
-    assert "> **status:** ✏️ Draft  " in lines  # blockquote below the title
+    assert lines[0] == f"<!-- proj:decision {row['id']} -->"  # marker comment, line 1
+    assert lines[1] == "# DEC-0002. Use Rust"  # title above the head fence
+    assert lines[3].startswith("<!-- proj:head:start")  # fence below the title
+    assert any(l.startswith("> **status:** `✏️ Draft`") for l in lines)
     assert "# DEC-0002. Use Rust" in text
     assert "## Context" in text
-    # changelog shows the created entry
-    assert "| Added | created |" in text
+    # changelog shows the created entry (comment → the status emoji + "created")
+    assert "- ✏️ created`" in text
 
 
 def test_supersede_sets_relations_not_statuses(proj):
@@ -53,19 +53,17 @@ def test_status_change_stored_in_status_columns(proj):
     r = db.get(spec, row["id"])
     logs = db.logs(r["id"])
     db.close()
-    # status change: from_status/to_status columns, not concatenated text (D5)
-    assert any(e["from_status"] == "Draft" and e["to_status"] == "Proposed" for e in logs)
-    assert any(e["from_status"] == "Proposed" and e["to_status"] == "Accepted" for e in logs)
+    # each row stores the record's status AFTER the event (the `status` column)
+    assert any(e["status"] == "Proposed" for e in logs)
+    assert any(e["status"] == "Accepted" for e in logs)
     assert not any("status " in (e["comment"] or "") for e in logs)
-    # the rendered md shows the emoji status change + the status legend row
+    # the rendered md shows backticked changelog lines + the status legend inside
     p = next((proj.root / "docs/decisions").glob(f"{r['id']}-*.md"))
     text = p.read_text()
-    # from = emoji only, to = emoji + name (D5); legend is italic small-print
-    assert "🌱 → ✅ Accepted" in text
-    assert "_" + " · ".join(spec.status_display(s) for s in spec.status_allowed) + "_" in text
-    # non-status events (created) have NULL status columns and a comment
-    assert any(e["from_status"] is None and e["to_status"] is None
-               and e["comment"] == "created" for e in logs)
+    assert "- " in text and "`" in text and "<details>" in text
+    assert " · ".join(spec.status_display(s) for s in spec.status_allowed) in text
+    # created: the row's status is the initial one, comment "created"
+    assert any(e["status"] == "Draft" and e["comment"] == "created" for e in logs)
 
 
 def test_supersede_multi_and_append(proj):

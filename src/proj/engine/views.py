@@ -132,13 +132,23 @@ def render_changelog_md(cfg: ProjConfig, db, cl: ChangelogSpec | None = None) ->
     by_version: dict[str, list[dict]] = {}
     for e in released:
         by_version.setdefault(e["version"], []).append(e)
-    for version in sorted(by_version, key=lambda v: [int(x) if x.isdigit() else 0
-                                                    for x in re.split(r"[.\-]", v)]
-                          , reverse=True):
-        entries = by_version[version]
-        newest = dbmod.show_date(max(e["date"] for e in entries))  # D10: date part
-        lines += [f"## [{version}] - {newest}", ""]
-        lines += _cl_sections(entries, cl)
+    versions = sorted(by_version, key=lambda v: [int(x) if x.isdigit() else 0
+                                                 for x in re.split(r"[.\-]", v)],
+                      reverse=True)
+    if versions:
+        def _block(v: str) -> list[str]:
+            newest = dbmod.show_date(max(e["date"] for e in by_version[v]))  # D10
+            return [f"## [{v}] - {newest}", ""] + _cl_sections(by_version[v], cl)
+        # newest released version stays visible; older ones collapse into a
+        # single <details> (summary = the historical version range)
+        lines += _block(versions[0])
+        if len(versions) > 1:
+            older = versions[1:]
+            lines += ["", "<details>",
+                      f"<summary>点击展开历史版本 ({older[-1]} - {older[0]})</summary>", ""]
+            for v in older:
+                lines += _block(v)
+            lines += ["</details>", ""]
     return View(cfg.root / cl.file, "\n".join(lines).rstrip() + "\n")
 
 

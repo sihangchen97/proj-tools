@@ -47,7 +47,8 @@ def test_mcp_update_record(proj):
     assert did.startswith("DEC-")
     out = mcp.proj_verb("decision", "accept", did, comment="Added: ok", root=root)
     assert "Accepted" in out and "error" not in out
-    assert "[Added] ok" in mcp.proj_show("decision", did, history=True, root=root)
+    # a comment renders as the status-at-that-moment emoji + the comment text
+    assert "[Added] ✅ ok" in mcp.proj_show("decision", did, history=True, root=root)
 
 
 def test_mcp_record_type_code_and_case(proj):

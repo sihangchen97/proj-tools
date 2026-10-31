@@ -71,7 +71,7 @@ HEAD_LINE_RE = re.compile(r"^> \*\*(\w+):\*\*\s*(.*)$")
 # (id marker above, title + metadata block + optional summary inside). The
 # start line carries a human/agent-readable instruction that the region is
 # maintained by `proj` and must not be hand-edited (edit via `proj` instead).
-HEAD_START = "<!-- proj:head:start — TOOL-MANAGED: title + metadata + summary are " \
+HEAD_START = "<!-- proj:head:start — TOOL-MANAGED: metadata + summary are " \
              "maintained by `proj`; never hand-edit this region (use `proj`) -->"
 HEAD_END = "<!-- proj:head:end -->"
 
@@ -233,17 +233,20 @@ def _logs_limit() -> int | None:
     return None if n < 0 else n
 
 
-def _log_change(e: dict, spec: RecordTypeSpec) -> str:
-    """The Change column (D5): a status change renders as '<from emoji> →
-    <to emoji+name>' (the from name is dropped, the legend below the table
-    decodes it; the target keeps its name) leading the optional comment; any
-    other event shows its comment alone (both status columns NULL)."""
-    if e["from_status"] and e["to_status"]:
-        change = f"{spec.emojify(e['from_status'])} → {spec.status_display(e['to_status'])}"
-        if e["comment"]:
-            change += f" {e['comment']}"
-        return change
-    return e["comment"] or "—"
+def _log_body(e: dict, spec: RecordTypeSpec) -> str:
+    """The text of a changelog entry: the comment when one is set (the record's
+    status at that moment only as its emoji prefix), else the status AFTER the
+    event (emoji + name, i.e. `status_display`)."""
+    s = e["status"] or ""
+    if e["comment"]:
+        return f"{spec.emojify(s)} {e['comment']}"
+    return spec.status_display(s)
+
+
+def _log_entry(e: dict, spec: RecordTypeSpec) -> str:
+    """One changelog line: a backticked ``- DATE - <body>`` (body per
+    `_log_body`)."""
+    return f"- `{dbmod.show_date(e['date'])} - {_log_body(e, spec)}`"
 
 
 def _head_lines(fm: dict) -> list[str]:
@@ -270,13 +273,13 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     # the task TREE itself stays in their kind: task section (editable block).
     reg = registry if registry is not None else load_registry(Path(db.path).parent)
     fm = {
-        "status": spec.status_display(row["status"]),
-        # D10: stored as a UTC timestamp, shown as the date part
-        "created": dbmod.show_date(row.get("created") or "") or "—",
+        "status": f"`{spec.status_display(row['status'])}`",
+        # D10: stored UTC timestamps, shown as the date part; one combined
+        # created/done row ("created → in progress" until done, then
+        # "created → done date")
+        "created/done": f"{dbmod.show_date(row.get('created') or '') or '—'} → "
+                        f"{_done_date(spec, row, db) or 'in progress'}",
     }
-    done = _done_date(spec, row, db)
-    if done:
-        fm["done"] = done
     if row.get("commit"):
         fm["commit"] = row["commit"]
     sup = [e["target"] for e in db.supersede_of(row["id"])]
@@ -296,36 +299,31 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         kids = [c["target"] for c in db.children_of(row["id"])]
         if kids:
             fm["subtask"] = _link_value(", ".join(kids), db, reg, spec, row)
-    # marker comment (line 1, invisible) → title → metadata block; the head is
-    # fenced by invisible `<!-- proj:head:start/end -->` comments: everything
-    # between them is tool-owned (managed by `proj`, never hand-edited).
+    # marker comment (line 1, invisible) → title (editable; synced back to the
+    # DB) → the head fence (tool-owned blockquote + one-sentence summary):
+    # everything between start and end is maintained by `proj`.
     head = _head_lines(fm)
     lines = [f"<!-- proj:{spec.record_type} {row['id']} -->",
-             HEAD_START,
              f"# {row['id']}. {row['title']}", "",
+             HEAD_START,
              "\n".join(l + ("  " if i < len(head) - 1 else "")
                        for i, l in enumerate(head)) if head else "",
              ""]
     if row.get("one_sentence"):
-        lines.append(f"_{row['one_sentence']}_")  # one-sentence summary, below
+        lines.append(f"_{row['one_sentence']}_")  # one-sentence summary, inside
     lines += [HEAD_END, ""]
     limit = _logs_limit()
     if limit != 0:
         logs = db.logs(row["id"], limit=limit)  # newest first
         if logs:
-            def _entry(e):
-                return f"- **{dbmod.show_date(e['date'])}** {_log_change(e, spec)}"
-            lines.append(_entry(logs[0]))
-            if len(logs) > 1:
-                # older entries collapse; the summary carries the status legend
-                # (emoji → name) so the from-emoji in each line stays decodable
-                older = logs[1:]
-                legend = " · ".join(spec.status_display(s) for s in spec.status_allowed)
-                lines += ["", "<details>",
-                          f"<summary>点击展开历史 ({len(older)} 条) — {legend}</summary>", ""]
-                lines += [_entry(e) for e in older]
-                lines += ["</details>", ""]
-            lines.append("")
+            # every entry collapses into one <details>; the status legend
+            # (emoji → name) sits inside, at the bottom, so the emoji in each
+            # line stays decodable
+            lines += ["", "<details>",
+                      "<summary>Changelogs</summary>", ""]
+            lines += [_log_entry(e, spec) for e in logs]
+            legend = " · ".join(spec.status_display(s) for s in spec.status_allowed)
+            lines += ["", legend, "</details>", ""]
     sections = json.loads(row["sections"] or "{}")
     for sec in spec.sections:
         lines += [f"## {sec.name}", ""]
@@ -459,8 +457,8 @@ def fm_fields(text: str) -> dict:
 
 
 def md_status(text: str) -> str:
-    """Status from the record head (leading emoji stripped)."""
-    s = str(fm_fields(text).get("status") or "")
+    """Status from the record head (backticks + leading emoji stripped)."""
+    s = str(fm_fields(text).get("status") or "").strip("`").strip()
     # drop a leading emoji: status_display renders "<emoji> <name>";
     # an emoji is always non-ASCII, a status name always ASCII
     parts = s.split(" ", 1)
@@ -534,8 +532,7 @@ def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
     old = row["status"]
     db.set(spec, row["id"], status=status)
     if old != status:
-        db.add_log(row["id"], category="Changed", when=when,
-                   from_status=old, to_status=status)
+        db.add_log(row["id"], category="Changed", when=when)  # row = the new status
     fresh = db.get(spec, row["id"])
     p = file_path(cfg, spec, fresh)
     p.write_text(render_record(spec, fresh, db), encoding="utf-8")
@@ -631,8 +628,17 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
             return [f"{p.name}: filename id does not match {row['id']} (renamed? "
                     f"edit the marker or move the file)"], []
         notes = []
+        # the title is user-owned (md wins): a changed title goes back to the
+        # DB and the file is renamed to the new slug (the id never changes)
         if title and title != row["title"]:
-            notes.append(f"{p.name}: title drift in md (DB wins: {row['title']!r})")
+            db.set(spec, u, title=title)
+            old_p, p = p, file_path(cfg, spec, db.get(spec, u))
+            if p != old_p:
+                if p.exists():
+                    return [f"{p.name}: title {title!r} renames to an existing "
+                            f"file {p.name} — resolve manually"], []
+                old_p.rename(p)
+                notes.append(f"{old_p.name}: title {title!r} synced, renamed to {p.name}")
         if md_status(text) not in ("", row["status"]):
             notes.append(f"{p.name}: status drift in md (DB wins: {row['status']!r})")
         sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))

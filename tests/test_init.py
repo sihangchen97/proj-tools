@@ -35,7 +35,7 @@ def test_seed_decision_content(proj):
     assert rows[0]["status"] == "Accepted"
     text = (proj.root / "docs/decisions/DEC-0001-record-architecture-decisions.md").read_text()
     assert "<!-- proj:decision " in text
-    assert "> **status:** ✅ Accepted" in text
+    assert "> **status:** `✅ Accepted`" in text
     assert "# DEC-0001. Record architecture decisions" in text
     # seed cites the ADR pattern (Nygard) and the tool's repo (ADR-tools-style 0001)
     assert "thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions" in text
@@ -84,12 +84,13 @@ def test_head_blockquote_shape(proj):
     text = p.read_text()
     lines = text.splitlines()
     assert lines[0] == f"<!-- proj:task {row['id']} -->"
-    # head fence start (tool-managed instruction)
-    assert lines[1].startswith("<!-- proj:head:start")
-    assert lines[2] == "# T-000001. F1"  # title directly below the fence
-    assert "> **status:** ✏️ Draft  " in lines  # blockquote below the title
-    assert any(line.startswith("> **created:**") for line in lines)  # fixed rows
-    # not done yet → no done row at all (需求 8)
+    # title sits ABOVE the head fence (editable; synced back to the DB)
+    assert lines[1] == "# T-000001. F1"
+    assert lines[3].startswith("<!-- proj:head:start")  # fence below the title
+    assert any(line.startswith("> **status:** `✏️ Draft`") for line in lines)
+    # created/done merged into one row; not done yet → "… → in progress"
+    assert any(line.startswith("> **created/done:**") and "in progress" in line
+               for line in lines)
     assert not any(line.startswith("> **done:**") for line in lines)
     # NO summary row in the blockquote (no "summary:" label)
     assert not any("summary" in line for line in lines if line.startswith("> **"))

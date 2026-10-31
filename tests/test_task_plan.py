@@ -84,31 +84,32 @@ def test_done_requires_all_checked(proj):
 
 
 def test_logs_limit_env(proj, monkeypatch):
-    """PROJ_LOGS: 0 = no changelog table, -1 = all, default = 5, N = latest N.
-    The record has 9 changelog rows (created + events 0..7)."""
+    """PROJ_LOGS: 0 = no changelog block, -1 = all, default = 5, N = latest N.
+    The record has 9 changelog rows (created + events 0..7), each rendered as a
+    backticked entry `- <date> - <body>` (comment → the comment text)."""
     row, _ = rec.new_record(proj, "task", "T1")
     for i in range(8):
         rec.add_log(proj, "task", row["id"], f"event {i}")
     p = next((proj.root / "docs/tasks").glob(f"{row['id']}-*.md"))
     monkeypatch.setenv("PROJ_LOGS", "0")
     rec.render_all(proj)
-    assert "| Date | Category | Change |" not in p.read_text()
+    assert "<details>" not in p.read_text()
     monkeypatch.setenv("PROJ_LOGS", "-1")
     rec.render_all(proj)
-    assert all(f"| event {i} |" in p.read_text() for i in range(8))
+    assert all(f"event {i}`" in p.read_text() for i in range(8))
     monkeypatch.setenv("PROJ_LOGS", "2")
     rec.render_all(proj)
     text = p.read_text()
-    assert "| event 7 |" in text and "| event 6 |" in text
-    assert "| event 5 |" not in text
+    assert "event 7`" in text and "event 6`" in text
+    assert "event 5`" not in text
     monkeypatch.setenv("PROJ_LOGS", "")  # empty → default 5: events 7,6,5,4,3
     rec.render_all(proj)
     text = p.read_text()
-    assert "| event 7 |" in text and "| event 3 |" in text
-    assert "| event 2 |" not in text
+    assert "event 7`" in text and "event 3`" in text
+    assert "event 2`" not in text
     monkeypatch.delenv("PROJ_LOGS")  # unset → default 5
     rec.render_all(proj)
-    assert "| event 2 |" not in p.read_text()
+    assert "event 2`" not in p.read_text()
 
 
 def test_done_sets_derived_dates(proj):
@@ -118,8 +119,9 @@ def test_done_sets_derived_dates(proj):
     taskmod.done(proj, row["id"])
     p = next((proj.root / "docs" / "tasks").glob(f"{row['id']}-*.md"))
     text = p.read_text()
-    assert "> **created:** 20" in text
-    assert "> **done:** 20" in text
+    # created/done merged into one row; done → the created→done dates
+    assert "> **created/done:** 20" in text
+    assert " → 20" in text
 
 
 def test_attached_tasks_show_in_main_tasklist(proj):

@@ -218,8 +218,8 @@ def _dyn_show(name: str, id_: str, history: bool) -> None:
     db.close()
     if history:
         for e in logs:
-            change = rec._log_change(e, spec)
-            typer.echo(f"  {show_date(e['date'])}  [{e['category']}] {change}")
+            typer.echo(f"  {show_date(e['date'])}  [{e['category']}] "
+                       f"{rec._log_body(e, spec)}")
 
 
 def _dyn_verb(name: str, verb: str, id_: str, title: str | None, summary: str | None,

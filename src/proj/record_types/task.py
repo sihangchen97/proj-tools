@@ -41,8 +41,7 @@ class Task(Record):
         # first checkbox tick auto-promotes Draft → In Progress
         if row["status"] == "Draft" and rec.has_checked(sections.get("steps", "")):
             db.set(self.spec, row["id"], status="In Progress")
-            db.add_log(row["id"], category="Changed",
-                       from_status="Draft", to_status="In Progress")
+            db.add_log(row["id"], category="Changed")  # row stores the new status
             notes.append(f"{source_name}: auto status Draft → In Progress")
 
     def check_rows(self, rows: list[dict], db, reg: dict) -> list[str]:

@@ -57,10 +57,11 @@ expect_ok "decision supersede (-s 3)"  "Created docs/decisions/DEC-0004-" -- $PR
 # supersede now renders as a blockquote line; the link text is the target's
 # full filename (relative to this record's own file, same dir → bare filename)
 expect_ok "supersede link rendered"    "> **supersedes:** [DEC-0002-" -- cat docs/decisions/DEC-0003-*.md
-# a status legend line sits below the changelog table (decision has never
-# changed status here — its transition rows are asserted below, on the task)
-grep -qE '^_✏️ Draft' docs/decisions/DEC-0003-*.md \
-  && ok "status legend below changelog" || fail "status legend line missing"
+# the status legend (emoji → name) sits inside the changelog <details>, at the
+# bottom (these decisions only have the "created" row — no status change yet)
+grep -qF '<details>' docs/decisions/DEC-0003-*.md \
+  && grep -qF '✏️ Draft · 🌱 Proposed' docs/decisions/DEC-0003-*.md \
+  && ok "status legend inside changelog details" || fail "legend missing in details"
 expect_ok "decision show"              "DEC-0001" -- $PROJ decision show DEC-0001
 expect_fail "unknown verb rejected"    -- $PROJ decision explode DEC-0002
 
@@ -80,9 +81,10 @@ head -n "$(grep -n '^## Steps' "$TASK_FILE" | cut -d: -f1)" "$TASK_FILE" > .step
 printf '\n- [x] first step\n- [ ] second step\n' >> .steps.tmp
 mv .steps.tmp "$TASK_FILE"
 expect_ok "sync auto-promotes task"    "auto status Draft → In Progress" -- $PROJ sync
-# the auto-promotion is stored in from_status/to_status (not concatenated text)
-grep -qF "✏️ → 🚧 In Progress" "$TASK_FILE" \
-  && ok "auto-promotion rendered from status columns" || fail "status columns not rendered"
+# the auto-promotion row stores the new status and renders backticked
+# (`<date> - 🚧 In Progress`; no arrow — the from-state is the previous row)
+grep -qF "🚧 In Progress\`" "$TASK_FILE" \
+  && ok "auto-promotion rendered with row status" || fail "row status not rendered"
 expect_ok "task list: In Progress"     "In Progress" -- $PROJ task list
 $PROJ task list | grep -qF "PLN-0001" && ok "task list shows parent" || fail "task list missing parent"
 expect_fail "done with unchecked step" -- $PROJ task done $TASK_ID
