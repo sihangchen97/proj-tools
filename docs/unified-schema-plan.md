@@ -32,7 +32,7 @@
 | 4 | 同一张 record 表 + 同一张 changelog 表 | 统一 `records` 表 + 统一 `record_changelog` 表（见 §2）。 |
 | 5 | status 变化单独列存（不塞文本）+ changelog 表下加 status 图例 | `record_changelog` 加 `from_status`/`to_status` 两列：status 变化时填两列、事件备注列 `comment` **不再拼 "status X → Y"**；渲染 Change 列 = emoji 版状态变化开头 + 后跟 comment（D5 显示规则）；**changelog 表底下渲染一行 status 图例**（`emoji 状态名` 对照，复用现有 `views.status_legend`）；`first_date_to` 改查 `to_status=?` 列。非 status 事件两列为 NULL。 |
 | 6 | record 表的 `summary` 列改名 `one_sentence` | `records.one_sentence`：一句话总览这条记录。列名避开与正式 section 混淆（incident/debt 等有同名 `## Summary` section）。Python/CLI 对外 API 可仍叫 `summary`（`row["one_sentence"]`、`--summary` flag、`new(summary=)` 不变），仅存储列名改。 |
-| 7 | 删 `render.changelog:` 开关，改用 `PROJ_LOGS`（项目 `.env` 优先） | `PROJ_LOGS`（D6 修订）控制每条记录 md 里渲染的 changelog 表行数：`0` = 不显示；`-1` = 显示全部；正整数 N = 显示最新 N 条（默认 5）。**读取顺序：项目 `.env`（当前工作目录，简单 KEY=VALUE 解析，无 dotenv 依赖）> OS 环境变量 > 默认 5**。6 个 template 删 `render:` 段里的 `changelog:` 行（decision 的 `render.toc: true` 保留——toc 与 changelog 无关）。 |
+| 7 | 删 `render.changelog:` 开关，改用 `PROJ_LOGS`（env 变量，启动时 load `.env`） | `PROJ_LOGS`（D6）控制每条记录 md 里渲染的 changelog 表行数：`0` = 不显示；`-1` = 显示全部；正整数 N = 显示最新 N 条（默认 5）。**机制：CLI/MCP 启动时 load 项目根 `.env`（KEY=VALUE，dotenv 语义：OS env > .env 补空 > 默认 5），一切配置读 `os.environ`**。6 个 template 删 `render:` 段里的 `changelog:` 行（decision 的 `render.toc: true` 保留——toc 与 changelog 无关）。 |
 | 8 | head block 渲染细节：空值行隐藏 + 相对路径链接 + 文件名显示 + 多值列表；任务树保持 head 外独立可编辑 block | ① `> **done:**` 行**只在有 done 日期时显示**（未进过 done 状态 → 整行不出，不再渲染 `—`；`created` 恒有值照常显示）。② 关系链接（`supersedes`/`superseded_by`/`related`/`parent`/`subtask`）**路径改用相对记录自身文件**（现状项目根相对 `docs/tasks/T-…md`，点链接会断）：跨目录 = `../{目标dir}/{文件名}`，同目录 = 直接文件名——VS Code/GitHub 点链接可用。③ 链接**文本显示目标完整文件名**（不是 id）：`[PLN-0001-build-plan-tool.md](../plans/PLN-0001-build-plan-tool.md)`，一眼看出指向什么。④ **单值 → 一行**（`> **parent:** [文件名](路径)`）；**多值 → 列表**（key 行后跟 `> - [文件名1](路径1)`、`> - [文件名2](路径2)`，blockquote 内列表）。⑤ **任务树不进 head block**（head 围栏严格 no-hand-edit，任务树可手动勾选、回收入库要变更）：任务树保持为 head 围栏**之外的独立可编辑 block**——即现状的 `kind: task` section 渲染（`## <section>` 标题 + `task_tree_lines` 输出，位于 head + changelog 表之后），**该位置与机制不变**（不加新围栏）；手动勾选经现有 md→DB sync 回库。 |
 
 ### 需求 4 补充说明「task 本身也是 head block 里的内容」
@@ -99,7 +99,7 @@ sections:
 | D3 | `record_changelog` 是否加 `record_type TEXT` 冗余列 | **不加**（你确认）。record_id 全局唯一，join `records` 推出 type。 |
 | D4 | parent 关系约束 | **不加 DB 约束，但强制"一棵树"**（你确认）：① 无环——`check_rows` 父环校验（已有）；② 一子一父——一个 task 只带单值 `--parent`（new 参数天然单值，不会挂两个父）。应用层保证，不加 DB CHECK/UNIQUE。 |
 | D5 | status 变化事件的备注列 | **列名 `comment`**（你确认）。status 变化时 `from_status`/`to_status` 两列表达变化，`comment` 可空可写（如 "review passed with notes"）；**显示**：有 status 变化 → Change 列 = `emoji 版状态变化`（如 `✏️ Draft → 🚧 In Progress`）开头，后跟 `comment`；无 status 变化 → Change 列单独显示 `comment`。非 status 事件（created 等）两列为 NULL。 |
-| D6 | changelog 表行数的配置名 + 读取位置 | **`PROJ_LOGS`**（你确认）：`0`=不显示，`-1`=全部，未设/空=默认 5，正整数 N=最新 N 条。**读取位置（修订）**：项目 `.env`（项目根，与 `.proj.lock` 同级）优先 → OS 环境变量 → 默认 5。**`.env` 是什么/什么格式**：项目级环境配置文件，**扁平 `KEY=VALUE`**（不用 YAML/TOML——配置是扁平标量、shell 可 `set -a; . .env` 直接导出使项目级与 OS 级同一套语义、10 行零依赖解析且无 YAML `on/off`→bool 坑；YAML 留给结构化的 templates）；一行一个 `KEY=VALUE`、`#` 注释（现有 quality profile scaffold 的 `.env.example` 就是这个格式，目前只有 `# API_KEY=` 占位）；作用 = proj 操作本项目时要读的、不进 OS 的配置（现在只有 `PROJ_LOGS` 一项）；解析 = 逐行 `line.split("=",1)` 进 dict；与 `PROJ_HOME`（mcp.py，OS 级指项目路径）不冲突：OS 级 = 全局/服务器默认，项目级 `.env` = 本项目配置。**proj 之后管理自己**：`.env` 随项目提交（和 DB 一样），clone 即得同一渲染配置；本地要覆盖改自己的 `.env`；`.env.example` 加一行 `PROJ_LOGS=` 占位。注意：`render.toc` 开关保留（decision 用），只有 `render.changelog` 被 `.env` 取代。 |
+| D6 | changelog 表行数的配置名 + 读取位置 | **`PROJ_LOGS`**（你确认）：`0`=不显示，`-1`=全部，未设/空=默认 5，正整数 N=最新 N 条。**读取机制（修订，你确认）**：**所有配置一律走环境变量**；CLI/MCP 启动时先 load 项目根 `.env`（与 `.proj.lock` 同级，dotenv 语义——**已存在的 OS 环境变量不覆盖**，即 OS env > `.env` 补空 > 代码默认值），之后一切配置读 `os.environ`、无特判。**`.env` 是什么/什么格式**：项目级环境配置文件，**扁平 `KEY=VALUE`**（不用 YAML/TOML——配置是扁平标量、shell 可 `set -a; . .env` 直接导出使项目级与 OS 级同一套语义、~15 行零依赖解析且无 YAML `on/off`→bool 坑；YAML 留给结构化的 templates）；一行一个 `KEY=VALUE`、`#` 注释（现有 quality profile scaffold 的 `.env.example` 就是这个格式，目前只有 `# API_KEY=` 占位）；作用 = proj 操作本项目的配置默认值来源（现在只有 `PROJ_LOGS` 一项）；与 `PROJ_HOME`（mcp.py，OS 级指项目路径）分工：OS 级 = 全局/服务器默认，项目 `.env` = 本项目补空。**proj 之后管理自己**：`.env` 随项目提交（和 DB 一样），clone 即得同一渲染默认；本地/CI 用 OS env 覆盖；`.env.example` 加一行 `PROJ_LOGS=` 占位。注意：`render.toc` 开关保留（decision 用），只有 `render.changelog` 被 env 取代。 |
 
 | D7 | supersede 通用化后，被替代记录的状态副作用 | **不自动置 Deprecated**（你确认）。写入 supersede 边**不改被替代记录的状态**；`> **superseded_by:**` 行保留（从 relations 反向查，纯渲染，与状态无关）。`deprecate` 动词仍可用，需要时手动 `proj decision deprecate`。 |
 | D8 | `relations` 是否存 `source_type`/`target_type` 列 | **不存**（你确认）。type 从 **id 前缀解析**：`source`/`target` 形如 `DEC-0003`，registry 里 `code → record_type` 是现成的映射（`resolve_record_type` 已按 code 解析），查表即得 type。**全量成立**：`numbered` 只填位数且**必须 > 0**（D9，无 letter、无 `numbered:0`）→ 每条记录都有 code 前缀 id，前缀必能解析。顺带：`source`/`target` 加 `FK REFERENCES records(id) ON DELETE CASCADE`——删记录自动删边，现状 `db.delete` 手动清 relations 的三行代码删掉。同类型校验（supersede）= 两个 id 的前缀 code 相同（解析后比较 record_type）。 |
@@ -112,11 +112,13 @@ sections:
 
 > 实施 agent 已按上文落地 schema + `PROJ_LOGS`（OS env 版）。以下两条是**规划人在实施后追加的决定**，需回改已落地代码。
 
-1. **`PROJ_LOGS` 改从项目 `.env` 读（D6 修订）**：
-   - 现状：[`store.py`](src/proj/engine/store.py) `_logs_limit()` 只读 `os.environ["PROJ_LOGS"]`。
-   - 改法：`_logs_limit()` 改成 **项目根 `.env`（与 `.proj.lock` 同级）优先 → OS env → 默认 5**。解析 = 逐行 `line.split("=",1)`、跳过 `#`/空行（~10 行，无 dotenv 依赖）。`.env` 随项目提交（clone 即得），本地可覆盖。
-   - `.env.example`（quality profile scaffold 的 `texts.env_example`）加一行 `PROJ_LOGS=` 占位。
-   - 注意：与 [`mcp.py`](src/proj/mcp.py) 的 `PROJ_HOME`（OS 级指项目路径）不冲突——OS 级 = 全局/服务器默认，项目级 `.env` = 本项目配置。
+1. **CLI/MCP 启动时 load 项目 `.env`（D6 修订，你确认）**：
+   - **原则：所有参数/配置一律走环境变量**；`.env` 只是这些变量的项目级默认值来源。
+   - 改法：`proj.core.config` 加 `load_project_env(root: Path)`——读 `<root>/.env`（与 `.proj.lock` 同级），逐行 `line.split("=",1)`、跳过 `#`/空行，**已存在的 OS 环境变量不覆盖**（dotenv 语义：OS env > .env 补空 > 代码默认值）；~15 行，无 dotenv 依赖。
+   - 调用点：CLI 的全局 `--root` callback（root 解析完立即 load，所有命令继承）+ MCP 的 [`_cfg()`](src/proj/mcp.py:32)（root 解析完 load）——**入口各一次**。
+   - 之后 **`_logs_limit()` 等一切配置读取不动**（继续读 `os.environ`）；将来加任何 `PROJ_*` 配置零特殊处理。
+   - `.env.example`（quality profile scaffold 的 `texts.env_example`）加一行 `PROJ_LOGS=` 占位；`.env` 随项目提交（clone 即得同一默认），本地/CI 用 OS env 覆盖。
+   - 与 [`mcp.py`](src/proj/mcp.py) 的 `PROJ_HOME`（OS 级指项目路径）分工：OS 级 = 全局/服务器默认，项目 `.env` = 本项目补空。
 2. **时间存 UTC 时间戳、渲染只显示日期（D10）**：
    - 现状：[`db.py`](src/proj/core/db.py) `add_log`/`add_changelog_entry` 存 `date.today().isoformat()`（本地日期、无时间）。
    - 改法：改存 `datetime.now(timezone.utc).isoformat(timespec="seconds")`（UTC 时间戳，可排序）；**渲染** changelog 表 Date 列 = 存值日期部分（`ts[:10]`）。`_done_date`/`first_date_to` 取日期部分比较。
@@ -156,7 +158,7 @@ sections:
 
 | 文件 | 改动 |
 |------|------|
-| [`src/proj/core/db.py`](src/proj/core/db.py) | 核心：单 `records`（`summary`→`one_sentence` 列）+ 单 `record_changelog`（加 `from_status`/`to_status`）表；relations 加 `parent_of`/`children_of`；`ensure_kind`/`insert`/`get`/`all`/`set`/`delete`/`max_int_id`/`add_log`/`logs`/`first_date_to` 全改；`write_lock`/`specs_from_lock` 去 features 加顶层键；`SCHEMA_VERSION`→2（无 migrate）。 |
+| [`src/proj/core/db.py`](src/proj/core/db.py) | 核心：单 `records`（`summary`→`one_sentence` 列）+ 单 `record_changelog`（加 `from_status`/`to_status`）表；relations 加 `parent_of`/`children_of`；`ensure_kind`/`insert`/`get`/`all`/`set`/`delete`/`max_int_id`/`add_log`/`logs`/`first_date_to` 全改；`write_lock`/`specs_from_lock` 去 features 加顶层键；`SCHEMA_VERSION`→2（无 migrate）。**（§4c-2）`add_log`/`add_changelog_entry` 改存 UTC 时间戳。** |
 | [`src/proj/core/templates.py`](src/proj/core/templates.py) | `RecordTypeSpec`：删 `apply_supersede`/`apply_task`/`fields`，加 `contain_task`；删 parent 注入列段；删 `load_registry` 里的 fields 解析。 |
 | [`profiles/*.yaml`](profiles/task.yaml) ×6 | 删 `features:` 段、顶层 `supersede:` 行、`fields:` 段、`render.changelog:` 行；加顶层 `contain_task:`（decision 保留 `render.toc:`）。 |
 | [`src/proj/engine/store.py`](src/proj/engine/store.py) | subtask 行改读 relations（head 内单值/多值链接，**任务树不进 head**——仍是 head 外可编辑 section）；删 `RELATION_FIELDS={"parent"}`；`row["summary"]`→`row["one_sentence"]`；status_set 填 from/to_status + `comment`、按 D5 规则渲染 Change 列（emoji 状态变化开头 + comment）；`_head_block` done 行有值才渲染；`_link_value` 文本=完整文件名、路径=相对记录自身文件、单值一行/多值列表（需求 8）。 |
@@ -164,7 +166,10 @@ sections:
 | [`src/proj/record_types/task.py`](src/proj/record_types/task.py) | `new` 写 parent 关系；`check_rows` 幽灵 parent/父环改查 relations。 |
 | [`src/proj/record_types/plan.py`](src/proj/record_types/plan.py) | review 门禁 `children_of` 取直接子任务。 |
 | [`src/proj/engine/record.py`](src/proj/engine/record.py) | `set_status`/`add_log` 走 from/to_status；`new` 的 supersede 分支**删 `apply_supersede` 门槛**（所有类型可用，加同类型校验），**不**置 Deprecated（D7）；`graph()` 不再以开关为条件（supersede 边有则渲染）。 |
-| [`src/proj/cli.py`](src/proj/cli.py) | `_dyn_list` 的 `(parent X)` 改读 relations；`row["one_sentence"]`。 |
+| [`src/proj/cli.py`](src/proj/cli.py) | `_dyn_list` 的 `(parent X)` 改读 relations；`row["one_sentence"]`。**（§4c-1）全局 `--root` callback 里调 `load_project_env(root)`（入口 load `.env` 一次）。** |
+| [`src/proj/mcp.py`](src/proj/mcp.py) | **（§4c-1）`_cfg()` 里 root 解析后调 `load_project_env(root)`。** |
+| [`src/proj/core/config.py`](src/proj/core/config.py) | **（§4c-1）新增 `load_project_env(root)`：读 `<root>/.env`（KEY=VALUE，跳过 `#`/空行，不覆盖已存在的 OS env 变量），~15 行无依赖。** |
+| [`profiles/texts.yaml`](profiles/texts.yaml) | **（§4c-1）`env_example` 加一行 `PROJ_LOGS=` 占位（注释说明取值 0/-1/N）。** |
 | [`src/proj/check.py`](src/proj/check.py) | `template_matches_table` 改单表校验（`one_sentence` 列）。 |
 | [`src/proj/mcp.py`](src/proj/mcp.py) | parent / one_sentence 描述微调。 |
 | [`tests/*`](tests/test_task_plan.py) | task/plan 树 + 门禁断言适配（parent 走 relations）；one_sentence / status 列断言。 |
