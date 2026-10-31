@@ -26,6 +26,8 @@ proj docs
 
 - **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单向 md→DB，`render` 单向 DB→md。
 - 手写 md 后跑 `proj sync`（或 `proj update`）；只改 DB 后跑 `proj render`。
+- 记录的 `# <ID>. <标题>` 行**可手改**：`sync` 把新标题回收进 DB 并把文件重命名到新
+  slug（id 不变；changelog 块、`<!-- proj:head → -->` 围栏内的 metadata 仍由工具维护）。
 - `check` 检查：.proj.lock 模板在、表 schema 匹配模板、md 各 section 与 DB 一致、
   record_type 特有不变量（task：parent/related 存在、无父环、Steps ≤2 层）。
 - 裸跑 `proj`（无子命令）：已 init → 项目状态（同 `info`）；未 init → 只有 `init` 可用。
