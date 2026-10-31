@@ -31,6 +31,7 @@
 | 5 | status 变化单独列存（不塞文本）+ changelog 表下加 status 图例 | `record_changelog` 加 `from_status`/`to_status` 两列：status 变化时填两列、事件备注列 `comment` **不再拼 "status X → Y"**；渲染 Change 列 = emoji 版状态变化开头 + 后跟 comment（D5 显示规则）；**changelog 表底下渲染一行 status 图例**（`emoji 状态名` 对照，复用现有 `views.status_legend`）；`first_date_to` 改查 `to_status=?` 列。非 status 事件两列为 NULL。 |
 | 6 | record 表的 `summary` 列改名 `one_sentence` | `records.one_sentence`：一句话总览这条记录。列名避开与正式 section 混淆（incident/debt 等有同名 `## Summary` section）。Python/CLI 对外 API 可仍叫 `summary`（`row["one_sentence"]`、`--summary` flag、`new(summary=)` 不变），仅存储列名改。 |
 | 7 | 删 `render.changelog:` 开关，改用环境变量 `PROJ_LOGS` | 环境变量 `PROJ_LOGS`（D6 已定）控制每条记录 md 里渲染的 changelog 表行数：`0` = 不显示；`-1` = 显示全部；正整数 N = 显示最新 N 条（现状 5 条，即默认值，未设变量时按 5）。6 个 template 删 `render:` 段里的 `changelog:` 行（decision 的 `render.toc: true` 保留——toc 与 changelog 无关）。 |
+| 8 | head block 渲染细节：空值行隐藏 + 相对路径链接 | ① `> **done:**` 行**只在有 done 日期时显示**（未进过 done 状态 → 整行不出，不再渲染 `—`；`created` 恒有值照常显示）。② head block 里关系链接（`supersedes`/`superseded_by`/`related`/`parent`/`subtask`）**改用相对记录自身文件的路径**（现状是项目根相对 `docs/tasks/T-…md`，从记录文件点链接会断）：所有记录固定在 `docs/{dir}/`（`dir:` 模板已知），跨目录 = `../{目标dir}/{文件名}`，同目录 = 直接文件名——VS Code/GitHub 点链接可用。 |
 
 ### 需求 4 补充说明「task 本身也是 head block 里的内容」
 parent 入 relations 后，**父记录的 head block 渲染 `> **subtask:**` 行**改为从 `relations` 查 `kind='parent' AND source=本记录` 得到子任务（source=父=本记录，target=子任务），不再扫 `db.all(...).parent` 列（该列已删）。即 task 的挂载关系经 relations 表达、在 head block 呈现——与 supersede/related 同机制（source 当主语）。
@@ -122,7 +123,8 @@ sections:
 5. **parent 从列迁到 relations**：`Task.new` 写 `add_relation(parent_id, task_type, new_id, 'parent')`（source=父）；`store.render_record` 的 subtask 行（`children_of`）+ task 的 `> **parent:**` 行（`parent_of`）+ `views.task_tree_lines`（`children_of` 建树）+ `record_types/plan.py` review 门禁（`children_of` 取直接子任务）+ `cli._dyn_list` 的 `(parent X)`（`parent_of`）全部改读 `relations`；删 `parent` 列与 `RELATION_FIELDS={"parent"}`。→ 验证：pytest（task/plan 树渲染 + review 门禁 + 幽灵/环）。
 6. **supersede 通用化（D1 去门槛 + D7 去副作用）**：删 `record.py` 的 `apply_supersede` 门槛，supersede 对任何类型可用（加同类型校验：`source_type != target_type` 拒）；**不**再自动置 Deprecated（D7），只写 relations 边 + changelog 一条；被替代记录的 `> **superseded_by:**` 行照常渲染。→ 验证：pytest（非 decision 类型也能 `-s`；跨类型拒；同类型链无环；被替代记录状态不变 + superseded_by 行在）。
 7. **changelog 表行数改 env 变量**：`store.render_record` 的 `db.logs(..., limit=5)` 改读 `PROJ_LOGS`（0→不渲染表；-1→不限；默认 5；N→N 条）；`RecordTypeSpec.apply_changelog` 删除，6 个 yaml 删 `render.changelog:` 行（decision 保留 `render.toc:`）；`write_lock`/`specs_from_lock` 同步去 `render.changelog`。→ 验证：pytest（三种取值）+ e2e（默认 5 条不变）。
-8. **收尾**：`mcp.py` 里 parent/one_sentence/supersede 通用/PROJ_LOGS 相关描述、`docs.py`/CLI 帮助文案、lock 格式；`SCHEMA_VERSION`→2（无 migrate 分支）。→ 验证：`pixi run test` + `pixi run e2e` 全绿。
+8. **head block 细节（需求 8）**：`_head_block` 的 `done` 行改为**有值才渲染**（未 done → 整行不出）；`_link_value` 改按**记录自身文件的相对路径**算链接（同目录 → 直接文件名，跨目录 → `../{目标dir}/{文件名}`，`dir` 从 registry 的 spec 取；dangling id 仍落回纯文本）。→ 验证：pytest（无 done 的行缺失 + task→plan 跨目录链接 = `../plans/PLN-….md`）+ e2e（既有 head 断言适配）。
+9. **收尾**：`mcp.py` 里 parent/one_sentence/supersede 通用/PROJ_LOGS 相关描述、`docs.py`/CLI 帮助文案、lock 格式；`SCHEMA_VERSION`→2（无 migrate 分支）。→ 验证：`pixi run test` + `pixi run e2e` 全绿。
 
 ## 6. 影响面清单（文件级）
 
@@ -131,7 +133,7 @@ sections:
 | [`src/proj/core/db.py`](src/proj/core/db.py) | 核心：单 `records`（`summary`→`one_sentence` 列）+ 单 `record_changelog`（加 `from_status`/`to_status`）表；relations 加 `parent_of`/`children_of`；`ensure_kind`/`insert`/`get`/`all`/`set`/`delete`/`max_int_id`/`add_log`/`logs`/`first_date_to` 全改；`write_lock`/`specs_from_lock` 去 features 加顶层键；`SCHEMA_VERSION`→2（无 migrate）。 |
 | [`src/proj/core/templates.py`](src/proj/core/templates.py) | `RecordTypeSpec`：删 `apply_supersede`/`apply_task`/`fields`，加 `contain_task`；删 parent 注入列段；删 `load_registry` 里的 fields 解析。 |
 | [`profiles/*.yaml`](profiles/task.yaml) ×6 | 删 `features:` 段、顶层 `supersede:` 行、`fields:` 段、`render.changelog:` 行；加顶层 `contain_task:`（decision 保留 `render.toc:`）。 |
-| [`src/proj/engine/store.py`](src/proj/engine/store.py) | subtask 行改读 relations；删 `RELATION_FIELDS={"parent"}`；`row["summary"]`→`row["one_sentence"]`；status_set 填 from/to_status + `comment`、按 D5 规则渲染 Change 列（emoji 状态变化开头 + comment）。 |
+| [`src/proj/engine/store.py`](src/proj/engine/store.py) | subtask 行改读 relations；删 `RELATION_FIELDS={"parent"}`；`row["summary"]`→`row["one_sentence"]`；status_set 填 from/to_status + `comment`、按 D5 规则渲染 Change 列（emoji 状态变化开头 + comment）；`_head_block` done 行有值才渲染；`_link_value` 改相对记录自身文件的路径（需求 8）。 |
 | [`src/proj/engine/views.py`](src/proj/engine/views.py) | `task_tree_lines` 用 `children_of` 建树；`render_tasklist_md` 用 `contain_task` + `children_of`；`status_legend(spec)` 现供 changelog 表底下的图例行复用（签名不变）。 |
 | [`src/proj/record_types/task.py`](src/proj/record_types/task.py) | `new` 写 parent 关系；`check_rows` 幽灵 parent/父环改查 relations。 |
 | [`src/proj/record_types/plan.py`](src/proj/record_types/plan.py) | review 门禁 `children_of` 取直接子任务。 |
@@ -147,7 +149,7 @@ sections:
 - `pixi run test` 全绿（含：单表增删改查、id 按 type 递增、`one_sentence` roundtrip、changelog 单表 roundtrip、status 变化落 from/to_status 两列（comment 不再拼文本）+ D5 显示规则（有/无 status 变化两种形态）+ 表下 status 图例行、done 日期、task 树/父 head subtask 行、plan review 门禁、幽灵 parent 拒、父环检出、supersede 任意类型可用 + 跨类型拒 + 同类型链无环 + 被替代记录状态不变且 superseded_by 行在（D7）、`PROJ_LOGS` 三态（0/-1/默认）渲染）。
 - `pixi run e2e` 全绿（`.testproj` 沙盒全生命周期）。
 - 无残留每类型表；`.proj.sqlite` 仅 `records`/`record_changelog`/`relations`/`changelog_entries`/`meta`。
-- 渲染产物 md 与现状**逐字节一致**（head block、`> **subtask:**`、`## Task List`、TASKLIST.md 树、changelog 表的 `X → Y` 显示）——只改存储，不改呈现。
+- 渲染产物 md 与现状一致，**除两处预期变化**（需求 8）：无 done 日期时 `> **done:**` 行**不出现**（原来显示 `—`）；head block 关系链接从项目根相对改为**相对记录自身文件**（同目录直接文件名 / 跨目录 `../…`），点链接可用。其余（`> **subtask:**`、`## Task List`、TASKLIST.md 树、changelog 表的 emoji 状态变化 + comment 显示）——只改存储，不改呈现。
 
 ## 8. 风险
 
