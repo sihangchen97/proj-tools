@@ -55,18 +55,22 @@ sections:
     type: task
     hint: >-
       Rendered by proj from the DB (tasks with parent = this plan, recursively)
-      — an editable block below the head: tick a sub-step here and run
+      — an editable block right below the head fence and before the other
+      sections, collapsed by default: tick a task checkbox here and run
       `proj sync` to store it. The head's `subtask:` row links the direct
       children.
-      A plan has no steps or checkboxes of its own: ALL of its work is tasks.
+      The Task List holds TASKS, not steps: a plan has no steps or
+      checkboxes of its own, ALL of its work is tasks. A task is tracked
+      (its own id, status, owner and `## Steps` checkboxes, shown in
+      TASKLIST.md while the plan is Active, gates `proj plan review`); a
+      step is one checkbox item inside a single task's Steps — done by that
+      task's executor in one sitting, never listed here. In short: the
+      plan's work lives in this Task List; each task's how-to lives in that
+      task's Steps.
       Create one task per deliverable that needs its own status, owner or
       acceptance criteria, or takes more than about half a day:
-      `proj task new "Title" --parent PLN-xxxx`. The how-to of each task goes
-      into that task's own `## Steps` checkboxes, not here. Task vs step: a
-      task is tracked (id, status, shown in TASKLIST.md while the plan is
-      Active, gates `proj plan review`); a step is a small checklist item
-      inside one task, done by that task's executor in one sitting. Break a
-      large task into sub-tasks with `--parent T-xxxxxx`.
+      `proj task new "Title" --parent PLN-xxxx`. Break a large task into
+      sub-tasks with `proj task new "T" --parent T-xxxxxx`.
   - name: Risks & Dependencies
     hint: >-
       What could make the plan late or fail, as bullets: `- Risk: <what> —

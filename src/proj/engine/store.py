@@ -8,22 +8,29 @@ md file shape (rendered by the engine):
                                              <-   invisible in preview)
     <!-- proj:head:start … TOOL-MANAGED … -->  <- head fence (HEAD_START): everything
     # 0001. Title                          <-   between start and end is maintained by
-                                             <-   `proj` (title + metadata block + summary);
-                                             <-   the start line says: never hand-edit
+                                             <-   `proj` (title + metadata block + summary
+                                             <-   + the changelog); the start line says:
+                                             <-   never hand-edit
     > **status:** 📛 Deprecated             <- tool-owned metadata block (a blockquote,
     > **supersedes:** [0001](0001-x.md)    <-   not front matter, so md validators
     > **subtask:** B                        <-   leave it alone; renders as a gray
-    > **created:** 2026-10-29              <-   sidebar, every line but the last
-    > **done:** 2026-10-29                 <-   hard-wrapped; same-type id refs
+    > **created/done:** 2026-10-29 → …     <-   sidebar, every line but the last
+                                             <-   hard-wrapped; same-type id refs
                                              <-   link
     _one sentence summary_                 <- optional italic line below the block
                                              <-   (shown only when set; md wins)
-    <!-- proj:head:end -->                 <- head fence end (HEAD_END): region owned
+    <details><summary>Changelogs</summary>  <- the changelog is INSIDE the head fence
+    - `2026-10-29 - status 🌱 → ✅ Accepted` <-   (tool-owned; collapsed by default;
+    …legend…                            <-   latest PROJ_LOGS rows; 0=none, -1=all)
+    </details>
+    <!-- proj:head:end -->                 <- head fence end (HEAD_END): everything
+                                             <-   above it (block + summary + changelog)
+                                             <-   is owned by `proj`, never hand-edit
 
-    | Date | Category | Change |          <- changelog entries (latest PROJ_LOGS
-    |---|---|---|                         <-   rows; 0=none, -1=all, unset=5),
-    | 2026-10-29 | Changed | status Proposed → Accepted |  <- status changes from columns
-    * emoji legend ...                     <- status legend line below the table
+    ## Task List                           <- the editable task tree (kind: task
+    <details><summary>Task list</summary>   <-   section), right below the head fence
+    - [x] T-000001 Title                  <-   and BEFORE the user-owned sections;
+    </details>                            <-   collapsed by default
 
     ## Context                             <- user-owned content (the only
     ...                                    <- part humans/LLMs edit)
@@ -71,8 +78,9 @@ HEAD_LINE_RE = re.compile(r"^> \*\*(\w+):\*\*\s*(.*)$")
 # (id marker above, title + metadata block + optional summary inside). The
 # start line carries a human/agent-readable instruction that the region is
 # maintained by `proj` and must not be hand-edited (edit via `proj` instead).
-HEAD_START = "<!-- proj:head:start — TOOL-MANAGED: metadata + summary are " \
-             "maintained by `proj`; never hand-edit this region (use `proj`) -->"
+HEAD_START = "<!-- proj:head:start — TOOL-MANAGED: metadata, summary and " \
+             "changelog are maintained by `proj`; never hand-edit this region " \
+             "(use `proj`) -->"
 HEAD_END = "<!-- proj:head:end -->"
 
 
@@ -300,8 +308,9 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         if kids:
             fm["subtask"] = _link_value(", ".join(kids), db, reg, spec, row)
     # marker comment (line 1, invisible) → title (editable; synced back to the
-    # DB) → the head fence (tool-owned blockquote + one-sentence summary):
-    # everything between start and end is maintained by `proj`.
+    # DB) → the head fence: the TOOL-OWNED region is blockquote + summary +
+    # the changelog — everything between start and end is maintained by `proj`
+    # (the fence end sits AFTER the changelog, never hand-edit it).
     head = _head_lines(fm)
     lines = [f"<!-- proj:{spec.record_type} {row['id']} -->",
              f"# {row['id']}. {row['title']}", "",
@@ -311,32 +320,37 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
              ""]
     if row.get("one_sentence"):
         lines.append(f"_{row['one_sentence']}_")  # one-sentence summary, inside
-    lines += [HEAD_END, ""]
     limit = _logs_limit()
     if limit != 0:
         logs = db.logs(row["id"], limit=limit)  # newest first
         if logs:
-            # every entry collapses into one <details>; the status legend
-            # (emoji → name) sits inside, at the bottom, so the emoji in each
-            # line stays decodable
-            lines += ["", "<details>",
-                      "<summary>Changelogs</summary>", ""]
+            # the changelog is inside the tool-owned head region: collapsed by
+            # default; the status legend (emoji → name) sits inside, at the
+            # bottom, so the emoji in each line stays decodable
+            lines += ["<details>", "<summary>Changelogs</summary>", ""]
             lines += [_log_entry(e, spec) for e in logs]
             legend = " · ".join(spec.status_display(s) for s in spec.status_allowed)
-            lines += ["", legend, "</details>", ""]
+            lines += ["", legend, "</details>"]
+    lines += ["", HEAD_END]
     sections = json.loads(row["sections"] or "{}")
+    # the editable task tree (kind: task section) sits right BELOW the head
+    # fence, before the user-owned sections; collapsed by default
     for sec in spec.sections:
+        if sec.kind != "task":
+            continue
         lines += [f"## {sec.name}", ""]
+        from proj.engine.views import task_tree_lines  # lazy: views↔store cycle
+        task_spec = reg.get("task")
+        tree = (task_tree_lines(
+            db.all(task_spec) if task_spec else [], row["id"], db)
+            or ["(no tasks attached)"])
+        lines += ["<details>", "<summary>Task list</summary>", ""]
+        lines += tree + ["</details>", ""]
+    for sec in spec.sections:
         if sec.kind == "task":
-            # editable task tree block: tasks whose parent is this record
-            # (kind=parent edge), recursively — hand-checkable, synced back
-            from proj.engine.views import task_tree_lines  # lazy: views↔store cycle
-            task_spec = reg.get("task")
-            lines += (task_tree_lines(
-                db.all(task_spec) if task_spec else [], row["id"], db)
-                or ["(no tasks attached)"])
-        else:
-            lines.append(sections.get(sec.name.lower(), "").strip())
+            continue
+        lines += [f"## {sec.name}", ""]
+        lines.append(sections.get(sec.name.lower(), "").strip())
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
