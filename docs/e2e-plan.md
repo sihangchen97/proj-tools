@@ -115,16 +115,19 @@ expect_no()   { # <desc> <固定串> -- <file>     文件**不**含（负断言�
 ### J. MCP 面（不重复，指回 pytest）
 MCP 工具与 CLI 等价（`proj_info/proj_list/proj_show/proj_status/…`），已由 `tests/test_mcp.py` 覆盖——**e2e 不重复**，在脚本文头注释里说明"MCP 面见 pytest"。
 
-## 3. 实施顺序（每步可独立验证）
+## 3. 实施顺序（**过程只改功能、不跑测试；最后统一跑一次测**）
 
-1. **helper 抽取 + 分节重排**：现有 ~80 断言原样归位到 A/B/C/D/E/F/G/H/I 节（断言不删不改，只搬家 + 手写 grep 分支换成 `expect_file/expect_no`）。→ 验证：`pixi run e2e` 断言数**不减**、全绿。
-2. **A 节 profile 扩展**（A3–A7）+ 沙盒 pid 护栏。→ 验证：e2e 全绿。
-3. **B 节 CRUD 补齐**（B3/B4/B5 文件改名/B8/B10）。→ 验证：e2e 全绿。
-4. **C 节 relations**（C2 反向/C3 列表/C5 幽灵/C6 父环/C7-C8 新 schema）。C7/C8 依赖统一 schema 落地——**若实施时新 schema 未落地，这两条先注释 `# (post-schema)` 占位**，落地后启用。→ 验证：e2e 全绿（或仅 post-schema 注释行）。
-5. **D/E 节 task 树 + 状态机非法转移**（D5 三层缩进/E1）。→ 验证：e2e 全绿。
-6. **F 节 render/views**（F1–F6 立即可做；F7–F11 新 schema 依赖，同样 `# (post-schema)` 占位）。→ 验证：e2e 全绿。
-7. **G/H/I 节**（G2/G3/G4 drift、H1/H2、I3/I4）。drift（G4）若现有 `md_drift` 警告面不全，**先补代码再写断言**（drift 警告是 `render` 静默覆盖的数据保护，属该补）。→ 验证：e2e 全绿。
-8. **收尾**：文件头注释补"MCP 面见 pytest"+ 节索引；跑 `pixi run test` + `pixi run e2e` 双绿。
+> 纪律（你定的）：步骤 1–7 **只改代码/断言、不跑 e2e/pytest**（避免 NFS 上反复起沙盒、反复等渲染）；全部改完后**步骤 8 一次性统一测**（`pixi run test` + `pixi run e2e`），红了再回查。
+
+1. **helper 抽取 + 分节重排**：现有 ~80 断言原样归位到 A/B/C/D/E/F/G/H/I 节（断言不删不改，只搬家 + 手写 grep 分支换成 `expect_file/expect_no`）。（不跑）
+   - 唯一例外（便宜保险）：bash 语法用 `bash -n scripts/e2e.sh` 过一遍（不执行、不建沙盒、秒回）——语法错了最后统一测会连锁假红、难定位。
+2. **A 节 profile 扩展**（A3–A7）+ 沙盒 pid 护栏。（不跑）
+3. **B 节 CRUD 补齐**（B3/B4/B5 文件改名/B8/B10）。（不跑）
+4. **C 节 relations**（C2 反向/C3 列表/C5 幽灵/C6 父环/C7-C8 新 schema）。C7/C8 依赖统一 schema 落地——**若实施时新 schema 未落地，这两条先注释 `# (post-schema)` 占位**，落地后启用。（不跑）
+5. **D/E 节 task 树 + 状态机非法转移**（D5 三层缩进/E1）。（不跑）
+6. **F 节 render/views**（F1–F6 立即可做；F7–F11 新 schema 依赖，同样 `# (post-schema)` 占位）。（不跑）
+7. **G/H/I 节**（G2/G3/G4 drift、H1/H2、I3/I4）。drift（G4）若现有 `md_drift` 警告面不全，**先补代码再写断言**（drift 警告是 `render` 静默覆盖的数据保护，属该补）。（不跑）
+8. **统一测（唯一一次）**：`pixi run test` + `pixi run e2e` 双跑；红了按节定位回查（输出分节 + 断言 desc 串可直接 grep 到矩阵行）；修完重跑**整条** e2e（不增量单跑）。文件头注释补"MCP 面见 pytest"+ 节索引。→ 验收全绿。
 
 ## 4. 验收标准
 

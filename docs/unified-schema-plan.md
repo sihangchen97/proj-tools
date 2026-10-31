@@ -114,9 +114,11 @@ sections:
 - **head block 渲染**（读 relations，与写入对称，source 当主语）：`> **supersedes:**` = `kind=supersede AND source=本记录`→target、`> **superseded_by:**` = `kind=supersede AND target=本记录`→source、`> **related:**`（kind=related）、`> **subtask:**` = `kind=parent AND source=本记录`→target（本记录是父）、task 的 `> **parent:**` 行 = `kind=parent AND target=本记录`→source（本记录是子，新增）——全部经 `relations` 查，不再读列。显示格式（需求 8）：单值 `> **key:** [目标完整文件名](相对路径)`；多值 key 行后跟 `> - [文件名](路径)` 列表。
 - **删除**：`RELATION_FIELDS={"parent"}`（parent 不再是列，[`store.py`](src/proj/engine/store.py)）。
 
-## 5. 分步实施（每步可独立验证，按序）
+## 5. 分步实施（**过程只改功能、不跑测试；最后统一跑一次测**，按序）
 
-1. **relations 加 `kind='parent'`**：`db.py` 加 `children_of(parent_id)`（`kind='parent' AND source=parent`→target，返回子任务列表）、`parent_of(child_id)`（`kind='parent' AND target=child`→source，返回父；无则 None）。方向与 supersede 一致（source=父/主动方）。直接切，无双写过渡。→ 验证：pytest。
+> 纪律（你定的）：步骤 1–8 **只改代码、不跑 pytest/e2e**（避免反复起沙盒、反复等渲染）；每步末尾的"→ 验证：pytest（…）"是**该步应满足的行为标准**（供最后统一测时按清单核对），不是"跑完这一步立即验证"。全部改完后**步骤 9 一次性统一测**（`pixi run test` + `pixi run e2e`），红了再回查。
+
+1. **relations 加 `kind='parent'`**：`db.py` 加 `children_of(parent_id)`（`kind='parent' AND source=parent`→target，返回子任务列表）、`parent_of(child_id)`（`kind='parent' AND target=child`→source，返回父；无则 None）。方向与 supersede 一致（source=父/主动方）。直接切，无双写过渡。（行为标准：pytest parent 查询）
 2. **template 去 `features` + 顶层 `supersede:`，加 `contain_task`，删 `fields:`**：`templates.py` 改 `RecordTypeSpec` 字段（删 `apply_supersede`/`apply_task`/`fields`，加 `contain_task`）+ 解析；6 个 yaml 同步改（去 features、去 fields、去 `render.changelog`）；`write_lock`/`specs_from_lock` 去掉 `features`/`fields`、加 `contain_task` 顶层键。→ 验证：pytest（registry 加载）。
 3. **统一 `records` 表（含 `one_sentence` 列）**：`db.py` 用单表 `records`（`type` 列过滤替代每类型表）；列名 `summary`→`one_sentence`；`ensure_kind` → 建单表；`insert/get/all/set/delete/max_int_id` 全改 `WHERE type=?`；`next_id` 按 type 过滤；`check.template_matches_table` 改查单表；`store.py`/`record.py`/`cli.py` 里读 `row["summary"]` 处改 `row["one_sentence"]`（对外 `--summary`/`new(summary=)` API 不变）。→ 验证：pytest（增删改查 + id 递增 + one_sentence roundtrip）。
 4. **统一 `record_changelog` 表 + status 列 + `comment` + status 图例**：`db.add_log/logs/first_date_to` 改用单表；`add_log` 签名加 `from_status=None, to_status=None`，事件备注列改名 `comment`（status_set 的 status 变化调用点填两列、comment 可空）；`first_date_to` 改查 `to_status=?` 列；`_done_date` 改按 `to_status IN status_done`；渲染 `| Date | Category | Change |` 表时 Change 列 = **有 status 变化 ? f"{emoji(from_status)} {from_status} → {emoji(to_status)} {to_status}" + (f" {comment}" if comment) : comment**（D5 显示规则），表底下接 `views.status_legend(spec)` 一行；删每类型 `_changelog` 建表。→ 验证：pytest（changelog roundtrip + done 日期 + D5 显示规则两种形态 + 图例行在）。
@@ -124,7 +126,7 @@ sections:
 6. **supersede 通用化（D1 去门槛 + D7 去副作用）**：删 `record.py` 的 `apply_supersede` 门槛，supersede 对任何类型可用（加同类型校验：`source_type != target_type` 拒）；**不**再自动置 Deprecated（D7），只写 relations 边 + changelog 一条；被替代记录的 `> **superseded_by:**` 行照常渲染。→ 验证：pytest（非 decision 类型也能 `-s`；跨类型拒；同类型链无环；被替代记录状态不变 + superseded_by 行在）。
 7. **changelog 表行数改 env 变量**：`store.render_record` 的 `db.logs(..., limit=5)` 改读 `PROJ_LOGS`（0→不渲染表；-1→不限；默认 5；N→N 条）；`RecordTypeSpec.apply_changelog` 删除，6 个 yaml 删 `render.changelog:` 行（decision 保留 `render.toc:`）；`write_lock`/`specs_from_lock` 同步去 `render.changelog`。→ 验证：pytest（三种取值）+ e2e（默认 5 条不变）。
 8. **head block 细节（需求 8）**：`_head_block` 的 `done` 行改为**有值才渲染**（未 done → 整行不出）；`_link_value` 重写为：**文本 = 目标完整文件名**（dangling id 落回纯文本 id）、**路径 = 相对记录自身文件**（同目录 → 直接文件名，跨目录 → `../{目标dir}/{文件名}`，`dir` 从 registry 的 spec 取）；head 渲染处：key 的值**单个 → 一行** `> **key:** [文件名](路径)`，**多个 → key 行 + 列表**（`> - [文件名1](路径1)` 逐条，blockquote 内列表）。**任务树位置与机制不变**（⑤）：仍是 head 围栏之外的独立可编辑 `kind: task` section（`## <section>` + `task_tree_lines`），手动勾选经现有 sync 回库。→ 验证：pytest（无 done 的行缺失 + 单值一行 + 多值列表（supersede 两个目标）+ task→plan 跨目录链接文本为完整文件名 + 任务树仍在 head 之后的 section 里）+ e2e（既有 head 断言适配新格式）。
-9. **收尾**：`mcp.py` 里 parent/one_sentence/supersede 通用/PROJ_LOGS 相关描述、`docs.py`/CLI 帮助文案、lock 格式；`SCHEMA_VERSION`→2（无 migrate 分支）。→ 验证：`pixi run test` + `pixi run e2e` 全绿。
+9. **收尾 + 统一测（唯一一次跑测试）**：`mcp.py` 里 parent/one_sentence/supersede 通用/PROJ_LOGS 相关描述、`docs.py`/CLI 帮助文案、lock 格式；`SCHEMA_VERSION`→2（无 migrate 分支）——这些都只改代码不跑；全部改完后**统一跑** `pixi run test` + `pixi run e2e`，红了按第 5 节各步的"行为标准"清单回查定位，修完重跑整条。
 
 ## 6. 影响面清单（文件级）
 
