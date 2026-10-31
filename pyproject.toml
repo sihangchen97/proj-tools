@@ -3,7 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "proj"
+# PyPI name: 'proj' is already taken there (an unrelated pkg); the import name
+# stays `proj` (packages = ["src/proj"]) and the CLIs stay `proj` / `proj-mcp`.
+name = "proj-tools"
 version = "0.1.0"
 description = "Project governance tool: ADRs, tasklists, changelogs, tech debt, incidents, experiments"
 readme = "README.md"
@@ -42,7 +44,7 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64", "osx-64"]
 
 [tool.pixi.pypi-dependencies]
-proj = { path = ".", editable = true }
+proj-tools = { path = ".", editable = true }
 
 [tool.pixi.feature.dev.dependencies]
 pytest = "*"

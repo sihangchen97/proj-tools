@@ -42,7 +42,8 @@ _ROOT: dict[str, Path | None] = {"root": None}  # set by --root callback (MCP re
 def _version_callback(v: bool):
     if v:
         import importlib.metadata
-        typer.echo(f"proj {importlib.metadata.version('proj')}")
+        # distribution name (PyPI pkg is 'proj-tools'; import name stays 'proj')
+        typer.echo(f"proj {importlib.metadata.version('proj-tools')}")
         raise typer.Exit()
 
 
