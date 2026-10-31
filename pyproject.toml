@@ -22,8 +22,9 @@ proj-mcp = "proj.mcp:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/proj"]
-# bundled profiles live in the repo root — copy them into the wheel as proj/profiles
-force-include = { "profiles" = "proj/profiles" }
+# bundled profiles + scaffold templates live in the repo root — copy them
+# into the wheel as proj/profiles and proj/templates
+force-include = { "profiles" = "proj/profiles", "templates" = "proj/templates" }
 
 [tool.ruff]
 line-length = 100

@@ -64,8 +64,9 @@ proj check                          # invariants; also runs in pre-commit hook
   match the filename prefix).
 - **Rendered views, never hand-edit**: `TASKLIST.md`, `CHANGELOG.md`, the
   `Task List` section of plans.
-- **Ownership rules on conflict** (sync): section content → md wins;
-  id/uuid/created/title/status/fields/changelog → DB wins.
+- **Ownership rules on conflict** (sync): section content + title → md wins
+  (a changed title renames the file to the new slug);
+  id/uuid/created/status/fields/changelog → DB wins.
 
 ## Kinds
 

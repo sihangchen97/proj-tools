@@ -315,11 +315,13 @@ def _build_record_group(name: str):
 
 @app.command()
 def init(profiles: list[str] = typer.Option(
-        ["default"], "--profile", help="default, cv, infra, quality (additive)")):
+        ["default"], "--profile", help="default, cv, infra, quality (additive)"),
+        zoo: bool = typer.Option(
+        False, "--zoo", help="also drop the agent rule file (.roo/rules/proj-tools.md)")):
     """Scaffold, build tables (lock wins over templates), seed, adopt files."""
     cfg = _cfg(strict=False)
     try:
-        created = scaffold.init(cfg, profiles)
+        created = scaffold.init(cfg, profiles, zoo=zoo)
     except ValueError as e:
         _fail(str(e))
     if created:

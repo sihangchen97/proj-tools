@@ -54,11 +54,26 @@ def test_lock_written_and_consistent(proj):
 
 
 def test_init_idempotent(proj):
-    # user-owned files are never recreated or overwritten
+    # user-owned files are never recreated or overwritten (templates/ copies)
     (proj.root / "CONTRIBUTING.md").write_text("mine")
     created = scaffold.init(proj, ["default", "quality"])
     assert "CONTRIBUTING.md" not in created
     assert (proj.root / "CONTRIBUTING.md").read_text() == "mine"
+
+
+def test_init_zoo_rule(proj):
+    """--zoo drops the agent rule file; without it, .roo/ is not created."""
+    # default init: no rule file, no .roo dir at all
+    assert not (proj.root / ".roo").exists()
+    rule = proj.root / ".roo" / "rules" / "proj-tools.md"
+    assert not rule.exists()
+    created = scaffold.init(proj, ["default"], zoo=True)
+    assert ".roo/rules/proj-tools.md" in created
+    assert "this project is governed by the `proj` tool" in rule.read_text()
+    # idempotent: a user-edited rule is never overwritten
+    rule.write_text("mine")
+    assert ".roo/rules/proj-tools.md" not in scaffold.init(proj, ["default"], zoo=True)
+    assert rule.read_text() == "mine"
     # rendered views get re-rendered (they are generated, not user-owned)
     spec = rec.load_registry(proj.root)["decision"]
     db = rec.open_db(proj)

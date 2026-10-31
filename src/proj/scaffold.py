@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from proj.core import db as dbmod
 from proj.core.config import ProjConfig
@@ -15,13 +16,23 @@ PROFILE_DIRS = {
     "quality": ["docs/tech-debt", "docs/incidents"],
 }
 
-# scaffolded file content lives in profiles/texts.yaml (bundled with the
-# package; a project's own copy overrides it wholesale) — not in this module.
+# scaffold templates are real files in the repo's templates/ (bundled with the
+# wheel as proj/templates): copy them over at init instead of keeping their
+# text inside this module.
+
+def templates_dir() -> Path:
+    # repo root (src/proj/scaffold.py → two levels up) carries templates/;
+    # installed wheels carry a copy inside the package instead
+    repo = Path(__file__).resolve().parents[2] / "templates"
+    if repo.is_dir():
+        return repo
+    return Path(__file__).resolve().parents[0] / "templates"
 
 
-def init(cfg: ProjConfig, profiles: list[str]) -> list[str]:
-    """Create missing governance files, build tables from lock or templates,
-    seed decision 0001, and adopt any pre-existing managed files."""
+def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
+    """Create missing governance files (copy from templates/), build tables
+    from lock or templates, seed decision 0001, and adopt pre-existing files.
+    zoo=True also drops the agent rule file (.roo/rules/proj-tools.md)."""
     created: list[str] = []
 
     texts = load_texts(cfg.root)  # scaffold + seed content (profiles/texts.yaml)
@@ -63,13 +74,26 @@ def init(cfg: ProjConfig, profiles: list[str]) -> list[str]:
 
     add("CHANGELOG.md", "")      # rendered from DB on first update
     add("TASKLIST.md", "")       # rendered from DB on first update
-    if "quality" in profiles:
-        add(".env.example", texts["scaffold"]["env_example"])
-        # D6: the project .env is committed like the DB (clone = same defaults);
-        # an empty PROJ_LOGS line documents the available config var
-        add(".env", "# project config defaults (D6): OS env > .env > code default\n"
-                    "# PROJ_LOGS=\n")
-    add("CONTRIBUTING.md", texts["scaffold"]["contributing"])
+
+    # real files copied from templates/ (user-editable afterwards; never
+    # re-created once present)
+    def copy_tpl(src: str, dst: str) -> None:
+        p = cfg.root / dst
+        if p.exists():
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text((templates_dir() / src).read_text(encoding="utf-8"),
+                     encoding="utf-8")
+        created.append(dst)
+
+    copy_tpl("env.example", ".env.example")
+    copy_tpl("CONTRIBUTING.md", "CONTRIBUTING.md")
+    # D6: the project .env is committed like the DB (clone = same defaults);
+    # an empty PROJ_LOGS line documents the available config var
+    add(".env", "# project config defaults (D6): OS env > .env > code default\n"
+                "# PROJ_LOGS=\n")
+    if zoo:
+        copy_tpl("zoo-rule.md", ".roo/rules/proj-tools.md")
 
     db = rec.open_db(cfg)
     if lock is None or pinned != list(lock.get("profiles", [])):
