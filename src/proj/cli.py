@@ -420,6 +420,7 @@ for _verb, _desc in [
     ("shelve", "Pending Review → Shelved (its tasks park in the plan)"),
     ("resume", "Shelved → Active"),
     ("archive", "Pending Review → Archived (frozen)"),
+    ("freeze", "Shelved → Archived (frozen)"),
 ]:
     def _make(verb=_verb, desc=_desc):
         @plan_app.command(verb)

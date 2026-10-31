@@ -96,7 +96,7 @@ Tasks are independent records; `task.plan` links them to a plan.
 
 State machine: `Draft →(activate) Active →(review: all tasks Done)
 Pending review →(shelve) Shelved →(resume) Active`;
-`Pending review →(archive) Archived`.
+`Pending review →(archive) Archived` and `Shelved →(freeze) Archived`.
 
 ### Task Steps (two-level checkboxes)
 

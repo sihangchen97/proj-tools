@@ -12,7 +12,7 @@
 | 生命周期 | `init` / `sync` / `adopt` / `update` / `render` / `check` | 建项目、md↔DB 往返、校验 |
 | 记录（通用） | `new` / `list` / `show` / `status` / `log` | 对任意 record_type 的 CRUD |
 | task | `task new` / `done` / `list` | 任务（含子任务门禁） |
-| plan | `plan new` / `activate` / `review` / `shelve` / `resume` / `archive` / `list` | 计划状态机 |
+| plan | `plan new` / `activate` / `review` / `shelve` / `resume` / `archive` / `freeze` / `list` | 计划状态机 |
 | decision | `decision new` / `list` / `toc` / `graph` / `link` | ADR 风格决策 |
 | changelog | `changelog add` / `version` / `release-notes` / `list` | CHANGELOG.md |
 | hooks | `hooks install` | pre-commit 装 `proj check` |
@@ -81,6 +81,7 @@ proj plan review    ID      # Active → Pending Review（门禁：直接子任�
 proj plan shelve    ID      # Pending Review → Shelved
 proj plan resume    ID      # Shelved → Active
 proj plan archive   ID      # Pending Review → Archived
+proj plan freeze    ID      # Shelved → Archived
 proj plan list [--status S]
 ```
 

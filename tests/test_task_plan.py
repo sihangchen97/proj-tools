@@ -157,6 +157,20 @@ def test_illegal_transition_rejected(proj):
         planmod.transition(proj, "shelve", "1")
 
 
+def test_shelved_freeze_to_archived(proj):
+    planmod.new(proj, "P1")
+    planmod.transition(proj, "activate", "1")
+    planmod.transition(proj, "review", "1")
+    planmod.transition(proj, "shelve", "1")
+    planmod.transition(proj, "freeze", "1")
+    spec = rec.load_registry(proj.root)["plan"]
+    db = rec.open_db(proj)
+    assert db.get(spec, "0001", by="id")["status"] == "Archived"
+    db.close()
+    with pytest.raises(ValueError, match="requires"):
+        planmod.transition(proj, "freeze", "1")  # Archived: no freeze
+
+
 def test_norm_id():
     assert _norm_id("0001") == "1"
     assert _norm_id("A") == "A"

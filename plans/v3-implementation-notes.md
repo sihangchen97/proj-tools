@@ -19,9 +19,8 @@ v3 已按 `v3-sqlite-core.md` 实现（39 tests, lint 绿）。以下偏差全�
 ## 2. `archive` 的来源状态
 
 - 设计 §5a：`Pending review / Shelved → Archived`。
-- 实现：只允许 `Pending review → Archived`（`Shelved` 走 `resume` 回 Active）。
-- 理由：Shelved 语义是"搁置待恢复"，从 Shelved 直接冻结需二次确认，v1 不做。
-- 升级：`plan.py:TRANSITIONS` 里加 `("Shelved", "Archived")` 一行，或改 verb 前置校验。
+- 实现（2026-10-31 补齐）：`Pending Review → Archived`（archive）**与**
+  `Shelved → Archived`（freeze，新 verb）；`Shelved → Active`（resume）仍在。
 
 ## 3. Steps 第 3 层嵌套：报错而非压平
 
@@ -40,10 +39,9 @@ v3 已按 `v3-sqlite-core.md` 实现（39 tests, lint 绿）。以下偏差全�
 ## 5. `proj info` 输出比设计 §8a 简化
 
 - 设计：含每个 kind 的 status 分布、Unreleased 条目数、latest version。
-- 实现：kind + record 数 + dir + 编号方式 + ops cheatsheet（`--json` 同）。
-- 理由：核心信息（有什么、怎么改）已够 MCP/人用；分布统计一行 sqlite 查询的事，
-  需要时再加。
-- 升级：`records.py:info()` 加 `GROUP BY status`。
+- 实现（2026-10-31 补齐）：kind + record 数 + dir + 编号方式 + **每 kind 的
+  status 分布** + changelog 条目数/latest version + ops cheatsheet（`--json` 同）。
+- 仍未做：Unreleased 条目单列（现在只报 total entries + versions）。
 
 ## 6. 其它小决策
 

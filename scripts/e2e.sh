@@ -92,6 +92,14 @@ expect_ok "plan resume"                "status → Active" -- $PROJ plan resume 
 expect_ok "plan review again"          "status → Pending Review" -- $PROJ plan review 1
 expect_ok "plan archive"               "status → Archived" -- $PROJ plan archive 1
 
+# 4b. Shelved → Archived via freeze
+$PROJ new plan "Side plan" -y >/dev/null
+expect_ok "plan 2 activate"            "status → Active"        -- $PROJ plan activate 2
+expect_ok "plan 2 review"              "status → Pending Review" -- $PROJ plan review 2
+expect_ok "plan 2 shelve"              "status → Shelved"       -- $PROJ plan shelve 2
+expect_ok "plan 2 freeze"              "status → Archived"      -- $PROJ plan freeze 2
+expect_fail "freeze from non-Shelved"  -- $PROJ plan freeze 1
+
 # 5. other record_types
 expect_ok "new debt"                   "Created docs/tech-debt/0001-" -- $PROJ new debt "Slow list query" -y
 expect_ok "new incident"               "Created docs/incidents/0001-" -- $PROJ new incident "CI flake" -y
