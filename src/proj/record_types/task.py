@@ -13,12 +13,21 @@ class Task(Record):
     record_type = "task"
 
     def new(self, cfg: ProjConfig, title: str, parent: str | None = None,
-            summary: str = "", related: list[str] | None = None):
-        canonical = rec.canonical_id(cfg, parent) if parent else None
+            summary: str = "", commit: str = "",
+            related: list[str] | None = None):
+        row, p = super().new(cfg, title, summary=summary, commit=commit)
         if parent:
             self._check_parent_ref(cfg, parent)
-        fields = {"parent": canonical} if canonical else None
-        row, p = super().new(cfg, title, fields=fields, summary=summary)
+            canonical = rec.canonical_id(cfg, parent)
+            db = rec.open_db(cfg)
+            try:
+                # kind=parent: source=parent, target=this task (single parent)
+                db.add_relation(canonical, self._parent_type(cfg, db, canonical),
+                                row["id"], self.record_type, "parent")
+                db.add_log(row["id"], f"parent: {canonical}", "Added")
+            finally:
+                db.close()
+            rec.render_all(cfg)
         if related:
             row = self.add_related(cfg, row["id"], related)
         return row, p
@@ -28,16 +37,17 @@ class Task(Record):
 
     # ---- engine hooks ---------------------------------------------------------
     def on_ingest(self, db, row: dict, sections: dict, notes: list[str],
-                  source_name: str) -> None:
+                   source_name: str) -> None:
         # first checkbox tick auto-promotes Draft → In Progress
         if row["status"] == "Draft" and rec.has_checked(sections.get("steps", "")):
             db.set(self.spec, row["id"], status="In Progress")
-            db.add_log(self.record_type, row["id"], "status Draft → In Progress", "Changed")
+            db.add_log(row["id"], category="Changed",
+                       from_status="Draft", to_status="In Progress")
             notes.append(f"{source_name}: auto status Draft → In Progress")
 
     def check_rows(self, rows: list[dict], db, reg: dict) -> list[str]:
         problems: list[str] = []
-        all_ids: dict[str, str] = {}  # norm(id) -> record_type, every type
+        all_ids: dict[str, str] = {}  # id -> record_type, every type
         for record_type in reg:
             for r in db.all(reg[record_type]):
                 all_ids[r["id"]] = record_type
@@ -46,24 +56,26 @@ class Task(Record):
             if any(i >= 2 for i, _, _ in rec.checkboxes(steps)):
                 problems.append(f"task {r['id']}: Steps deeper than 2 levels "
                                 f"— flatten sub-tasks")
-            parent = (r.get("parent") or "").strip()
-            if parent and parent not in all_ids:
-                problems.append(f"task {r['id']}: parent {parent} does not exist "
-                                f"— create it or clear the task's parent field")
             # related refs are checked by the base check_rows (relations table)
+            parent = db.parent_of(r["id"])
+            if parent and parent["source"] not in all_ids:
+                problems.append(f"task {r['id']}: parent {parent['source']} does not exist "
+                                f"— create it or clear the task's parent")
         # parent cycles: follow the parent chain, no task may reach itself
         # (only follow parents that are tasks; a plan/experiment root ends the chain)
         by_id = {r["id"]: r for r in rows}
         for r in rows:
             seen, cur = set(), by_id.get(r["id"])
-            while cur is not None and (cur.get("parent") or "").strip():
-                parent = cur["parent"].strip()
-                if parent in seen:
-                    problems.append(f"task {r['id']}: parent cycle "
-                                    f"({r['id']} → {parent} → …)")
+            while cur is not None:
+                parent = db.parent_of(cur["id"])
+                if parent is None:
                     break
-                seen.add(parent)
-                cur = by_id.get(parent)
+                if parent["source"] in seen:
+                    problems.append(f"task {r['id']}: parent cycle "
+                                    f"({r['id']} → {parent['source']} → …)")
+                    break
+                seen.add(parent["source"])
+                cur = by_id.get(parent["source"])
         return problems
 
     # ---- helpers ---------------------------------------------------------------
@@ -81,6 +93,13 @@ class Task(Record):
             f"parent {parent!r} not found in any record_type "
             f"({', '.join(reg)}) — create it first or drop --parent")
 
+    def _parent_type(self, cfg: ProjConfig, db, parent_id: str) -> str:
+        reg = rec.load_registry(cfg.root)
+        for spec in reg.values():
+            if rec.by_id(cfg, spec, db, parent_id) is not None:
+                return spec.record_type
+        raise ValueError(f"parent {parent_id!r} not found in any record_type")
+
 
 # ---- module-level delegations (stable call shape for cli/tests) --------------
 
@@ -89,8 +108,9 @@ def _obj(cfg: ProjConfig) -> Task:
 
 
 def new(cfg: ProjConfig, title: str, parent: str | None = None,
-        summary: str = "", related: list[str] | None = None):
-    return _obj(cfg).new(cfg, title, parent, summary, related)
+        summary: str = "", commit: str = "",
+        related: list[str] | None = None):
+    return _obj(cfg).new(cfg, title, parent, summary, commit, related)
 
 
 def done(cfg: ProjConfig, id_: str) -> dict:

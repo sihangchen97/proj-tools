@@ -16,10 +16,10 @@ class Plan(Record):
         if to_s != "Pending Review":
             return
         task_spec = rec.load_registry(cfg.root)["task"]
-        todo = [r for r in db.all(task_spec)
-                if (r.get("parent") or "").strip() == row["id"]
-                and r["status"] != "Done"]
+        kids = [c["target"] for c in db.children_of(row["id"])]
+        todo = [r["id"] for r in db.all(task_spec)
+                if r["id"] in kids and r["status"] != "Done"]
         if todo:
             raise ValueError(
                 f"plan {row['id']}: {len(todo)} direct task(s) not Done block {verb}: "
-                + ", ".join(r["id"] for r in todo))
+                + ", ".join(todo))

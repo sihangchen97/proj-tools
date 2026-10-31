@@ -93,8 +93,9 @@ f"""- **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单�
   `from: <状态>` = 必须在该状态（如 plan `activate` 只从 Draft）。带门禁的动词
   （如 plan `review` 要求名下任务全 Done、task `done` 要求 checkbox 全勾）由引擎校验。""",
     "decision":
-"""- 状态：`Proposed 🌱 → Accepted ✅ → Deprecated 📛`（被 supersede 时自动置 Deprecated）。
-- `-s`：被替代的决策 id（写入 supersedes 字段，同时把旧决策置 Deprecated + superseded_by）。
+"""- 状态：`Proposed 🌱 → Accepted ✅ → Deprecated 📛`。
+- `-s`：被替代的决策 id（所有类型通用；写时校验**同类型**，纯 relations 边，
+  不自动改被替代记录的状态——要废弃时手动 `proj decision deprecate`）。
 - 不变量：supersede 链无环。""",
     "task":
 """- 状态：`Draft ✏️ → In Progress 🚧 → Done ✅ / Failed ❌`（new 默认 Draft）。

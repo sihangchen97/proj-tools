@@ -147,26 +147,21 @@ def _editor(path: Path) -> None:
 # ---- dynamic `proj <record_type> …` ---------------------------------------------------
 
 def _dyn_new(name: str, title: str | None, supersede: list[str], parent: str | None,
-             related: list[str], field: list[str], summary: str | None, yes: bool) -> None:
+             related: list[str], commit: str | None, summary: str | None, yes: bool) -> None:
     """Create a new record of `name` (DB insert + render md)."""
     if not title:
         _fail(f"title required: proj {name} new \"Title\"")
     cfg = _cfg()
-    fields = {}
-    for f in field:
-        if "=" not in f:
-            _fail(f"--field expects name=value, got {f!r}")
-        k, v = f.split("=", 1)
-        fields[k.strip()] = v.strip()
     reg = rec.load_registry(cfg.root)
     flat_sup = [x.strip() for s in supersede for x in s.split(",") if x.strip()]
     flat_rel = [x.strip() for s in related for x in s.split(",") if x.strip()]
     obj = record_for(name, reg)
     try:
         if name == "task":
-            _, p = obj.new(cfg, title, parent or None, summary or "", flat_rel or None)
+            _, p = obj.new(cfg, title, parent or None, summary or "",
+                           commit=commit or "", related=flat_rel or None)
         else:
-            _, p = obj.new(cfg, title, fields=fields or None, summary=summary or "",
+            _, p = obj.new(cfg, title, summary=summary or "", commit=commit or "",
                            supersede=flat_sup or None, related=flat_rel or None)
     except ValueError as e:
         _fail(str(e))
@@ -185,9 +180,12 @@ def _dyn_list(name: str, status: str | None) -> None:
         typer.echo(f"(no {name} records)" + (f" with status {status!r}" if status else ""))
         return
     spec = rec_obj.spec
+    db = rec.open_db(cfg)
     for r in rows:
-        parent = f"  (parent {r['parent']})" if r.get("parent") else ""
+        parent = db.parent_of(r["id"])
+        parent = f"  (parent {parent['source']})" if parent else ""
         typer.echo(f"{r['id']:<8} {spec.status_display(r['status']):<24} {r['title']}{parent}")
+    db.close()
 
 
 def _dyn_show(name: str, id_: str, history: bool) -> None:
@@ -204,14 +202,20 @@ def _dyn_show(name: str, id_: str, history: bool) -> None:
     typer.echo(f"title: {row['title']}")
     typer.echo(f"status: {row['status']}")
     typer.echo(f"created: {row['created']}")
-    for f in spec.fields:
-        if row.get(f.name):
-            typer.echo(f"{f.name}: {row[f.name]}")
-    logs = db.logs(name, row["id"])
+    if row.get("one_sentence"):
+        typer.echo(f"one_sentence: {row['one_sentence']}")
+    if row.get("commit"):
+        typer.echo(f"commit: {row['commit']}")
+    if spec.record_type == "task":
+        parent = db.parent_of(row["id"])
+        if parent:
+            typer.echo(f"parent: {parent['source']}")
+    logs = db.logs(row["id"])
     db.close()
     if history:
         for e in logs:
-            typer.echo(f"  {e['date']}  [{e['category']}] {e['summary']}")
+            change = rec._log_change(e, spec)
+            typer.echo(f"  {e['date']}  [{e['category']}] {change}")
 
 
 def _dyn_verb(name: str, verb: str, id_: str, title: str | None, summary: str | None,
@@ -251,16 +255,15 @@ def _build_record_group(name: str):
     @sub.command()
     def new(title: str | None = typer.Argument(None, help="record title"),
             supersede: list[str] = typer.Option(
-                [], "--supersede", "-s", help="replaced ids (repeatable; comma ok)"),
-            parent: str | None = typer.Option(None, "--parent", help="parent id (task)"),
+                [], "--supersede", "-s", help="replaced ids, same type (repeatable; comma ok)"),
+            parent: str | None = typer.Option(None, "--parent", help="parent id (task only)"),
             related: list[str] = typer.Option(
-                [], "--related", "-r", help="related ids (repeatable; comma ok)"),
-            field: list[str] = typer.Option(
-                [], "--field", help="template field: name=value (repeatable)"),
+                [], "--related", "-r", help="related ids, any type (repeatable; comma ok)"),
+            commit: str | None = typer.Option(None, "--commit", help="git commit hash"),
             summary: str | None = typer.Option(None, "--summary", help="one-line summary"),
             yes: bool = typer.Option(False, "--yes", "-y", help="don't open the editor")):
         """Create a new record (DB insert + render md)."""
-        _dyn_new(name, title, supersede, parent, related, field, summary, yes)
+        _dyn_new(name, title, supersede, parent, related, commit, summary, yes)
 
     @sub.command("list")
     def list_(status: str | None = typer.Option(None, "--status")):

@@ -65,12 +65,13 @@ def test_mcp_error_paths(proj):
     root = str(proj.root)
     assert "unknown record_type" in mcp.proj_new("nope", "X", root=root)
     # parent must exist in some record_type
-    assert "does not match any record" in mcp.proj_new("task", "X", parent="ZZZ", root=root)
+    assert "not found in any record_type" in mcp.proj_new("task", "X", parent="ZZZ", root=root)
     # verb must be one the template declares
     assert "unknown verb" in mcp.proj_verb("task", "explode", "A", root=root)
     # unknown record_type for a verb
     assert "unknown record_type" in mcp.proj_verb("nope", "done", "1", root=root)
     # show: nonexistent record
     assert "not found" in mcp.proj_show("decision", "9999", root=root)
-    # bad --field parsing
-    assert "field expects name=value" in mcp.proj_new("debt", "X", field="noequals", root=root)
+    # supersede: same-type required (decision cannot supersede a task)
+    mcp.proj_new("task", "X", root=root)
+    assert "same type required" in mcp.proj_new("decision", "X2", supersede="T-000001", root=root)

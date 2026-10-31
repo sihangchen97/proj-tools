@@ -49,34 +49,33 @@ class Record:
             setattr(self, verb, (lambda cfg, id_, _v=verb: self.transition(cfg, _v, id_)))
 
     # ---- generic operations (operate on self.spec) ---------------------------
-    def new(self, cfg: ProjConfig, title: str, fields: dict | None = None,
-            summary: str = "", supersede: list[str] | None = None,
+    def new(self, cfg: ProjConfig, title: str, summary: str = "",
+            commit: str = "", supersede: list[str] | None = None,
             related: list[str] | None = None):
-        row, p = rec.new_record(cfg, self.spec, title, fields=fields, summary=summary)
+        row, p = rec.new_record(cfg, self.spec, title, summary=summary, commit=commit)
         supersede = supersede or []
         related = related or []
         if not supersede and not related:
             return row, p
-        if not self.spec.apply_supersede and supersede:
-            raise ValueError(f"{self.record_type}: --supersede not supported "
-                             f"(features.supersede is false)")
         db = rec.open_db(cfg)
         try:
             for i, old_id in enumerate(supersede):
-                old = rec.by_id(cfg, self.spec, db, old_id)
+                # supersede is a pure relation on every record_type (D1): the
+                # target must exist and be the SAME type; no status side effect
+                spec, old = rec.ref_record(cfg, db, old_id)
                 if old is None:
-                    raise ValueError(f"{self.record_type} {old_id} not found")
+                    raise ValueError(f"supersede {old_id!r} does not match any record "
+                                     f"\u2014 use the canonical id (e.g. DEC-0001)")
+                if spec.record_type != self.record_type:
+                    raise ValueError(f"supersede {old_id} is a {spec.record_type}, "
+                                     f"not a {self.record_type} — same type required")
                 if old["id"] == row["id"]:
                     raise ValueError(f"{self.record_type} cannot supersede itself")
                 db.add_relation(row["id"], self.record_type, old["id"],
                                 self.record_type, "supersede", pos=i)
-                db.add_log(self.record_type, old["id"],
-                           f"superseded by {row['id']}", "Changed")
+                db.add_log(old["id"], f"superseded by {row['id']}", "Changed")
             if supersede:
-                db.add_log(self.record_type, row["id"],
-                           "supersedes " + ", ".join(
-                               rec.by_id(cfg, self.spec, db, x)["id"] for x in supersede),
-                           "Added")
+                db.add_log(row["id"], "supersedes " + ", ".join(supersede), "Added")
             for ref in related:
                 spec, target = rec.ref_record(cfg, db, ref)
                 if target is None:
@@ -87,10 +86,7 @@ class Record:
                 db.add_relation(row["id"], self.record_type, target["id"],
                                 spec.record_type, "related")
             if related:
-                db.add_log(self.record_type, row["id"],
-                           "related: " + ", ".join(
-                               t["id"] for _, t in (rec.ref_record(cfg, db, x) for x in related)),
-                           "Added")
+                db.add_log(row["id"], "related: " + ", ".join(related), "Added")
         finally:
             db.close()
         rec.render_all(cfg)
@@ -115,8 +111,7 @@ class Record:
                     raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
                 db.add_relation(row["id"], self.record_type, target["id"],
                                 spec.record_type, "related")
-            db.add_log(self.record_type, row["id"],
-                       "related: " + ", ".join(refs), "Added")
+            db.add_log(row["id"], "related: " + ", ".join(refs), "Added")
         finally:
             db.close()
         rec.render_all(cfg)
@@ -137,7 +132,8 @@ class Record:
         return "\n".join(lines) + "\n"
 
     def graph(self, cfg: ProjConfig) -> str:
-        """Mermaid graph of supersedes edges (apply_supersede record_types)."""
+        """Mermaid graph of supersedes edges (supersede is a relation on every
+        record_type — the edges render when they exist)."""
         lines = ["graph LR"]
         for r in self.list(cfg):
             lines.append(f'  {r["id"]}["{r["id"]} {r["title"][:24]}"]')
@@ -179,7 +175,7 @@ class Record:
     def show(self, cfg: ProjConfig, id_: str) -> dict:
         spec, db = rec.spec_and_db(cfg, self.record_type)
         row = rec.by_id(cfg, spec, db, id_)
-        logs = db.logs(self.record_type, row["id"]) if row else []
+        logs = db.logs(row["id"]) if row else []
         db.close()
         if row is None:
             raise ValueError(f"{self.record_type} {id_} not found")
@@ -236,23 +232,20 @@ class Record:
 
     def check_rows(self, rows: list[dict], db, reg: dict) -> list[str]:
         """`proj check` invariants: ref integrity + cycle check over the relations
-        table (supersede edges are same-type; related may point at any type)."""
+        table (supersede edges are same-type on every record_type; related may
+        point at any type)."""
         all_ids: dict[str, str] = {r["id"]: rt for rt in reg for r in db.all(reg[rt])}
         problems = []
-        if self.spec.apply_supersede:
-            for r in rows:
-                for edge in db.supersede_of(r["id"]):
-                    if edge["target"] not in all_ids:
-                        problems.append(
-                            f"{self.record_type} {r['id']}: supersedes {edge['target']}, "
-                            f"which does not exist")
         for r in rows:
+            for edge in db.supersede_of(r["id"]):
+                if edge["target"] not in all_ids:
+                    problems.append(
+                        f"{self.record_type} {r['id']}: supersedes {edge['target']}, "
+                        f"which does not exist")
             for ref in db.related_of(r["id"]):
                 if ref not in all_ids:
                     problems.append(
                         f"{self.record_type} {r['id']}: related {ref}, which does not exist")
-        if not self.spec.apply_supersede:
-            return list(dict.fromkeys(problems))
         by_id = {r["id"]: r for r in rows}
         edges = {
             i: [e["target"] for e in db.supersede_of(i) if e["target"] in by_id]

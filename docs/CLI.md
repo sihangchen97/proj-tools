@@ -38,7 +38,7 @@ proj docs
 ## task
 
 ```
-proj task new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--field <FIELD…>] [--summary <SUMMARY>] [--yes -y]
+proj task new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj task list [--status <STATUS>]
 proj task show <ID_> [--history]
 proj task update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
@@ -61,7 +61,7 @@ proj task fail <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c
 ## debt
 
 ```
-proj debt new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--field <FIELD…>] [--summary <SUMMARY>] [--yes -y]
+proj debt new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj debt list [--status <STATUS>]
 proj debt show <ID_> [--history]
 proj debt update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
@@ -69,29 +69,32 @@ proj debt draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -
 proj debt open <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj debt progress <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj debt repay <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj debt waive <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 ## decision
 
 ```
-proj decision new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--field <FIELD…>] [--summary <SUMMARY>] [--yes -y]
+proj decision new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj decision list [--status <STATUS>]
 proj decision show <ID_> [--history]
 proj decision update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj decision draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj decision propose <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj decision accept <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj decision reject <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj decision deprecate <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
-- 状态：`Proposed 🌱 → Accepted ✅ → Deprecated 📛`（被 supersede 时自动置 Deprecated）。
-- `-s`：被替代的决策 id（写入 supersedes 字段，同时把旧决策置 Deprecated + superseded_by）。
+- 状态：`Proposed 🌱 → Accepted ✅ → Deprecated 📛`。
+- `-s`：被替代的决策 id（所有类型通用；写时校验**同类型**，纯 relations 边，
+  不自动改被替代记录的状态——要废弃时手动 `proj decision deprecate`）。
 - 不变量：supersede 链无环。
 
 ## experiment
 
 ```
-proj experiment new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--field <FIELD…>] [--summary <SUMMARY>] [--yes -y]
+proj experiment new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj experiment list [--status <STATUS>]
 proj experiment show <ID_> [--history]
 proj experiment update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
@@ -99,17 +102,19 @@ proj experiment draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--com
 proj experiment propose <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj experiment run <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj experiment close <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj experiment abandon <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
 
 ## incident
 
 ```
-proj incident new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--field <FIELD…>] [--summary <SUMMARY>] [--yes -y]
+proj incident new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj incident list [--status <STATUS>]
 proj incident show <ID_> [--history]
 proj incident update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj incident draft <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj incident open <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
+proj incident mitigate <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj incident close <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 proj incident reopen <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]
 ```
@@ -117,7 +122,7 @@ proj incident reopen <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comm
 ## plan
 
 ```
-proj plan new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--field <FIELD…>] [--summary <SUMMARY>] [--yes -y]
+proj plan new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
 proj plan list [--status <STATUS>]
 proj plan show <ID_> [--history]
 proj plan update <ID_> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--comment -c <COMMENT>]

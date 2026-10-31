@@ -20,10 +20,10 @@ is pinned in .proj.lock — repeat inits append new profiles.
 
 Create a record from its template (DB insert + rendered md).
 record_type: registered type (decision/task/plan/debt/incident/experiment/…).
-supersede: ids being replaced, comma-separated (decision only).
+supersede: ids being replaced, same type, comma-separated.
 related: related record ids, any type, comma-separated (unordered).
-parent: parent record id (task only). field: extra template fields,
-'name=value[, name=value]'. summary: one-sentence summary.
+parent: parent record id (task only). commit: git commit hash.
+summary: one-sentence summary.
 
 ### `proj_sync`
 

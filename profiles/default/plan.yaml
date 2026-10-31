@@ -2,11 +2,8 @@ record_type: plan
 code: PLN
 dir: docs/plans
 numbered: 4
-features:
-  supersede: false
-  task: true
-render:
-  changelog: true
+contain_task: true        # tasks attach (parent -> this): head task tree, subtask row
+# 无 features:（supersede 是纯 relation，所有类型通用）
 # 状态机 verbs（from 是具体状态，非 Any）：每个状态都有进入它的动词
 verbs:
   activate: {from: Draft, to: Active}
@@ -17,6 +14,8 @@ verbs:
   freeze: {from: Shelved, to: Archived}
 # status 按生命周期顺序排列：Draft → Active → Pending Review → Shelved | Archived
 # （Shelved/Archived 是并列的终态；Shelved 可 resume 回 Active 或 freeze 冻结成 Archived）
+# 注意：Shelved/Archived 是 done 状态，进入时正文所有 `- [ ]` 必须已勾 —
+# 所以 plan 正文一律用普通列表，工作由子 task 承载
 status-allowed:
   - {name: Draft, emoji: ✏️}               # 起草中，任务暂不入主 TASKLIST
   - {name: Active, emoji: 🚧}              # 执行中，任务提升到主 TASKLIST
@@ -24,6 +23,60 @@ status-allowed:
   - {name: Shelved, emoji: 📦, done: true} # 评审暂缓，可 resume 回 Active
   - {name: Archived, emoji: 🗄️, done: true} # 已归档，终态
 sections:
-  - {name: Goal, hint: what this plan achieves and why now}
-  - {name: Task List, type: task, hint: rendered task subtree (tasks with parent = this plan) - never hand-edit}
-  - {name: Notes, hint: context, constraints, review remarks}
+  - name: Goal
+    hint: >-
+      First line: `Owner: <the single accountable person> · Target: <date or
+      release>`. Then the outcome this plan achieves and why now, in 2-4
+      sentences: the problem or opportunity, who benefits, and what is
+      different when the plan succeeds. Link the decisions/incidents/
+      experiments that motivate it (DEC-xxxx, INC-xxxx, EXP-xxxx). Outcome,
+      not activity ("checkout p95 under 1s", not "optimize checkout").
+  - name: Scope
+    hint: >-
+      Two plain bullet lists: `In scope:` (deliverables this plan commits to)
+      and `Out of scope:` (related work explicitly not done here, so nobody
+      assumes it). Note fixed constraints: deadline, budget, people, systems
+      that must not change. Changing scope after activation: write the change
+      and the date here and log it with `proj plan update ID -c "..."`.
+  - name: Success Criteria
+    hint: >-
+      Measurable conditions that decide at review time whether the goal was
+      met, as plain bullets with a number or a yes/no test (e.g. "- error rate
+      < 0.1% for 7 days", "- 3 pilot users onboarded"). Do NOT use checkboxes:
+      unticked boxes block shelve/archive. Evaluate each one in Review.
+  - name: Milestones
+    hint: >-
+      The intermediate checkpoints in order, as plain bullets: `- <date or
+      week>: <observable result> (T-xxxxxx, T-yyyyyy)` (e.g. "- W2: schema
+      migrated in staging (T-000004)"). A milestone is a checkpoint, not work:
+      the work behind it lives in tasks (see Task List), referenced by id.
+      Mark slips inline ("(slipped to W4: reason)") rather than deleting.
+  - name: Task List
+    type: task
+    hint: >-
+      Rendered by proj from the DB (tasks with parent = this plan, recursively)
+      — an editable block below the head: tick a sub-step here and run
+      `proj sync` to store it. The head's `subtask:` row links the direct
+      children.
+      A plan has no steps or checkboxes of its own: ALL of its work is tasks.
+      Create one task per deliverable that needs its own status, owner or
+      acceptance criteria, or takes more than about half a day:
+      `proj task new "Title" --parent PLN-xxxx`. The how-to of each task goes
+      into that task's own `## Steps` checkboxes, not here. Task vs step: a
+      task is tracked (id, status, shown in TASKLIST.md while the plan is
+      Active, gates `proj plan review`); a step is a small checklist item
+      inside one task, done by that task's executor in one sitting. Break a
+      large task into sub-tasks with `--parent T-xxxxxx`.
+  - name: Risks & Dependencies
+    hint: >-
+      What could make the plan late or fail, as bullets: `- Risk: <what> —
+      likelihood H/M/L, impact H/M/L — mitigation: <action> — owner`. List
+      external dependencies (other teams, vendors, approvals, other plans) with
+      the date each is needed by. Revisit when the plan is resumed.
+  - name: Review
+    hint: >-
+      Filled at `proj plan review`: for each Success Criterion — met / not met
+      with evidence (numbers, links). Then a short retrospective: what went
+      well, what did not, what to change next time, and the verdict (archive =
+      done, shelve = pause with reason and resume condition). Turn lasting
+      lessons into decisions or tasks.

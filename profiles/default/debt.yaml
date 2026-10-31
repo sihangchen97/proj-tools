@@ -2,23 +2,54 @@ record_type: debt
 code: DEB
 dir: docs/tech-debt
 numbered: 4
-features:
-  supersede: false
-  task: false
-render:
-  changelog: true
+contain_task: false
+# 无 features:（supersede 是纯 relation，所有类型通用）
 verbs:
   draft: {from: Any, to: Draft}
   open: {from: Any, to: Open}
   progress: {from: Any, to: In Progress}
   repay: {from: Any, to: Repaid}
-# status 按时间顺序排列：Draft → Open → In Progress → Repaid
+  waive: {from: Any, to: Waived}
+# status 按时间顺序排列：Draft → Open → In Progress → Repaid | Waived
+# 注意：Repaid/Waived 是 done 状态，进入时正文所有 `- [ ]` 必须已勾（Repayment Plan 的步骤）
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Open, emoji: ⚠️}            # 已记录，未动
   - {name: In Progress, emoji: 🚧}     # 正在还
   - {name: Repaid, emoji: ✅, done: true} # 已移除 workaround
+  - {name: Waived, emoji: 🤝, done: true} # 评估后决定长期接受（写明理由），不再追踪
 sections:
-  - {name: Location, hint: file / module where the hack lives}
-  - {name: Reason, hint: why this temporary workaround was introduced}
-  - {name: Trigger for removal, hint: condition under which this debt must be repaid}
+  - name: Location
+    hint: >-
+      Exactly where the debt lives so anyone can find it: file paths with
+      line or symbol (`src/api/users.py:list_users`), modules, configs, infra
+      resources. Mark the code itself with a `TODO(DEB-xxxx)` comment so the
+      record and the code point at each other.
+  - name: Reason
+    hint: >-
+      Why the shortcut was taken and whether it was deliberate (deadline,
+      missing knowledge, upstream bug, prototype that shipped). Describe what
+      the proper solution would be and what made it impossible at the time.
+      Link the decision/incident/task that caused it (DEC-/INC-/T-xxxx).
+  - name: Impact
+    hint: >-
+      First line: `Severity: high | medium | low` — high = blocks features,
+      causes incidents or is a security risk; medium = slows work noticeably;
+      low = cosmetic or local. Then the "interest" being paid: concrete costs
+      such as slower builds, repeated bugs, manual steps, onboarding
+      confusion, performance or security exposure. Quantify where possible
+      (minutes per deploy, bugs per month) and say who is affected.
+  - name: Trigger for removal
+    hint: >-
+      The condition that makes repayment mandatory, specific enough to
+      notice: a date, a version, a scale threshold ("> 10k users"), an
+      upstream fix being released, or "before feature X starts". If the
+      trigger fires, move the record to In Progress (`proj debt progress ID`).
+  - name: Repayment Plan
+    hint: >-
+      First line: `Effort: S (< 1 day) | M (1-5 days) | L (> 1 week)`. Then how
+      to pay it back, as a checkbox list of steps (including tests and
+      removing the TODO marker); `proj debt repay` is refused until every box
+      is ticked. For L-sized debt create real tasks instead
+      (proj task new ... --related DEB-xxxx) and list their ids here as plain
+      text. If you decide to live with it (`proj debt waive`), write why here.

@@ -2,23 +2,74 @@ record_type: incident
 code: INC
 dir: docs/incidents
 numbered: 4
-features:
-  supersede: false
-  task: false
-render:
-  changelog: true
+contain_task: false
+# 无 features:（supersede 是纯 relation，所有类型通用）
 verbs:
   draft: {from: Any, to: Draft}
   open: {from: Any, to: Open}
+  mitigate: {from: Any, to: Mitigated}
   close: {from: Any, to: Closed}
   reopen: {from: Any, to: Open}
-# status 按时间顺序排列：Draft → Open → Closed
+# status 按时间顺序排列：Draft → Open → Mitigated → Closed
+# （Mitigated = 已止血/服务恢复，复盘与 Action Items 未完成；Closed = 复盘完成）
+# 注意：Closed 是 done 状态，进入时正文所有 `- [ ]` 必须已勾（Action Items 全部完成）
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Open, emoji: 🚨}            # 故障未恢复，处理中
-  - {name: Closed, emoji: ✅, done: true} # 已恢复并沉淀 Prevention rule
+  - {name: Mitigated, emoji: 🩹}       # 已止血/恢复，复盘进行中
+  - {name: Closed, emoji: ✅, done: true} # 已复盘、Action Items 完成并沉淀 Prevention rule
 sections:
-  - {name: Summary, hint: what broke, when, impact}
-  - {name: Root cause}
-  - {name: Actions taken}
-  - {name: Prevention rule, hint: actionable rule added to guidelines to prevent repeat errors}
+  - name: Summary
+    hint: >-
+      First line: `Severity: SEV1 | SEV2 | SEV3 | SEV4` — SEV1 = outage, data
+      loss or security breach (all hands); SEV2 = major feature broken or many
+      users affected; SEV3 = degraded, workaround exists; SEV4 = minor or
+      internal only. Then 3-5 sentences a non-engineer can read: what broke,
+      when it started and ended (with timezone), who/what was affected, and
+      the current state. Write it first while the incident is Open and keep
+      it updated; blameless — describe systems and decisions, not people.
+  - name: Impact
+    hint: >-
+      Quantified damage: duration of user-facing impact, number/percent of
+      users or requests affected, failed jobs, data lost or corrupted, money,
+      SLO/error-budget burned, customer tickets. Say "unknown" rather than
+      guessing, and list what was NOT affected if that matters.
+  - name: Timeline
+    hint: >-
+      Chronological bullets `- YYYY-MM-DD HH:MM TZ — event`, covering: trigger
+      (e.g. deploy), first symptom, detection (alert or report), responder
+      engaged, key diagnosis steps, mitigation applied (`proj incident
+      mitigate`), recovery confirmed. End with time-to-detect and
+      time-to-mitigate.
+  - name: Root cause
+    hint: >-
+      The underlying cause(s), not just the trigger: ask "why" until you reach
+      a process or system gap (5 Whys). Separate the trigger (what started it),
+      the root cause (why it was possible), and contributing factors (why it
+      was worse or slower to fix). Fill after mitigation; mark hypotheses as
+      such until confirmed.
+  - name: Actions taken
+    hint: >-
+      What responders did during the incident and the effect of each action
+      (rollback, failover, config change, restart, customer comms), including
+      attempts that did not help. Note any temporary fix that must be undone
+      later — record it as debt (proj debt new ... --related INC-xxxx).
+  - name: Lessons learned
+    hint: >-
+      Three short bullet lists: `Went well:` (detection, tooling, teamwork),
+      `Went poorly:` (gaps, slow steps, missing alerts/runbooks), `Got lucky:`
+      (things that limited damage by chance — these are hidden risks).
+  - name: Action Items
+    hint: >-
+      Follow-ups that stop recurrence or reduce impact, as checkboxes:
+      `- [ ] <action> — owner — due` (e.g. add alert, add test, fix root cause,
+      write runbook). Prefer prevent > detect > mitigate. Larger items become
+      tasks (proj task new ... --related INC-xxxx) referenced by id. `proj
+      incident close` is refused while any box is unticked.
+  - name: Prevention rule
+    hint: >-
+      The durable, actionable rule distilled from this incident that is added
+      to the project's guidelines (CONTRIBUTING, runbook, checklist, lint/CI
+      check), phrased as an instruction an agent or engineer can follow, e.g.
+      "Every migration must be tested against a production-sized snapshot
+      before deploy." Say where it was added.

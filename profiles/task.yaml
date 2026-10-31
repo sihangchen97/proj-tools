@@ -2,25 +2,61 @@ record_type: task
 code: T
 dir: docs/tasks
 numbered: 6
-features:
-  supersede: false
-  task: true
-render:
-  changelog: true
+contain_task: true        # tasks attach (parent -> this): head task tree, subtask row
+# 无 features: / 无 fields:（parent/related/supersede 全走 relations 表）
+# 无 render: 段（changelog 表行数走环境变量 PROJ_LOGS；toc 类型才写 render.toc）
 # task 单独管理（在外层 profiles/，不在 default/）
 # verbs: 每个状态一个 verb；done 的 checkbox 全勾 gate 由 Record.validate_transition 提供
+# （门禁覆盖所有 section 的 checkbox：Acceptance Criteria 与 Steps 都要全勾才能 done）
 verbs:
   start: {from: Any, to: In Progress}
-  done: {from: Any, to: Done}
-  fail: {from: Any, to: Failed}
+  done:  {from: Any, to: Done}
+  fail:  {from: Any, to: Failed}
 # status 按时间顺序排列：Draft → In Progress → Done/Failed（sync 按 checkbox 自动升档）
 status-allowed:
   - {name: Draft, emoji: ✏️}              # 起草中（new 默认）
   - {name: In Progress, emoji: 🚧}        # 执行中，有未勾选的 step
   - {name: Failed, emoji: ❌}             # 失败（无法完成/放弃），不算 done
   - {name: Done, emoji: ✅, done: true}    # 完成，全部 checkbox 已勾选
-fields: []  # (related 关系走 relations 表，不再是字段)
+# 章节名 Steps / Open 被引擎引用（任务树渲染、自动升档），不可改名
 sections:
-  - {name: Steps, hint: checkbox list, write order = step order; use parent for real sub-tasks}
-  - {name: Open, hint: open items / decisions needed, one per line}
-  - {name: Notes, hint: results & notes after running}
+  - name: Goal
+    hint: >-
+      The outcome this task delivers and why it matters, in 1-3 sentences
+      (what changes for the user/system when it is done). Link the driving
+      record if any (plan, decision DEC-xxxx, incident INC-xxxx, debt DEB-xxxx).
+      If the goal needs more than ~1 day of focused work or several people,
+      split it into sub-tasks (proj task new ... --parent T-xxxxxx); this
+      task then covers only the integration of its sub-tasks.
+  - name: Acceptance Criteria
+    hint: >-
+      The definition of done as verifiable checkboxes, one per observable
+      result, e.g. "- [ ] `pixi run test` passes", "- [ ] /health returns 200 in
+      staging", "- [ ] docs updated". Each must be checkable by someone else
+      without asking you. Tick a box only after verifying it; `proj task done`
+      is refused while any box (here or in Steps) is unticked.
+  - name: Steps
+    hint: >-
+      How THIS task gets done, as an ordered checkbox list (write order =
+      execution order). Step vs sub-task: a step has no id or status of its
+      own, is done by this task's executor in one sitting, and only matters
+      inside this task (e.g. "- [ ] add migration", "- [ ] write unit test").
+      Make it a sub-task instead (proj task new ... --parent T-xxxxxx) when it
+      needs its own status, owner or acceptance criteria, can be blocked
+      independently, or takes more than about half a day. At most 2 levels:
+      `- [ ] step` with indented `  - [ ] sub-step`; a 3rd level fails
+      `proj check`. Tick `[x]` only after the step is done and verified
+      locally; the first tick auto-moves the task Draft → In Progress on sync.
+  - name: Open
+    hint: >-
+      Unresolved questions, blockers and decisions needed — one per line,
+      plain text (no checkboxes), each naming who/what can unblock it, e.g.
+      "Need DB credentials for staging (ask ops)". These lines are shown in the
+      parent's task tree and TASKLIST.md, so keep them short. Delete a line
+      once resolved and record the answer in Notes.
+  - name: Notes
+    hint: >-
+      Working log and results: what was tried, what worked or failed and why,
+      commands/configs used, measurements, links to commits/PRs, answers to
+      former Open items. If the task is marked Failed, write the reason and
+      any salvageable findings here.

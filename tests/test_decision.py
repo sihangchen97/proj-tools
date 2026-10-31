@@ -44,16 +44,27 @@ def test_status_validates_allowed_set(proj):
         rec.status_set(proj, "decision", "2", "Bogus")
 
 
-def test_status_change_auto_logs(proj):
+def test_status_change_stored_in_status_columns(proj):
     row, _ = rec.new_record(proj, "decision", "D2")  # starts Draft
     rec.status_set(proj, "decision", row["id"], "Proposed")
     rec.status_set(proj, "decision", row["id"], "Accepted")
     spec = rec.load_registry(proj.root)["decision"]
     db = rec.open_db(proj)
     r = db.get(spec, row["id"])
-    logs = db.logs("decision", r["id"])
+    logs = db.logs(r["id"])
     db.close()
-    assert any("→ Accepted" in e["summary"] for e in logs)
+    # status change: from_status/to_status columns, not concatenated text (D5)
+    assert any(e["from_status"] == "Draft" and e["to_status"] == "Proposed" for e in logs)
+    assert any(e["from_status"] == "Proposed" and e["to_status"] == "Accepted" for e in logs)
+    assert not any("status " in (e["comment"] or "") for e in logs)
+    # the rendered md shows the emoji status change + the status legend row
+    p = next((proj.root / "docs/decisions").glob(f"{r['id']}-*.md"))
+    text = p.read_text()
+    assert "🌱 Proposed → ✅ Accepted" in text
+    assert "* " + " · ".join(spec.status_display(s) for s in spec.status_allowed) in text
+    # non-status events (created) have NULL status columns and a comment
+    assert any(e["from_status"] is None and e["to_status"] is None
+               and e["comment"] == "created" for e in logs)
 
 
 def test_supersede_multi_and_append(proj):

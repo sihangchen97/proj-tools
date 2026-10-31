@@ -2,27 +2,75 @@ record_type: experiment
 code: EXP
 dir: docs/experiments
 numbered: 4
-features:
-  supersede: false
-  task: true
-render:
-  changelog: true
+contain_task: true        # tasks attach (parent -> this): head task tree, subtask row
+# 无 features:（supersede 是纯 relation，所有类型通用）
+# 无 fields:（commit 是 records 表的通用列，所有类型可用 --commit）
 verbs:
   draft: {from: Any, to: Draft}
   propose: {from: Any, to: Proposed}
   run: {from: Any, to: Running}
   close: {from: Any, to: Closed}
-# status 按时间顺序排列：Draft → Proposed → Running → Closed
+  abandon: {from: Any, to: Abandoned}
+# status 按时间顺序排列：Draft → Proposed → Running → Closed | Abandoned
+# 注意：Closed/Abandoned 是 done 状态，进入时正文所有 `- [ ]` 必须已勾
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
-  - {name: Proposed, emoji: 🌱}        # 已写假设，未开跑
-  - {name: Running, emoji: 🚧}         # 正在跑实验
-  - {name: Closed, emoji: ✅, done: true}  # 已出结论（确认/证伪）
-fields:
-  - {name: commit, hint: git commit hash the experiment runs on}
+  - {name: Proposed, emoji: 🌱}        # 已写假设与成功标准，未开跑
+  - {name: Running, emoji: 🧪}         # 正在跑实验
+  - {name: Closed, emoji: ✅, done: true}  # 已出结论（确认/证伪/不确定）
+  - {name: Abandoned, emoji: 🗑️, done: true} # 未出结论即放弃（写明原因）
 sections:
-  - {name: Hypothesis, hint: the claim being tested (write before running)}
-  - {name: Task List, type: task, hint: rendered task subtree (tasks with parent = this experiment) - never hand-edit}
-  - {name: Hyperparameters, hint: dataset version, key hyperparameters}
-  - {name: Results, hint: metric deltas vs baseline}
-  - {name: Conclusion, hint: hypothesis confirmed / refuted, next step}
+  - name: Hypothesis
+    hint: >-
+      One falsifiable statement written BEFORE running: "Changing <X> will
+      improve <metric> by <amount> on <dataset/population> because <reason>."
+      Add the motivation (link a decision/incident/plan if any) and what you
+      will do if it is confirmed vs refuted. Do not edit after the run starts —
+      add notes in Analysis instead.
+  - name: Success Criteria
+    hint: >-
+      Decided before running, as plain bullets: the baseline compared against
+      (previous EXP-xxxx, commit, model/config name, or production), the
+      primary metric and the threshold that confirms the hypothesis (e.g.
+      "- val mAP +1.0 over baseline"), guardrail metrics that must not regress
+      (latency, memory, cost), and the minimum sample size / seeds / duration
+      for a valid result. Plain bullets — unticked checkboxes block close.
+  - name: Setup
+    hint: >-
+      Everything needed to reproduce the run: the code version (create the
+      record with `--commit <hash>` so it shows in the head), dataset name +
+      version/split, environment (hardware, library versions), full config or
+      hyperparameters that differ from the baseline (diff or table), random
+      seeds, run command, and where logs/artifacts/checkpoints are stored
+      (paths or tracker URLs).
+  - name: Task List
+    type: task
+    hint: >-
+      Not a body section: the task tree (tasks with parent = this experiment)
+      is rendered by proj in the head block's `subtask:` row — never hand-edit
+      it. The experiment's work is tasks, not checkboxes in this record: one
+      task per phase that has its own status or result, e.g. data prep,
+      implementation, baseline run, treatment runs, evaluation —
+      `proj task new "Title" --parent EXP-xxxx`. The detailed procedure of
+      each phase (commands, configs to try) goes into that task's own
+      `## Steps` checkboxes. Task = tracked unit with id and status; step =
+      checklist item inside one task.
+  - name: Results
+    hint: >-
+      Raw outcomes only, no interpretation: a table of every run (including
+      failed or bad ones) with the primary and guardrail metrics vs the
+      baseline, deltas, and variance across seeds. Link plots, dashboards and
+      artifacts. Note anything that went wrong during the run.
+  - name: Analysis
+    hint: >-
+      Interpretation: are the deltas real (beyond noise / significant)? Why did
+      it work or not — evidence from error analysis, ablations, examples?
+      Threats to validity (leakage, small sample, confounders, mismatched
+      baseline). Surprises worth a follow-up experiment.
+  - name: Conclusion
+    hint: >-
+      Verdict against the Success Criteria: confirmed / refuted /
+      inconclusive, in one line, then the decision it leads to (adopt, iterate,
+      drop) and next steps — follow-up experiments (EXP-), tasks (T-), or a
+      decision record (DEC-) if it changes the approach. If Abandoned, state
+      why and what was learned.

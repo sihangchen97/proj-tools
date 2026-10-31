@@ -1,5 +1,6 @@
 """v3 adoption (pre-existing files) and `proj check` invariants."""
 from proj import check as checkmod
+from proj import scaffold
 from proj.engine import store as rec
 
 
@@ -136,16 +137,17 @@ def test_check_detects_deep_steps(proj):
 
 
 def test_check_detects_schema_mismatch(proj):
-    from proj.core.templates import bundled_dir
-    # project override profile with an extra field; DB table stays as built
-    tdir = proj.root / "profiles" / "default"
-    tdir.mkdir(parents=True)
-    yaml = (bundled_dir() / "default" / "debt.yaml").read_text()
-    yaml = yaml.replace("sections:", "fields:\n  - {name: extra}\nsections:")
-    (tdir / "debt.yaml").write_text(yaml)
+    from proj.core import db as dbmod
+    # drop a generic column from the shared records table → template mismatch
+    d = dbmod.Db(proj.db_path)
+    d.conn.execute("DROP TABLE records")
+    d.conn.execute(
+        "CREATE TABLE records (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, "
+        "status TEXT, created TEXT, sections TEXT)")  # one_sentence missing
+    d.close()
     problems = checkmod.check(proj)
     assert any("does not match" in p for p in problems)
-    # remove the override — check passes again
-    (tdir / "debt.yaml").unlink()
-    tdir.rmdir()
+    # dev phase: no migration — rebuild the DB file (re-init re-adopts the md)
+    proj.db_path.unlink()
+    scaffold.init(proj, ["default"])
     assert not any("does not match" in p for p in checkmod.check(proj))

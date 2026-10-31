@@ -54,18 +54,22 @@ def _sub_task_lines(steps: str) -> list[str]:
     return out
 
 
-def task_tree_lines(rows: list[dict], task_spec, parent_key: str,
+def task_tree_lines(rows: list[dict], parent_key: str, db,
                     depth: int = 0, on_path: set[str] | None = None) -> list[str]:
-    """Render the tasks whose parent == parent_key ("" = top-level) as a tree:
-    each task's local steps below it, then its sub-tasks (parent == this task)
-    indented. Children keep id order (= creation order). A task already on the
-    ancestor chain is skipped (guards a numeric parent id that normalizes to
-    the child's own id)."""
+    """Render the tasks parented at parent_key ("" = top-level) as a tree:
+    each task's local steps below it, then its sub-tasks (kind=parent edge,
+    source=parent) indented. Children keep id order (= creation order). A task
+    already on the ancestor chain is skipped (cycle guard)."""
     on_path = set() if on_path is None else on_path
     lines: list[str] = []
     pad = "  " * depth
+    if parent_key:
+        kids = {c["target"] for c in db.children_of(parent_key)}
+    else:
+        # top level: tasks with no parent edge at all
+        kids = {t["id"] for t in rows if not db.parent_of(t["id"])}
     for r in rows:
-        if (r.get("parent") or "").strip() != parent_key:
+        if r["id"] not in kids:
             continue
         if r["id"] in on_path:  # cycle guard
             continue
@@ -77,29 +81,30 @@ def task_tree_lines(rows: list[dict], task_spec, parent_key: str,
         for item in open_items.splitlines():
             if item.strip():
                 lines.append(f"{pad}  - open: {item.strip()}")
-        lines += task_tree_lines(rows, task_spec, r["id"], depth + 1, child_path)
+        lines += task_tree_lines(rows, r["id"], db, depth + 1, child_path)
     return lines
 
 
 def render_tasklist_md(cfg: ProjConfig, db, registry: dict[str, RecordTypeSpec]) -> View | None:
-    if "task" not in registry:
+    task_spec = registry.get("task")
+    if task_spec is None:
         return None
-    tasks = db.all(registry["task"])
+    tasks = db.all(task_spec)
     lines = ["# Tasklist", ""]
     body: list[str] = []
-    # top level: every record_type whose template declares a `type: task`
-    # section (plan, experiment, …) renders as a tree root — its tasks hang
-    # indented below (DB `parent` link, same mechanism as task→subtask);
+    # top level: every contain_task record (plan, experiment, …) renders as a
+    # tree root — its tasks hang indented below (kind=parent edges);
     # then parentless tasks.
     for spec in registry.values():
-        if spec.record_type == "task" or not spec.apply_task:
+        if spec is task_spec or not spec.contain_task:
             continue
         for r in db.all(spec):
             head = f"- {spec.emojify(r['status'])} **{spec.record_type} {r['id']}** {r['title']}"
             body.append(head)
-            body += task_tree_lines(tasks, None, r["id"], depth=1)
+            body += task_tree_lines(tasks, r["id"], db, depth=1)
+    parented = {t["id"] for t in tasks if db.parent_of(t["id"])}
     body += task_tree_lines(
-        [t for t in tasks if not (t.get("parent") or "").strip()], None, "")
+        [t for t in tasks if t["id"] not in parented], "", db)
     lines += body or ["_no tasks_"]
     lines += ["", "_Rendered by `proj update` — never hand-edit. "
               "Edit task files under `docs/tasks/` instead._"]

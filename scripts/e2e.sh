@@ -54,8 +54,13 @@ else fail "hook run failed: $out"; fi
 expect_ok "new decision 0002"          "Created docs/decisions/DEC-0002-" -- $PROJ decision new "Use SQLite as core store" -y
 expect_ok "new decision 0003 (-s 2)"   "Created docs/decisions/DEC-0003-" -- $PROJ decision new "Adopt YAML templates" -y -s 2
 expect_ok "decision supersede (-s 3)"  "Created docs/decisions/DEC-0004-" -- $PROJ decision new "Supersede via verb" -y -s 3
-# supersede now renders as a blockquote line with a markdown link to the target's md
-expect_ok "supersede link rendered"    "> **supersedes:** [DEC-0002](" -- cat docs/decisions/DEC-0003-*.md
+# supersede now renders as a blockquote line; the link text is the target's
+# full filename (relative to this record's own file, same dir → bare filename)
+expect_ok "supersede link rendered"    "> **supersedes:** [DEC-0002-" -- cat docs/decisions/DEC-0003-*.md
+# a status legend line sits below the changelog table (decision has never
+# changed status here — its transition rows are asserted below, on the task)
+grep -qE '^\* ✏️ Draft' docs/decisions/DEC-0003-*.md \
+  && ok "status legend below changelog" || fail "status legend line missing"
 expect_ok "decision show"              "DEC-0001" -- $PROJ decision show DEC-0001
 expect_fail "unknown verb rejected"    -- $PROJ decision explode DEC-0002
 
@@ -75,6 +80,9 @@ head -n "$(grep -n '^## Steps' "$TASK_FILE" | cut -d: -f1)" "$TASK_FILE" > .step
 printf '\n- [x] first step\n- [ ] second step\n' >> .steps.tmp
 mv .steps.tmp "$TASK_FILE"
 expect_ok "sync auto-promotes task"    "auto status Draft → In Progress" -- $PROJ sync
+# the auto-promotion is stored in from_status/to_status (not concatenated text)
+grep -qF "✏️ Draft → 🚧 In Progress" "$TASK_FILE" \
+  && ok "auto-promotion rendered from status columns" || fail "status columns not rendered"
 expect_ok "task list: In Progress"     "In Progress" -- $PROJ task list
 $PROJ task list | grep -qF "PLN-0001" && ok "task list shows parent" || fail "task list missing parent"
 expect_fail "done with unchecked step" -- $PROJ task done $TASK_ID
@@ -100,16 +108,26 @@ expect_ok "task fail verb"             "→ Failed" -- $PROJ task fail "$DOOMED"
 #     experiment render, deprecate verb, relation guards
 SUB1=$($PROJ task new "Subtask one" -y --parent "$TASK_ID" | grep -oE '[A-Z]+-[0-9]{6}')
 SUB2=$($PROJ task new "Subtask two" -y --parent "$TASK_ID" | grep -oE '[A-Z]+-[0-9]{6}')
-grep -qF "> **subtask:** [$SUB1](" docs/tasks/${TASK_ID}-*.md \
+# subtask: bare key row + a `> - [stem](file.md)` link per direct child
+# (requirement 8: head refs are filename links, the editable task tree —
+# with titles — stays in the contain_task record's `## Task List` section)
+grep -qF "> **subtask:**" docs/tasks/${TASK_ID}-*.md && \
+  grep -qF "[${SUB1}-" docs/tasks/${TASK_ID}-*.md && \
+  grep -qF "[${SUB2}-" docs/tasks/${TASK_ID}-*.md \
   && ok "parent head shows subtask links" || fail "subtask head row missing"
 # related: a task points at a decision AND a plan (cross-type), both directions
 REL_TASK=$($PROJ task new "Related task" -y -r "DEC-0002, PLN-0001" | grep -oE '[A-Z]+-[0-9]{6}')
 [ -n "$REL_TASK" ] && ok "related task created ($REL_TASK)" || fail "related task: no id"
-grep -qF "> **related:** [DEC-0002](" docs/tasks/${REL_TASK}-*.md \
+# related (2 targets): bare key row + a `> - [filename](path)` list; the
+# cross-dir link path is relative to the record's own file (../dir/filename)
+grep -qF "> **related:**" docs/tasks/${REL_TASK}-*.md && \
+  grep -qF "[DEC-0002-" docs/tasks/${REL_TASK}-*.md && \
+  grep -qF "[PLN-0001-" docs/tasks/${REL_TASK}-*.md \
   && ok "related head row (forward)" || fail "related head row missing"
-grep -qF "[$REL_TASK](" docs/decisions/DEC-0002-*.md \
+# single related: one inline line [filename](relative path)
+grep -qF "> **related:** [${REL_TASK}-" docs/decisions/DEC-0002-*.md \
   && ok "related head row (reverse, on decision)" || fail "reverse related missing on decision"
-grep -qF "[$REL_TASK](" docs/plans/PLN-0001-*.md \
+grep -qF "> **related:** [${REL_TASK}-" docs/plans/PLN-0001-*.md \
   && ok "related head row (reverse, on plan)" || fail "reverse related missing on plan"
 # (self-relation guard lives in the Python API Record.add_related; a `new` task
 # cannot reference its own not-yet-created id, so there's no CLI path to test it)

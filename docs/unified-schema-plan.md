@@ -1,6 +1,7 @@
 # Plan: 统一 record/changelog 表 + parent 入 relations + template 去 features
 
-> 状态：**进行中**（本仓库是 proj 工具的 dev 仓库，非 proj 项目，不在根目录 dogfood）
+> 状态：**已完成**（2026-11-01；本仓库是 proj 工具的 dev 仓库，非 proj 项目，不在根目录 dogfood）
+> 实施记录：统一 `records`（`one_sentence`/`commit` 通用列）+ 单 `record_changelog`（`from_status`/`to_status`/`comment`）+ parent 入 relations（source=父）+ supersede 通用化（D1/D7）+ `contain_task` 替代 `features:` + `PROJ_LOGS` env + head 需求 8（关系链接文本 = 目标文件名**不带 .md 后缀**、路径相对记录自身文件；任务树留在 contain_task 记录的可编辑 `## Task List` section）+ `SCHEMA_VERSION=2`（无 migrate）。验证：`pixi run test` 63 passed；`pixi run e2e` 69 断言全绿（已适配需求 8 head 新格式 + status 图例 + PROJ_LOGS 三态）。
 > 本文件是**实施规划**，给实施 agent 照做。规划人负责本文件，实施负责改代码。
 > **dev 阶段，不做数据迁移、不兼容历史 `.proj.sqlite`**——直接换 schema 重建。
 
@@ -45,8 +46,12 @@ records(id TEXT PK, type TEXT, title TEXT, status TEXT,
 record_changelog(id INTEGER PK, record_id TEXT, date TEXT,
                  category TEXT, comment TEXT,               -- 这条事件的备注（D5 已定名）
                  from_status TEXT, to_status TEXT)          -- status 变化专属两列（见需求 5）
-relations(id INTEGER PK, source TEXT, source_type TEXT, target TEXT,
-          target_type TEXT, kind TEXT, pos INTEGER)          -- kind ∈ {supersede, related, parent}
+relations(id INTEGER PK, source TEXT, target TEXT,
+          kind TEXT, pos INTEGER)                            -- kind ∈ {supersede, related, parent}
+          -- 无 type 列（D8）：type 从 id 前缀解析（registry 的 code→type 映射）。
+          -- 全量可行：numbered 必须 > 0（D9），每条记录都有 code 前缀 id（DEC-0003）。
+          -- source/target 加 FK REFERENCES records(id) ON DELETE CASCADE：
+          -- 删记录自动删边（现状 db.delete 里手动清 relations 三行代码随之删掉）。
 meta / changelog_entries                                    -- 不变
 ```
 
@@ -90,12 +95,14 @@ sections:
 |---|------|---------|
 | D1 | 顶层 `supersede:` 开关 | **删掉**（你确认）。supersede 是纯 relation，所有类型通用，无需开关。删 `RecordTypeSpec.apply_supersede` + `record.py` 里那道 `apply_supersede` 门槛 + template 的 `supersede:` 行；`-s`/`supersede` 变所有类型通用（写时校验同类型）。关系写入见 §4b。 |
 | D2 | `records` 表是否保留 `fields TEXT` JSON 列 | **删掉**（你问来意 → 本意存额外字段，但唯一动态列 `parent` 已退 relations、当前所有 template 无额外字段 → 永远 `{}` 空壳）。删列 + 删 template `fields:` 段；将来某 profile 要额外字段时 dev 阶段加回（重建即可）。 |
-| D3 | `record_changelog` 是否加 `record_type TEXT` 冗余列 | **不加**（你确认）。record_id 全局唯一，join `records` 或 id 前缀推出 type。 |
+| D3 | `record_changelog` 是否加 `record_type TEXT` 冗余列 | **不加**（你确认）。record_id 全局唯一，join `records` 推出 type。 |
 | D4 | parent 关系约束 | **不加 DB 约束，但强制"一棵树"**（你确认）：① 无环——`check_rows` 父环校验（已有）；② 一子一父——一个 task 只带单值 `--parent`（new 参数天然单值，不会挂两个父）。应用层保证，不加 DB CHECK/UNIQUE。 |
 | D5 | status 变化事件的备注列 | **列名 `comment`**（你确认）。status 变化时 `from_status`/`to_status` 两列表达变化，`comment` 可空可写（如 "review passed with notes"）；**显示**：有 status 变化 → Change 列 = `emoji 版状态变化`（如 `✏️ Draft → 🚧 In Progress`）开头，后跟 `comment`；无 status 变化 → Change 列单独显示 `comment`。非 status 事件（created 等）两列为 NULL。 |
 | D6 | changelog 表行数的环境变量名 | **`PROJ_LOGS`**（你确认，保留建议名）：`0`=不显示，`-1`=全部，未设/空=默认 5，正整数 N=最新 N 条。注意：`render.toc` 开关保留（decision 用），只有 `render.changelog` 被 env 变量取代。 |
 
 | D7 | supersede 通用化后，被替代记录的状态副作用 | **不自动置 Deprecated**（你确认）。写入 supersede 边**不改被替代记录的状态**；`> **superseded_by:**` 行保留（从 relations 反向查，纯渲染，与状态无关）。`deprecate` 动词仍可用，需要时手动 `proj decision deprecate`。 |
+| D8 | `relations` 是否存 `source_type`/`target_type` 列 | **不存**（你确认）。type 从 **id 前缀解析**：`source`/`target` 形如 `DEC-0003`，registry 里 `code → record_type` 是现成的映射（`resolve_record_type` 已按 code 解析），查表即得 type。**全量成立**：`numbered` 只填位数且**必须 > 0**（D9，无 letter、无 `numbered:0`）→ 每条记录都有 code 前缀 id，前缀必能解析。顺带：`source`/`target` 加 `FK REFERENCES records(id) ON DELETE CASCADE`——删记录自动删边，现状 `db.delete` 手动清 relations 的三行代码删掉。同类型校验（supersede）= 两个 id 的前缀 code 相同（解析后比较 record_type）。 |
+| D9 | `numbered` 取值约束 | **必须 > 0**（你确认）：只填位数（`numbered: 4` → `DEC-0001`），无 letter 类型、无 `numbered: 0`（无 id 类型）。`load_registry` 校验 `numbered` 为 ≥1 整数，否则 init 报错。这让 D8 的前缀解析全量可行，也让 `next_id`/`max_int_id` 不再有 `numbered==0` 分支。 |
 
 > **不做数据迁移、不兼容历史**（dev 阶段）：直接 `SCHEMA_VERSION` 置 2，`.proj.sqlite` 重建即可，无 migrate 分支。
 
@@ -118,12 +125,12 @@ sections:
 
 > 纪律（你定的）：步骤 1–8 **只改代码、不跑 pytest/e2e**（避免反复起沙盒、反复等渲染）；每步末尾的"→ 验证：pytest（…）"是**该步应满足的行为标准**（供最后统一测时按清单核对），不是"跑完这一步立即验证"。全部改完后**步骤 9 一次性统一测**（`pixi run test` + `pixi run e2e`），红了再回查。
 
-1. **relations 加 `kind='parent'`**：`db.py` 加 `children_of(parent_id)`（`kind='parent' AND source=parent`→target，返回子任务列表）、`parent_of(child_id)`（`kind='parent' AND target=child`→source，返回父；无则 None）。方向与 supersede 一致（source=父/主动方）。直接切，无双写过渡。（行为标准：pytest parent 查询）
+1. **relations 改造（D8）+ 加 `kind='parent'`**：`db.py` 的 `relations` 表**删 `source_type`/`target_type` 列**，加 `source/target FK REFERENCES records(id) ON DELETE CASCADE`；`add_relation(source, target, kind, pos)` 签名去两个 type 参数（type 不存，调用方写入前自行校验目标存在）；`supersede_of/superseded_by_of/related_of` 查询去 type 过滤（type 需要时由 id 前缀解析）；加 `children_of(parent_id)`（`kind='parent' AND source=parent`→target）、`parent_of(child_id)`（`kind='parent' AND target=child`→source；无则 None）。方向与 supersede 一致（source=父/主动方）。直接切，无双写过渡。（行为标准：pytest parent 查询 + 删记录边自动消失（CASCADE））
 2. **template 去 `features` + 顶层 `supersede:`，加 `contain_task`，删 `fields:`**：`templates.py` 改 `RecordTypeSpec` 字段（删 `apply_supersede`/`apply_task`/`fields`，加 `contain_task`）+ 解析；6 个 yaml 同步改（去 features、去 fields、去 `render.changelog`）；`write_lock`/`specs_from_lock` 去掉 `features`/`fields`、加 `contain_task` 顶层键。→ 验证：pytest（registry 加载）。
-3. **统一 `records` 表（含 `one_sentence` 列）**：`db.py` 用单表 `records`（`type` 列过滤替代每类型表）；列名 `summary`→`one_sentence`；`ensure_kind` → 建单表；`insert/get/all/set/delete/max_int_id` 全改 `WHERE type=?`；`next_id` 按 type 过滤；`check.template_matches_table` 改查单表；`store.py`/`record.py`/`cli.py` 里读 `row["summary"]` 处改 `row["one_sentence"]`（对外 `--summary`/`new(summary=)` API 不变）。→ 验证：pytest（增删改查 + id 递增 + one_sentence roundtrip）。
+3. **统一 `records` 表（含 `one_sentence` 列）+ numbered 约束（D9）**：`db.py` 用单表 `records`（`type` 列过滤替代每类型表）；列名 `summary`→`one_sentence`；`ensure_kind` → 建单表；`insert/get/all/set/delete/max_int_id` 全改 `WHERE type=?`（`delete` 去手动清 relations 的三行——FK CASCADE 自动）；`next_id` 按 type 过滤、**去 `numbered==0` 分支**（D9：numbered 必须 >0）；`load_registry` 校验 `numbered` 为 ≥1 整数（非法 init 报错）；`check.template_matches_table` 改查单表；`store.py`/`record.py`/`cli.py` 里读 `row["summary"]` 处改 `row["one_sentence"]`（对外 `--summary`/`new(summary=)` API 不变）。→ 验证：pytest（增删改查 + id 递增 + one_sentence roundtrip + numbered=0 模板 init 报错）。
 4. **统一 `record_changelog` 表 + status 列 + `comment` + status 图例**：`db.add_log/logs/first_date_to` 改用单表；`add_log` 签名加 `from_status=None, to_status=None`，事件备注列改名 `comment`（status_set 的 status 变化调用点填两列、comment 可空）；`first_date_to` 改查 `to_status=?` 列；`_done_date` 改按 `to_status IN status_done`；渲染 `| Date | Category | Change |` 表时 Change 列 = **有 status 变化 ? f"{emoji(from_status)} {from_status} → {emoji(to_status)} {to_status}" + (f" {comment}" if comment) : comment**（D5 显示规则），表底下接 `views.status_legend(spec)` 一行；删每类型 `_changelog` 建表。→ 验证：pytest（changelog roundtrip + done 日期 + D5 显示规则两种形态 + 图例行在）。
-5. **parent 从列迁到 relations**：`Task.new` 写 `add_relation(parent_id, task_type, new_id, 'parent')`（source=父）；`store.render_record` 的 subtask 行（`children_of`）+ task 的 `> **parent:**` 行（`parent_of`）+ `views.task_tree_lines`（`children_of` 建树）+ `record_types/plan.py` review 门禁（`children_of` 取直接子任务）+ `cli._dyn_list` 的 `(parent X)`（`parent_of`）全部改读 `relations`；删 `parent` 列与 `RELATION_FIELDS={"parent"}`。→ 验证：pytest（task/plan 树渲染 + review 门禁 + 幽灵/环）。
-6. **supersede 通用化（D1 去门槛 + D7 去副作用）**：删 `record.py` 的 `apply_supersede` 门槛，supersede 对任何类型可用（加同类型校验：`source_type != target_type` 拒）；**不**再自动置 Deprecated（D7），只写 relations 边 + changelog 一条；被替代记录的 `> **superseded_by:**` 行照常渲染。→ 验证：pytest（非 decision 类型也能 `-s`；跨类型拒；同类型链无环；被替代记录状态不变 + superseded_by 行在）。
+5. **parent 从列迁到 relations**：`Task.new` 写 `add_relation(parent_id, new_id, 'parent')`（source=父，无 type 参数）；`store.render_record` 的 subtask 行（`children_of`）+ task 的 `> **parent:**` 行（`parent_of`）+ `views.task_tree_lines`（`children_of` 建树）+ `record_types/plan.py` review 门禁（`children_of` 取直接子任务）+ `cli._dyn_list` 的 `(parent X)`（`parent_of`）全部改读 `relations`；删 `parent` 列与 `RELATION_FIELDS={"parent"}`。→ 验证：pytest（task/plan 树渲染 + review 门禁 + 幽灵/环）。
+6. **supersede 通用化（D1 去门槛 + D7 去副作用）**：删 `record.py` 的 `apply_supersede` 门槛，supersede 对任何类型可用（同类型校验 = **两个 id 的前缀 code 解析成同一 record_type**，不同则拒；D8 无 type 列可比较）；**不**再自动置 Deprecated（D7），只写 relations 边 + changelog 一条；被替代记录的 `> **superseded_by:**` 行照常渲染。→ 验证：pytest（非 decision 类型也能 `-s`；跨类型拒；同类型链无环；被替代记录状态不变 + superseded_by 行在）。
 7. **changelog 表行数改 env 变量**：`store.render_record` 的 `db.logs(..., limit=5)` 改读 `PROJ_LOGS`（0→不渲染表；-1→不限；默认 5；N→N 条）；`RecordTypeSpec.apply_changelog` 删除，6 个 yaml 删 `render.changelog:` 行（decision 保留 `render.toc:`）；`write_lock`/`specs_from_lock` 同步去 `render.changelog`。→ 验证：pytest（三种取值）+ e2e（默认 5 条不变）。
 8. **head block 细节（需求 8）**：`_head_block` 的 `done` 行改为**有值才渲染**（未 done → 整行不出）；`_link_value` 重写为：**文本 = 目标完整文件名**（dangling id 落回纯文本 id）、**路径 = 相对记录自身文件**（同目录 → 直接文件名，跨目录 → `../{目标dir}/{文件名}`，`dir` 从 registry 的 spec 取）；head 渲染处：key 的值**单个 → 一行** `> **key:** [文件名](路径)`，**多个 → key 行 + 列表**（`> - [文件名1](路径1)` 逐条，blockquote 内列表）。**任务树位置与机制不变**（⑤）：仍是 head 围栏之外的独立可编辑 `kind: task` section（`## <section>` + `task_tree_lines`），手动勾选经现有 sync 回库。→ 验证：pytest（无 done 的行缺失 + 单值一行 + 多值列表（supersede 两个目标）+ task→plan 跨目录链接文本为完整文件名 + 任务树仍在 head 之后的 section 里）+ e2e（既有 head 断言适配新格式）。
 9. **收尾 + 统一测（唯一一次跑测试）**：`mcp.py` 里 parent/one_sentence/supersede 通用/PROJ_LOGS 相关描述、`docs.py`/CLI 帮助文案、lock 格式；`SCHEMA_VERSION`→2（无 migrate 分支）——这些都只改代码不跑；全部改完后**统一跑** `pixi run test` + `pixi run e2e`，红了按第 5 节各步的"行为标准"清单回查定位，修完重跑整条。

@@ -31,28 +31,30 @@ def test_letter_ids_increment(proj):
     assert (r1["id"], r2["id"], r3["id"]) == ("T-000001", "T-000002", "T-000003")
 
 
-def test_parent_field_stored(proj):
+def test_parent_relation_stored(proj):
     _plan(proj).new(proj, "P1")
-    row, _ = rec.new_record(proj, "task", "Attached", fields={"parent": "PLN-0001"})
-    assert row["parent"] == "PLN-0001"
+    row, _ = taskmod.new(proj, "Attached", parent="PLN-0001")
+    # parent is a relations edge (kind=parent, source=parent), not a column
     spec = rec.load_registry(proj.root)["task"]
     db = rec.open_db(proj)
-    assert db.get(spec, row["id"])["parent"] == "PLN-0001"
+    assert "parent" not in db.get(spec, row["id"])
+    assert db.parent_of(row["id"])["source"] == "PLN-0001"
+    assert [c["target"] for c in db.children_of("PLN-0001")] == [row["id"]]
     db.close()
 
 
 def test_summary_roundtrip(proj):
-    # one-sentence summary: italic line in the head fence (no "summary:" label),
-    # hand-editable in md (md wins)
+    # one-sentence summary: stored in the one_sentence column, rendered as an
+    # italic line in the head fence (no "summary:" label), md wins
     row, p = rec.new_record(proj, "task", "S1", summary="kickoff")
-    assert row["summary"] == "kickoff"
+    assert row["one_sentence"] == "kickoff"
     text = p.read_text()
     assert "_kickoff_" in text.splitlines()  # italic line, not a labeled row
     p.write_text(text.replace("_kickoff_", "_shipped the core_"))
     rec.sync(proj)
     spec = rec.load_registry(proj.root)["task"]
     db = rec.open_db(proj)
-    assert db.get(spec, row["id"])["summary"] == "shipped the core"
+    assert db.get(spec, row["id"])["one_sentence"] == "shipped the core"
     db.close()
 
 
@@ -81,6 +83,34 @@ def test_done_requires_all_checked(proj):
     assert row2["status"] == "Done"
 
 
+def test_logs_limit_env(proj, monkeypatch):
+    """PROJ_LOGS: 0 = no changelog table, -1 = all, default = 5, N = latest N.
+    The record has 9 changelog rows (created + events 0..7)."""
+    row, _ = rec.new_record(proj, "task", "T1")
+    for i in range(8):
+        rec.add_log(proj, "task", row["id"], f"event {i}")
+    p = next((proj.root / "docs/tasks").glob(f"{row['id']}-*.md"))
+    monkeypatch.setenv("PROJ_LOGS", "0")
+    rec.render_all(proj)
+    assert "| Date | Category | Change |" not in p.read_text()
+    monkeypatch.setenv("PROJ_LOGS", "-1")
+    rec.render_all(proj)
+    assert all(f"| event {i} |" in p.read_text() for i in range(8))
+    monkeypatch.setenv("PROJ_LOGS", "2")
+    rec.render_all(proj)
+    text = p.read_text()
+    assert "| event 7 |" in text and "| event 6 |" in text
+    assert "| event 5 |" not in text
+    monkeypatch.setenv("PROJ_LOGS", "")  # empty → default 5: events 7,6,5,4,3
+    rec.render_all(proj)
+    text = p.read_text()
+    assert "| event 7 |" in text and "| event 3 |" in text
+    assert "| event 2 |" not in text
+    monkeypatch.delenv("PROJ_LOGS")  # unset → default 5
+    rec.render_all(proj)
+    assert "| event 2 |" not in p.read_text()
+
+
 def test_done_sets_derived_dates(proj):
     row, _ = rec.new_record(proj, "task", "T1")
     _write_task_steps(proj, row["id"], _steps_text().replace("[ ]", "[x]"))
@@ -94,9 +124,9 @@ def test_done_sets_derived_dates(proj):
 
 def test_attached_tasks_show_in_main_tasklist(proj):
     """Main TASKLIST shows the whole tree: plans as top-level nodes, their
-    tasks (DB parent link) indented below, top-level tasks alongside."""
+    tasks (kind=parent relation) indented below, top-level tasks alongside."""
     _plan(proj).new(proj, "P1")  # Draft
-    rec.new_record(proj, "task", "Attached", fields={"parent": "PLN-0001"})
+    taskmod.new(proj, "Attached", parent="PLN-0001")
     rec.new_record(proj, "task", "Detached")
     tl = (proj.root / "TASKLIST.md").read_text()
     plan_md = next((proj.root / "docs/plans").glob("PLN-0001-*.md")).name
@@ -109,14 +139,14 @@ def test_attached_tasks_show_in_main_tasklist(proj):
     assert "Attached" in lines[plan_line + 1]
 
 
-def test_plan_task_list_section_rendered_from_db(proj):
-    """The plan's Task List section is `type: task` template data — the engine
-    renders the task subtree (parent == this plan, recursively) from the DB."""
+def test_plan_task_tree_rendered_from_db(proj):
+    """The plan's task tree is rendered from kind=parent relations — inside the
+    head block (subtask row + tree), not a body section."""
     _plan(proj).new(proj, "P1")
-    row, _ = rec.new_record(proj, "task", "Attached", fields={"parent": "PLN-0001"})
-    rec.new_record(proj, "task", "Substep", fields={"parent": row["id"]})
+    row, _ = taskmod.new(proj, "Attached", parent="PLN-0001")
+    taskmod.new(proj, "Substep", parent=row["id"])
     plan_md = next((proj.root / "docs/plans").glob("PLN-0001-*.md")).read_text()
-    assert "## Task List" in plan_md
+    assert "> **subtask:**" in plan_md
     assert "Attached" in plan_md
     assert "Substep" in plan_md
     # same tree in the main TASKLIST
@@ -124,14 +154,14 @@ def test_plan_task_list_section_rendered_from_db(proj):
     assert "Attached" in tl and "Substep" in tl
 
 
-def test_experiment_task_section_makes_it_a_tree_root(proj):
-    """Any record_type with a `type: task` section renders as a TASKLIST root
-    (experiment, like plan) — its tasks hang indented below, no code needed."""
+def test_experiment_contains_task_makes_it_a_tree_root(proj):
+    """Any contain_task record_type renders as a TASKLIST root (experiment, like
+    plan) — its tasks hang indented below, no code needed."""
     rec.new_record(proj, "experiment", "Exp A")
-    row, _ = rec.new_record(proj, "task", "Run baseline", fields={"parent": "EXP-0001"})
-    rec.new_record(proj, "task", "Plot results", fields={"parent": row["id"]})
+    row, _ = taskmod.new(proj, "Run baseline", parent="EXP-0001")
+    taskmod.new(proj, "Plot results", parent=row["id"])
     exp_md = next((proj.root / "docs/experiments").glob("EXP-0001-*.md")).read_text()
-    assert "## Task List" in exp_md and "Run baseline" in exp_md and "Plot results" in exp_md
+    assert "Run baseline" in exp_md and "Plot results" in exp_md
     tl = (proj.root / "TASKLIST.md").read_text()
     lines = tl.splitlines()
     exp_line = next(i for i, line in enumerate(lines) if "experiment" in line)
@@ -140,7 +170,7 @@ def test_experiment_task_section_makes_it_a_tree_root(proj):
 
 def test_state_machine_full_path(proj):
     _plan(proj).new(proj, "P1")
-    row, _ = rec.new_record(proj, "task", "T1", fields={"parent": "PLN-0001"})
+    row, _ = taskmod.new(proj, "T1", parent="PLN-0001")
     _write_task_steps(proj, row["id"], _steps_text().replace("[ ]", "[x]"))
     rec.sync(proj)
     taskmod.done(proj, row["id"])
@@ -161,13 +191,13 @@ def test_review_blocks_on_undone_direct_child(proj):
     task do not block — only direct children do)."""
     _plan(proj).new(proj, "P1")
     _plan(proj).transition(proj, "activate", "PLN-0001")
-    row, _ = rec.new_record(proj, "task", "Open task", fields={"parent": "PLN-0001"})
+    row, _ = taskmod.new(proj, "Open task", parent="PLN-0001")
     _write_task_steps(proj, row["id"], _steps_text())
     rec.sync(proj)
     with pytest.raises(ValueError, match="not Done"):
         _plan(proj).transition(proj, "review", "PLN-0001")
     # a sub-task under the task (not a direct child of the plan) never blocks
-    rec.new_record(proj, "task", "Substep", fields={"parent": row["id"]})
+    taskmod.new(proj, "Substep", parent=row["id"])
     with pytest.raises(ValueError, match="not Done"):
         _plan(proj).transition(proj, "review", "PLN-0001")
     _write_task_steps(proj, row["id"], _steps_text().replace("[ ]", "[x]"))
@@ -198,25 +228,30 @@ def test_shelved_freeze_to_archived(proj):
 
 
 def test_task_rejects_ghost_parent_ref(proj):
-    with pytest.raises(ValueError, match=r"does not match any record"):
+    with pytest.raises(ValueError, match=r"not found in any record_type"):
         taskmod.new(proj, "T1", parent="999")
     # valid ref (any type) still works, and a bare task (no parent) is fine
     _plan(proj).new(proj, "P1")
     row, _ = taskmod.new(proj, "T1", parent="PLN-0001")
-    assert row["parent"] == "PLN-0001"
+    spec = rec.load_registry(proj.root)["task"]
+    db = rec.open_db(proj)
+    assert db.parent_of(row["id"])["source"] == "PLN-0001"
+    db.close()
     taskmod.new(proj, "T2")
 
 
 def test_check_flags_dangling_parent(proj):
     _plan(proj).new(proj, "P1")
-    rec.new_record(proj, "task", "T1", fields={"parent": "42"})  # bypass the CLI guard
-    problems = checkmod.check(proj)
-    assert any("parent 42 does not exist" in p for p in problems)
-    # healthy refs pass once the dangling one is repointed
-    spec = rec.load_registry(proj.root)["task"]
+    row, _ = rec.new_record(proj, "task", "T1")
     db = rec.open_db(proj)
-    bad = db.get(spec, "T-000001")
-    db.set(spec, bad["id"], parent="PLN-0001")
+    db.add_relation("PLN-0099", "plan", row["id"], "task", "parent")  # dangling
+    db.close()
+    problems = checkmod.check(proj)
+    assert any("parent PLN-0099 does not exist" in p for p in problems)
+    # healthy refs pass once the dangling one is repointed
+    db = rec.open_db(proj)
+    db.remove_relation("PLN-0099", "plan", row["id"], "parent")
+    db.add_relation("PLN-0001", "plan", row["id"], "task", "parent")
     db.close()
     assert not any("does not exist" in p for p in checkmod.check(proj))
 
@@ -225,7 +260,7 @@ def test_done_not_blocked_by_subtasks(proj):
     # sub-tasks are independent: a task is done by its own steps alone,
     # whether or not its sub-tasks are done (parent never waits for children)
     parent_row, _ = rec.new_record(proj, "task", "T1")
-    sub, _ = rec.new_record(proj, "task", "Substep", fields={"parent": parent_row["id"]})
+    sub, _ = taskmod.new(proj, "Substep", parent=parent_row["id"])
     _write_task_steps(proj, parent_row["id"], _steps_text().replace("[ ]", "[x]"))
     rec.sync(proj)
     taskmod.done(proj, parent_row["id"])
@@ -238,8 +273,8 @@ def test_done_not_blocked_by_subtasks(proj):
 
 def test_children_rendered_indented_in_main_tasklist(proj):
     _plan(proj).new(proj, "P1")
-    parent_row, _ = rec.new_record(proj, "task", "T1", fields={"parent": "PLN-0001"})
-    rec.new_record(proj, "task", "Substep", fields={"parent": parent_row["id"]})
+    parent_row, _ = taskmod.new(proj, "T1", parent="PLN-0001")
+    taskmod.new(proj, "Substep", parent=parent_row["id"])
     rec.render_all(proj)
     tl = (proj.root / "TASKLIST.md").read_text()
     # sub-task indented under its parent task, which sits under the plan node

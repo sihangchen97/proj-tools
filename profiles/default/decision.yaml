@@ -2,26 +2,65 @@ record_type: decision
 code: DEC
 dir: docs/decisions
 numbered: 4
-features:
-  supersede: true
-  task: false
+contain_task: false
+# 无 features:（supersede 是纯 relation，所有类型通用，写时校验同类型）
 render:
   toc: true         # 渲染 <dir>/_TOC.md（id/status/title 表）
-  changelog: true
 # 每个状态都有对应的 verb（from 用 Any = 任意当前状态可直达该状态）
 verbs:
   draft: {from: Any, to: Draft}
   propose: {from: Any, to: Proposed}
   accept: {from: Any, to: Accepted}
+  reject: {from: Any, to: Rejected}
   deprecate: {from: Any, to: Deprecated}
-# status 按时间顺序排列：Draft → Proposed → Accepted → Deprecated（被替代时置 Deprecated）
+# status 按时间顺序排列：Draft → Proposed → Accepted | Rejected → Deprecated（被替代时置 Deprecated）
 # done: true 的状态 = 进入过即算 done（done 行记首次到达日期）
+# 注意：进入任一 done 状态时，正文里所有 `- [ ]` 必须已勾选（引擎通用门禁）
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
-  - {name: Proposed, emoji: 🌱}        # 提案中，等待讨论
+  - {name: Proposed, emoji: 🌱}        # 提案中，等待讨论/评审
   - {name: Accepted, emoji: ✅, done: true}    # 已采纳，当前生效
-  - {name: Deprecated, emoji: 📛, done: true}  # 已废弃，被 supersede
+  - {name: Rejected, emoji: 🚫, done: true}    # 评审后否决（保留记录，避免重复讨论）
+  - {name: Deprecated, emoji: 📛, done: true}  # 已废弃，被 supersede 或不再适用
 sections:
-  - {name: Context, hint: problem statement & constraints}
-  - {name: Decision, hint: chosen solution & why over alternatives}
-  - {name: Consequences, hint: pros, cons, tech debt, follow-ups}
+  - name: Context
+    hint: >-
+      The problem that forces a decision, written so a newcomer understands it a
+      year from now. First line: `Deciders: <names or roles who own/approve
+      this>`. Then cover: what is happening now and why it is a problem; the
+      constraints (technical, budget, deadline, team skills, compliance); the
+      scope (what this decision covers and explicitly does not). State facts and
+      forces only — no solution here. 3-10 sentences or bullets.
+  - name: Decision Drivers
+    hint: >-
+      The criteria used to judge options, most important first, as plain bullets
+      (e.g. "- p99 latency < 100ms", "- no new paid service", "- team already knows
+      Python"). Every option below is weighed against this list. Plain bullets
+      only — an unchecked `- [ ]` here blocks accept/reject.
+  - name: Considered Options
+    hint: >-
+      At least two real options (including "do nothing / keep current" when
+      relevant). For each: a `### Option name` sub-heading, one-line description,
+      then `Pros:` / `Cons:` bullets scored against the Decision Drivers. Note
+      rough cost/effort and any spike or benchmark evidence (link it). No
+      checkboxes.
+  - name: Decision
+    hint: >-
+      The chosen option in one active-voice sentence ("We will use X for Y."),
+      then why it beats the others with reference to the Decision Drivers. Add
+      any conditions or boundaries (where it applies, what stays out of scope).
+      Keep implementation detail to what is needed to apply the decision.
+  - name: Consequences
+    hint: >-
+      What becomes easier and what becomes harder once this is in effect —
+      list positives, negatives and accepted trade-offs honestly. Name the
+      follow-up work (create tasks: proj task new ... --related DEC-xxxx), any
+      tech debt it introduces (proj debt new ... --related DEC-xxxx), and
+      migration or rollback notes. `proj decision link` appends "See also:"
+      refs here. No checkboxes (they block accept) — track work as tasks.
+  - name: Confirmation
+    hint: >-
+      How we will know the decision was right and is being followed: the
+      metric, review, test or lint rule that verifies it, and the trigger to
+      revisit it (a date, a scale threshold, a dependency change). If the
+      trigger fires, write a new decision with -s to supersede this one.

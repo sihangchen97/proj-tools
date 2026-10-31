@@ -74,20 +74,12 @@ def proj_init(root: str | None = None, profile: str = "default") -> str:
 
 def proj_new(record_type: str, title: str, root: str | None = None,
              supersede: str | None = None, parent: str | None = None,
-             related: str | None = None, field: str | None = None,
+             related: str | None = None, commit: str | None = None,
              summary: str | None = None) -> str:
-    """Create a record. supersede: comma-separated decision ids (decision only);
+    """Create a record. supersede: comma-separated ids being replaced, same type;
     related: comma-separated record ids, any type (unordered);
-    parent: parent record id, any type (task only); field: comma-separated name=value."""
+    parent: parent record id, any type (task only); commit: git commit hash."""
     cfg = _cfg(root)
-    fields = {}
-    for f in (field or "").split(","):
-        if not f.strip():
-            continue
-        if "=" not in f:
-            return f"error: field expects name=value, got {f!r}"
-        k, v = f.split("=", 1)
-        fields[k.strip()] = v.strip()
     reg = rec.load_registry(cfg.root)
     record_type = _rtype(record_type, reg)
     if record_type is None:
@@ -97,14 +89,12 @@ def proj_new(record_type: str, title: str, root: str | None = None,
     flat_rel = [x.strip() for x in (related or "").split(",") if x.strip()]
     try:
         if record_type == "task":
-            _, p = taskmod.new(cfg, title, parent, summary or "", flat_rel or None)
-        elif flat_sup or flat_rel:
-            obj = record_for(record_type, reg)
-            _, p = obj.new(cfg, title, fields=fields or None, summary=summary or "",
-                           supersede=flat_sup or None, related=flat_rel or None)
+            _, p = taskmod.new(cfg, title, parent, summary or "", commit or "",
+                               flat_rel or None)
         else:
-            _, p = rec.new_record(cfg, record_type, title,
-                                  fields=fields or None, summary=summary or "")
+            obj = record_for(record_type, reg)
+            _, p = obj.new(cfg, title, summary=summary or "", commit=commit or "",
+                           supersede=flat_sup or None, related=flat_rel or None)
     except ValueError as e:
         return f"error: {e}"
     return f"Created {p.relative_to(cfg.root)}"
@@ -156,12 +146,17 @@ def proj_show(record_type: str, id_: str, root: str | None = None,
         return f"error: {record_type} {id_} not found"
     lines = [f"id: {row['id']}", f"title: {row['title']}",
              f"status: {row['status']}", f"created: {row['created']}"]
-    for f in spec.fields:
-        if row.get(f.name):
-            lines.append(f"{f.name}: {row[f.name]}")
+    if row.get("one_sentence"):
+        lines.append(f"one_sentence: {row['one_sentence']}")
+    if row.get("commit"):
+        lines.append(f"commit: {row['commit']}")
+    if spec.record_type == "task":
+        parent = db.parent_of(row["id"])
+        if parent:
+            lines.append(f"parent: {parent['source']}")
     if history:
-        for e in db.logs(record_type, row["id"]):
-            lines.append(f"  {e['date']}  [{e['category']}] {e['summary']}")
+        for e in db.logs(row["id"]):
+            lines.append(f"  {e['date']}  [{e['category']}] {rec._log_change(e, spec)}")
     db.close()
     return "\n".join(lines)
 
@@ -252,15 +247,16 @@ async def _t_init(root: str | None = None, profile: str = "default") -> str:
 @mcp.tool(name="proj_new")
 async def _t_new(record_type: str, title: str, root: str | None = None,
                  supersede: str | None = None, parent: str | None = None,
-                 related: str | None = None, field: str | None = None,
+                 related: str | None = None, commit: str | None = None,
                  summary: str | None = None) -> str:
     """Create a record from its template (DB insert + rendered md).
     record_type: registered type (decision/task/plan/debt/incident/experiment/…).
-    supersede: ids being replaced, comma-separated (decision only).
+    supersede: ids being replaced, same type, comma-separated.
     related: related record ids, any type, comma-separated (unordered).
-    parent: parent record id (task only). field: extra template fields,
-    'name=value[, name=value]'. summary: one-sentence summary."""
-    return _safe(proj_new, record_type, title, root, supersede, parent, related, field, summary)
+    parent: parent record id (task only). commit: git commit hash.
+    summary: one-sentence summary."""
+    return _safe(proj_new, record_type, title, root, supersede, parent, related,
+                 commit, summary)
 
 
 @mcp.tool(name="proj_sync")

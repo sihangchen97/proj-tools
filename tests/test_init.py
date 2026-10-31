@@ -44,7 +44,7 @@ def test_seed_decision_content(proj):
 def test_lock_written_and_consistent(proj):
     lock = dbmod.read_lock(proj.root)
     assert lock is not None
-    assert lock["schema_version"] == 1
+    assert lock["schema_version"] == 2
     assert "decision" in lock["record_types"]
     # lock spec round-trips to the same schema
     specs = dbmod.specs_from_lock(lock)
@@ -69,8 +69,10 @@ def test_task_kind_registered(proj):
     reg = rec.load_registry(proj.root)
     assert reg["task"].numbered == 6
     assert reg["incident"].numbered == 4
-    assert "Plan" not in reg["plan"].field_names  # plan has no fields
-    assert {f.name for f in reg["task"].fields} == {"parent"}  # related is a relation, not a field
+    # no per-template fields: the records table only has generic columns
+    assert reg["plan"].contain_task is True
+    assert reg["task"].contain_task is True
+    assert reg["incident"].contain_task is False
 
 
 def test_head_blockquote_shape(proj):
@@ -85,13 +87,14 @@ def test_head_blockquote_shape(proj):
     assert lines[1].startswith("<!-- proj:head:start")
     assert lines[2] == "# T-000001. F1"  # title directly below the fence
     assert "> **status:** ✏️ Draft  " in lines  # blockquote below the title
-    assert any(line.startswith("> **created:**") for line in lines)  # fixed three rows
-    assert "> **done:** —" in lines
+    assert any(line.startswith("> **created:**") for line in lines)  # fixed rows
+    # not done yet → no done row at all (需求 8)
+    assert not any(line.startswith("> **done:**") for line in lines)
     # NO summary row in the blockquote (no "summary:" label)
     assert not any("summary" in line for line in lines if line.startswith("> **"))
     # summary is an italic line below the block, only when set
     assert "_s_" in lines
-    assert lines.index("_s_") > lines.index("> **done:** —")
+    assert lines.index("_s_") > next(i for i, l in enumerate(lines) if l.startswith("> **"))
     # head fence end
     assert lines.index("<!-- proj:head:end -->") > lines.index("_s_")
     # no front matter anywhere
@@ -121,8 +124,7 @@ def test_profile_dir_inert_until_selected(proj):
     (d / "research.yaml").write_text(yaml.safe_dump({
         "record_type": "research", "code": "RES", "dir": "docs/research",
         "numbered": 4,
-        "features": {"supersede": False, "task": False},
-        "render": {"changelog": True},
+        "contain_task": False,
         "verbs": {"close": {"from": "Any", "to": "Closed"}},
         "status-allowed": [
             {"name": "Draft", "emoji": "\u270f\ufe0f"},

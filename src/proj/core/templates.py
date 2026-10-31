@@ -12,19 +12,14 @@ A profile file declares a record_type's table schema and behavior:
     status-allowed:      # each entry: {name, emoji, done} (emoji/done optional)
       - {name: Proposed, emoji: 🌱}
       - {name: Accepted, emoji: ✅, done: true}   # done: true => counts as the "done" state
-    fields:              # record_type-specific extra columns (optional)
-      - {name: supersedes, hint: ...}
+    contain_task: true     # tasks attach (parent -> this): head task tree, subtask row
     sections:            # body headings, in render order
       - {name: Context, hint: ...}
       - {name: Task List, type: task}   # view section: engine-rendered task tree
-    # behavior toggles — declared explicitly in every template
-    features:
-      supersede: true       # supersede semantics (new -s, bidirectional fields)
-      task: false           # tasks attach (parent -> this): rendered Task List, subtask row
     # render toggles — which generated views this record_type has
+    # (the per-record changelog table's row count is the PROJ_LOGS env var)
     render:
       toc: false            # <dir>/_TOC.md (id/status/title table)
-      changelog: true       # per-record changelog table in the md
 
 Placeholders in rendered managed lines: none — the engine fills values
 directly from the DB row.
@@ -49,12 +44,6 @@ class ChangelogSpec:
 
 
 @dataclass
-class TemplateField:
-    name: str
-    hint: str = ""
-
-
-@dataclass
 class TemplateSection:
     name: str
     hint: str = ""
@@ -70,20 +59,12 @@ class RecordTypeSpec:
     status_allowed: list[str] = field(default_factory=list)
     status_emoji: dict[str, str] = field(default_factory=dict)  # status name -> emoji
     verbs: dict[str, tuple[object, str]] = field(default_factory=dict)  # verb -> (from, to)
-    fields: list[TemplateField] = field(default_factory=list)
+    contain_task: bool = False  # tasks attach (parent -> this): head task tree, subtask row
     sections: list[TemplateSection] = field(default_factory=list)
     code: str = ""  # 3-letter record code (e.g. DEC); used in refs (DEC-0001) and the graph
     status_done: list[str] = field(default_factory=list)  # statuses declared done: true
-    # behavior toggles, declared explicitly in every template
-    apply_supersede: bool = False  # supersede: new -s, bidirectional fields
-    apply_task: bool = False       # tasks attach (parent -> this): Task List, subtask row
     # render toggles (which generated views this record_type has)
     apply_toc: bool = False        # <dir>/_TOC.md (id/status/title table)
-    apply_changelog: bool = True   # per-record changelog table in the md (latest 5 entries)
-
-    @property
-    def field_names(self) -> list[str]:
-        return [f.name for f in self.fields]
 
     def emojify(self, status: str) -> str:
         """Emoji only (table display): the emoji from this record_type's emoji
@@ -148,22 +129,13 @@ def parse_template(text: str) -> RecordTypeSpec:
         status_allowed=status_allowed,
         status_emoji=status_emoji,
         verbs=verbs,
-        fields=[TemplateField(f["name"], f.get("hint", "")) for f in data.get("fields", [])],
+        contain_task=bool(data.get("contain_task", False)),
         sections=[TemplateSection(s["name"], s.get("hint", ""), str(s.get("type", "text")))
                   for s in data.get("sections", [])],
         code=str(data.get("code", "")),
         status_done=status_done,
-        apply_supersede=bool(data.get("features", {}).get("supersede", False)),
-        apply_task=bool(data.get("features", {}).get("task", False)),
         apply_toc=bool(data.get("render", {}).get("toc", False)),
-        apply_changelog=bool(data.get("render", {}).get("changelog", True)),
     )
-    # a feature ships its own columns (injected first): the template does not
-    # declare them in fields
-    # a feature may ship its own record-table column (injected first): only task
-    # (parent). supersede/related live in the relations table, not as columns.
-    if spec.apply_task and "parent" not in spec.field_names:
-        spec.fields.insert(0, TemplateField("parent"))
     unknown = [s for s in spec.status_done if s not in spec.status_allowed]
     if unknown:
         msg = f"template {spec.record_type!r}: status done {unknown} not in status-allowed"
