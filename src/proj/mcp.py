@@ -34,7 +34,18 @@ PROJ_HOME_ENV = "PROJ_HOME"
 
 def _cfg(root: str | None, strict: bool = True):
     root = root or os.environ.get(PROJ_HOME_ENV)
-    return load_config(Path(root) if root else None, strict=strict)
+    try:
+        return load_config(Path(root) if root else None, strict=strict)
+    except FileNotFoundError as e:
+        raise ValueError(str(e)) from e
+
+
+def _safe(fn, *args) -> str:
+    """Run a pure tool body; config-discovery failures become clean 'error:' text."""
+    try:
+        return fn(*args)
+    except ValueError as e:
+        return f"error: {e}"
 
 
 def _fmt_rows(rows: list[dict], status: str | None) -> str:
@@ -235,7 +246,7 @@ async def proj_init_tool(root: str | None = None, profile: str = "core") -> str:
     """Scaffold a new project: files, DB tables (lock wins over templates), seed, adopt.
     root: absolute project path (default: discover by walking up from cwd).
     profile: core, cv, infra or quality (repeat calls to add profiles)."""
-    return proj_init(root, profile)
+    return _safe(proj_init, root, profile)
 
 
 @mcp.tool()
@@ -247,66 +258,66 @@ async def proj_new_tool(record_type: str, title: str, root: str | None = None,
     supersede: decision ids being replaced, comma-separated (decision only).
     parent: parent record id, any type (task only). field: extra template fields,
     'name=value[, name=value]'. summary: one-sentence summary."""
-    return proj_new(record_type, title, root, supersede, parent, field, summary)
+    return _safe(proj_new, record_type, title, root, supersede, parent, field, summary)
 
 
 @mcp.tool()
 async def proj_sync_tool(files: str | None = None, root: str | None = None) -> str:
     """md → DB (validate, normalize) → re-render all md. files: comma-separated
     paths (default: all managed dirs). FAIL lines mean the DB was not fully updated."""
-    return proj_sync(files, root)
+    return _safe(proj_sync, files, root)
 
 
 @mcp.tool()
 async def proj_check_tool(root: str | None = None) -> str:
     """Validate DB ↔ lock ↔ templates ↔ md invariants. 'OK' or FAIL lines."""
-    return proj_check(root)
+    return _safe(proj_check, root)
 
 
 @mcp.tool()
 async def proj_list_tool(record_type: str, status: str | None = None,
                         root: str | None = None) -> str:
     """List records of a record_type (from DB), optionally filtered by status."""
-    return proj_list(record_type, status, root)
+    return _safe(proj_list, record_type, status, root)
 
 
 @mcp.tool()
 async def proj_show_tool(record_type: str, id_: str, root: str | None = None,
                         history: bool = False) -> str:
     """Show one record (from DB); history: append its full changelog."""
-    return proj_show(record_type, id_, root, history)
+    return _safe(proj_show, record_type, id_, root, history)
 
 
 @mcp.tool()
 async def proj_status_tool(record_type: str, id_: str, new_status: str,
                           root: str | None = None) -> str:
     """Set a record's status (validated against the template's allowed set)."""
-    return proj_status(record_type, id_, new_status, root)
+    return _safe(proj_status, record_type, id_, new_status, root)
 
 
 @mcp.tool()
 async def proj_log_tool(record_type: str, id_: str, summary: str,
                        root: str | None = None) -> str:
     """Append a changelog entry: 'Category: one-line summary' (or plain text)."""
-    return proj_log(record_type, id_, summary, root)
+    return _safe(proj_log, record_type, id_, summary, root)
 
 
 @mcp.tool()
 async def proj_update_tool(root: str | None = None) -> str:
     """sync all + re-render every view (TASKLIST.md, CHANGELOG.md, view sections)."""
-    return proj_update(root)
+    return _safe(proj_update, root)
 
 
 @mcp.tool()
 async def proj_info_tool(root: str | None = None, as_json: bool = False) -> str:
     """What this project manages (record_types, counts, statuses) + verb cheatsheet."""
-    return proj_info(root, as_json)
+    return _safe(proj_info, root, as_json)
 
 
 @mcp.tool()
 async def proj_task_done_tool(id_: str, root: str | None = None) -> str:
     """Mark a task Done (requires every step + sub-task checked)."""
-    return proj_task_done(id_, root)
+    return _safe(proj_task_done, id_, root)
 
 
 @mcp.tool()
@@ -314,7 +325,7 @@ async def proj_plan_verb_tool(verb: str, id_: str, root: str | None = None) -> s
     """Drive a plan's state machine: activate (Draft→Active), review (Active→Pending
     review, requires all its tasks Done), shelve (Pending review→Shelved), resume
     (Shelved→Active), archive (Pending review→Archived), freeze (Shelved→Archived)."""
-    return proj_plan_verb(verb, id_, root)
+    return _safe(proj_plan_verb, verb, id_, root)
 
 
 @mcp.tool()
@@ -322,7 +333,7 @@ async def proj_decision_supersede_tool(title: str, supersede: str, root: str | N
                                        summary: str | None = None) -> str:
     """Create a decision that supersedes existing ones (sets supersedes + appends
     to each old one's superseded_by). supersede: comma-separated decision ids."""
-    return proj_decision_supersede(title, supersede, root, summary)
+    return _safe(proj_decision_supersede, title, supersede, root, summary)
 
 
 @mcp.tool()
@@ -330,7 +341,7 @@ async def proj_changelog_add_tool(entry: str, version: str | None = None,
                                   root: str | None = None) -> str:
     """Add a CHANGELOG.md entry: 'Category: text' (Added/Changed/Fixed/…; plain
     text ok). version: default the Unreleased placeholder."""
-    return proj_changelog_add(entry, version, root)
+    return _safe(proj_changelog_add, entry, version, root)
 
 
 def main():
