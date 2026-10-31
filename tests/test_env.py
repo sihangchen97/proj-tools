@@ -1,7 +1,19 @@
 """D6: the project .env supplies config defaults (OS env wins, no override)."""
 import os
+import pytest
 
 from proj.core.config import load_project_env
+
+
+@pytest.fixture(autouse=True)
+def _proj_env_vars():
+    """load_project_env writes os.environ directly (that is the point) — monkeypatch
+    cannot undo keys it never touched, so snapshot + restore every PROJ_* var here."""
+    saved = {k: v for k, v in os.environ.items() if k.startswith("PROJ_")}
+    yield
+    for k in [k for k in os.environ if k.startswith("PROJ_") and k not in saved]:
+        del os.environ[k]
+    os.environ.update(saved)
 
 
 def test_load_project_env_semantics(proj, monkeypatch):
