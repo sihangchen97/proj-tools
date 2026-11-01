@@ -128,32 +128,34 @@ def test_attached_tasks_show_in_main_tasklist(proj):
     """Main TASKLIST shows the whole tree: plans as top-level nodes, their
     tasks (kind=parent relation) indented below, top-level tasks alongside."""
     _plan(proj).new(proj, "P1")  # Draft
-    taskmod.new(proj, "Attached", parent="PLN-0001")
-    rec.new_record(proj, "task", "Detached")
+    attached, _ = taskmod.new(proj, "Attached", parent="PLN-0001")
+    detached, _ = rec.new_record(proj, "task", "Detached")
     tl = (proj.root / "TASKLIST.md").read_text()
     plan_md = next((proj.root / "docs/plans").glob("PLN-0001-*.md")).name
     plan_id = plan_md.split("-")[0]
     lines = tl.splitlines()
-    assert "plan" in tl and "Detached" in tl
-    assert "Attached" in tl  # hangs under the plan node, indented
+    assert "plan" in tl and f"{detached['id']}-" in tl  # task lines are hyperlinks
+    assert f"{attached['id']}-" in tl  # hangs under the plan node, indented
     plan_line = next(i for i, line in enumerate(lines) if f"plan {plan_id}" in line)
-    assert lines[plan_line + 1].startswith("  - ")
-    assert "Attached" in lines[plan_line + 1]
+    assert lines[plan_line + 1].startswith("  - [")  # checkbox + hyperlink
+    assert f"{attached['id']}-" in lines[plan_line + 1]
 
 
 def test_plan_task_tree_rendered_from_db(proj):
-    """The plan's task tree is rendered from kind=parent relations — inside the
-    head block (subtask row + tree), not a body section."""
+    """The plan's task tree is rendered from kind=parent relations — a checkbox
+    + hyperlink per task (no body section, no ## heading), below the head
+    fence."""
     _plan(proj).new(proj, "P1")
     row, _ = taskmod.new(proj, "Attached", parent="PLN-0001")
-    taskmod.new(proj, "Substep", parent=row["id"])
+    sub, _ = taskmod.new(proj, "Substep", parent=row["id"])
     plan_md = next((proj.root / "docs/plans").glob("PLN-0001-*.md")).read_text()
     assert "> **subtask:**" in plan_md
-    assert "Attached" in plan_md
-    assert "Substep" in plan_md
+    assert f"[{row['id']}-" in plan_md  # task lines are filename hyperlinks
+    assert f"[{sub['id']}-" in plan_md
+    assert "## Task List" not in plan_md
     # same tree in the main TASKLIST
     tl = (proj.root / "TASKLIST.md").read_text()
-    assert "Attached" in tl and "Substep" in tl
+    assert f"{row['id']}-" in tl and f"{sub['id']}-" in tl
 
 
 def test_experiment_contains_task_makes_it_a_tree_root(proj):
@@ -161,13 +163,13 @@ def test_experiment_contains_task_makes_it_a_tree_root(proj):
     plan) — its tasks hang indented below, no code needed."""
     rec.new_record(proj, "experiment", "Exp A")
     row, _ = taskmod.new(proj, "Run baseline", parent="EXP-0001")
-    taskmod.new(proj, "Plot results", parent=row["id"])
+    sub, _ = taskmod.new(proj, "Plot results", parent=row["id"])
     exp_md = next((proj.root / "docs/experiments").glob("EXP-0001-*.md")).read_text()
-    assert "Run baseline" in exp_md and "Plot results" in exp_md
+    assert f"[{row['id']}-" in exp_md and f"[{sub['id']}-" in exp_md
     tl = (proj.root / "TASKLIST.md").read_text()
     lines = tl.splitlines()
     exp_line = next(i for i, line in enumerate(lines) if "experiment" in line)
-    assert lines[exp_line + 1].startswith("  - ") and "Run baseline" in lines[exp_line + 1]
+    assert lines[exp_line + 1].startswith("  - [") and f"{row['id']}-" in lines[exp_line + 1]
 
 
 def test_state_machine_full_path(proj):
@@ -277,7 +279,7 @@ def test_done_not_blocked_by_subtasks(proj):
 def test_children_rendered_indented_in_main_tasklist(proj):
     _plan(proj).new(proj, "P1")
     parent_row, _ = taskmod.new(proj, "T1", parent="PLN-0001")
-    taskmod.new(proj, "Substep", parent=parent_row["id"])
+    sub_row, _ = taskmod.new(proj, "Substep", parent=parent_row["id"])
     rec.render_all(proj)
     tl = (proj.root / "TASKLIST.md").read_text()
     # sub-task indented under its parent task, which sits under the plan node
@@ -286,6 +288,6 @@ def test_children_rendered_indented_in_main_tasklist(proj):
     lines = tl.splitlines()
     plan_line = next(i for i, line in enumerate(lines) if f"plan {plan_id}" in line)
     parent_line = next(i for i, line in enumerate(lines) if parent_row["id"] in line)
-    sub_line = next(i for i, line in enumerate(lines) if "Substep" in line)
+    sub_line = next(i for i, line in enumerate(lines) if sub_row["id"] in line)
     assert parent_line == plan_line + 1 and sub_line == parent_line + 1
     assert lines[parent_line].startswith("  - ") and lines[sub_line].startswith("    - ")
