@@ -163,7 +163,7 @@ def _editor(path: Path) -> None:
 
 def _dyn_new(name: str, title: str | None, supersede: list[str], parent: str | None,
              related: list[str], commit: str | None, summary: str | None, yes: bool) -> None:
-    """Create a new record of `name` (DB insert + render md)."""
+    """Create a new record of `name` (writes its file)."""
     if not title:
         _fail(f"title required: proj {name} new \"Title\"")
     cfg = _cfg()
@@ -190,30 +190,34 @@ def _dyn_new(name: str, title: str | None, supersede: list[str], parent: str | N
         _editor(p)
 
 
-def _dyn_list(name: str | None, status: str | None) -> None:
+def _dyn_list(name: str | None, status: str | None) -> list[dict]:
     """List records (from DB); `name` may be None — then every record_type
-    is listed (C5: `proj ls`). One line per record: id, status, title, parent."""
+    is listed (C5: `proj ls`). One line per record: id, status, title, parent.
+    Returns the rows (C10: the caller may print them as JSON)."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
     names = [name] if name else list(reg)
     db = rec.open_db(cfg)
-    shown = 0
+    rows: list[dict] = []
     for n in names:
-        rows = record_for(n, reg).list(cfg, status)
-        spec = reg[n]
-        for r in rows:
+        for r in record_for(n, reg).list(cfg, status):
             parent = db.parent_of(r["id"])
             parent = f"  (parent {parent['source']})" if parent else ""
-            typer.echo(f"{r['id']:<8} {spec.status_display(r['status']):<24} {r['title']}{parent}")
-            shown += 1
+            typer.echo(
+                f"{r['id']:<8} {reg[n].status_display(r['status']):<24} "
+                f"{r['title']}{parent}")
+            rows.append({"id": r["id"], "type": n, "status": r["status"],
+                         "title": r["title"], "parent": (parent["source"] if parent else None)})
     db.close()
-    if not shown:
+    if not rows:
         typer.echo("(no records)" + (f" with status {status!r}" if status else ""))
+    return rows
 
 
-def _dyn_show(name: str | None, id_: str, history: bool) -> None:
+def _dyn_show(name: str | None, id_: str, history: bool, json_out: bool = False) -> None:
     """Show one record (from DB); `name` may be None — the id then resolves
-    across every record_type (C5: `proj show T-000001`)."""
+    across every record_type (C5: `proj show T-000001`). With `json_out` the
+    result is a JSON object (C10) and nothing else is printed."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
     db = rec.open_db(cfg)
@@ -222,6 +226,19 @@ def _dyn_show(name: str | None, id_: str, history: bool) -> None:
     if row is None:
         db.close()
         _fail(f"{(name + ' ' if name else '') + id_} not found")
+    if json_out:
+        parent = db.parent_of(row["id"])
+        data = {"id": row["id"], "type": spec.record_type, "title": row["title"],
+                "status": row["status"], "created": row["created"],
+                "one_sentence": row.get("one_sentence") or None,
+                "commit": row.get("commit") or None,
+                "parent": (parent["source"] if parent else None)}
+        logs = db.logs(row["id"])
+        data["changelog"] = [{"date": e["date"], "category": e["category"],
+                              "text": rec._log_body(e, spec)} for e in logs]
+        db.close()
+        typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
+        return
     typer.echo(f"id: {row['id']}")
     typer.echo(f"title: {row['title']}")
     typer.echo(f"status: {row['status']}")
@@ -278,6 +295,24 @@ def _dyn_update(name: str, id_: str, title: str | None, summary: str | None,
     typer.echo(f"{name} {row['id']}: title → {row['title']}")
 
 
+def _verb_help(spec, verb: str) -> str:
+    """C6: a verb's help generated from the profile — the state transition
+    (from → to) plus the gate(s) it must pass, e.g.
+    'In Progress → Done (gate: all tasks finished, all criteria closed)'."""
+    frm, to = spec.verbs[verb]
+    frm_txt = "Any" if frm == "Any" else (" / ".join(frm) if isinstance(frm, list) else frm)
+    parts: list[str] = []
+    if to in spec.gates_tasks:
+        parts.append("all tasks finished")
+    if to in spec.gates_items:
+        # the item noun's plural (criterion -> criteria; else the bare -s)
+        noun = spec.items.noun if spec.items else "criterion"
+        noun = {"criterion": "criteria"}.get(noun, noun + "s")
+        parts.append(f"all {noun} closed")
+    gate = f" (gate: {', '.join(parts)})" if parts else ""
+    return f"{frm_txt} → {to}{gate}"
+
+
 def _build_record_group(name: str):
     """Generate the `proj <name>` sub-group: new / list / show + template verbs."""
     root = find_root(_ROOT["root"], strict=False)
@@ -295,7 +330,7 @@ def _build_record_group(name: str):
             commit: str | None = typer.Option(None, "--commit", help="git commit hash"),
             summary: str | None = typer.Option(None, "--summary", "-s", help="one-line summary"),
             yes: bool = typer.Option(False, "--yes", "-y", help="don't open the editor")):
-        """Create a new record (DB insert + render md)."""
+        """Create a new record (opens the editor; -y skips it)."""
         _dyn_new(name, title, supersede, parent, related, commit, summary, yes)
 
     @sub.command()
@@ -309,12 +344,12 @@ def _build_record_group(name: str):
         _dyn_list(name, status)
 
     @sub.command()
-    def show(id_: str, history: bool = typer.Option(False, "--history", help="full changelog")):
+    def show(ID: str, history: bool = typer.Option(False, "--history", help="full changelog")):
         """Show one record of this type (from DB)."""
-        _dyn_show(name, id_, history)
+        _dyn_show(name, ID, history)
 
     @sub.command()
-    def update(id_: str,
+    def update(ID: str,
                title: str | None = typer.Option(None, "--title", "-t", help="new title"),
                summary: str | None = typer.Option(
                    None, "--summary", "-s", help="new one-line summary"),
@@ -322,11 +357,11 @@ def _build_record_group(name: str):
                    None, "--message", "-m",
                    help="append a changelog entry ('Category: text')")):
         """Update a record's title / summary (+ optional changelog entry)."""
-        _dyn_update(name, id_, title, summary, message)
+        _dyn_update(name, ID, title, summary, message)
 
     if name == "task":
         @sub.command()
-        def move(id_: str = typer.Argument(..., help="task id to re-home"),
+        def move(ID: str = typer.Argument(..., help="task id to re-home"),
                  parent: str | None = typer.Option(
                      None, "--parent", help="new parent record id (any type)"),
                  detach: bool = typer.Option(
@@ -336,7 +371,7 @@ def _build_record_group(name: str):
                 _fail("pass exactly one of --parent <ID> / --detach")
             try:
                 row = record_for("task", rec.load_registry(_cfg().root)).move(
-                    _cfg(), id_, parent)
+                    _cfg(), ID, parent)
             except ValueError as e:
                 _fail(str(e))
             typer.echo(f"{row['id']}: parent → {parent or 'none (Unparented)'}")
@@ -345,7 +380,7 @@ def _build_record_group(name: str):
         for verb in spec.verbs:
             def _make(v=verb):
                 @sub.command(v)
-                def cmd(id_: str,
+                def cmd(ID: str,
                         title: str | None = typer.Option(None, "--title", "-t",
                                                         help="also set the title"),
                         summary: str | None = typer.Option(None, "--summary", "-s",
@@ -353,8 +388,8 @@ def _build_record_group(name: str):
                         message: str | None = typer.Option(
                             None, "--message", "-m",
                             help="also append a changelog entry ('Category: text')")):
-                    """State-machine step (from the template verbs)."""
-                    _dyn_verb(name, v, id_, title, summary, message)
+                    _dyn_verb(name, v, ID, title, summary, message)
+                cmd.__doc__ = _verb_help(spec, v)  # C6: from the profile
             _make()
     return _to_click_command(sub)
 
@@ -383,7 +418,9 @@ def init(profiles: list[str] = typer.Option(
 @app.command()
 def sync(files: list[Path] = typer.Argument(
         None, help="Files (default: all managed dirs)")):
-    """md → DB (validate, normalize) → re-render all md."""
+    """Bring the md files and the DB in line: every hand edit is checked and
+    stored, then the tool-owned parts of every file are regenerated. No file
+    argument = everything."""
     cfg = _cfg()
     try:
         problems, notes = rec.sync(cfg, list(files) if files else None)
@@ -410,7 +447,8 @@ def adopt(files: list[Path] = typer.Argument(
 @app.command()
 def render(ref: list[str] = typer.Argument(
         None, help="record id or record_type (default: all)")):
-    """DB → md (no md input). No args = every record + views; else a type/record."""
+    """Regenerate files from the DB (no md input). No args = every record +
+    every view; otherwise just the named record or type."""
     # A1: render is a write command — ingest unsynced hand edits first so they are
     # never clobbered (problems abort before any file is written)
     cfg = _cfg()
@@ -444,29 +482,35 @@ def render(ref: list[str] = typer.Argument(
 
 
 @app.command()
-def show(id_: str, history: bool = typer.Option(False, "--history")):
-    """Show one record (the id resolves across every record_type — C5)."""
-    _dyn_show(None, id_, history)
+def show(ID: str,
+         history: bool = typer.Option(False, "--history"),
+         json: bool = typer.Option(False, "--json")):
+    """Show one record's current state; the id may be any type (T-/DEC-/...)."""
+    _dyn_show(None, ID, history, json_out=json)
 
 
 @app.command()
 def ls(status: str | None = typer.Option(None, "--status"),
        type: str | None = typer.Option(None, "--type",
-                                       help="restrict to one record_type")):
+                                       help="restrict to one record_type"),
+       json: bool = typer.Option(False, "--json")):
     """List records (C5); no --type = every record_type, else just that one."""
-    if type is not None and type not in rec.load_registry(_cfg().root):
+    cfg = _cfg()
+    if type is not None and type not in rec.load_registry(cfg.root):
         _fail(f"unknown record_type {type!r}")
-    _dyn_list(type, status)
+    rows = _dyn_list(type, status)
+    if json:
+        typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
 
 
-def _open_record(id_: str) -> None:
+def _open_record(ID: str) -> None:
     """C5: open a record's md in $EDITOR, then sync it back (auto-ingest)."""
     cfg = _cfg()
     db = rec.open_db(cfg)
-    spec, row = rec.ref_record(cfg, db, id_)
+    spec, row = rec.ref_record(cfg, db, ID)
     if row is None:
         db.close()
-        _fail(f"{id_} not found")
+        _fail(f"{ID} not found")
     p = rec.file_path(cfg, spec, row)
     db.close()
     _editor(p)
@@ -477,9 +521,9 @@ def _open_record(id_: str) -> None:
 
 
 @app.command()
-def open(id_: str) -> None:
+def open(ID: str) -> None:
     """Open a record's md in $EDITOR; on close, sync it back (C5)."""
-    _open_record(id_)
+    _open_record(ID)
 
 
 @app.command()
@@ -573,18 +617,22 @@ def item_ls(ref: str | None = typer.Argument(None, help="one record id (omit = e
             type_: str | None = typer.Option(None, "--type", help="limit to one record_type"),
             owner: str | None = typer.Option(None, "--owner", help="only items with this owner"),
             overdue: bool = typer.Option(False, "--overdue",
-                                        help="only past-due unclosed items")):
-    """List items as `ID#A01  state  text  [owner]  [due]` (one record, or across all)."""
+                                        help="only past-due unclosed items"),
+            json: bool = typer.Option(False, "--json")):
+    """List items as `ID#A01  state  text  [owner]  [due]` (one record, or
+    across all); --json prints them as a JSON array of lines."""
     cfg = _cfg()
     try:
         lines = item_ops.ls(cfg, ref, group=group, open_only=open_only, record_type=type_,
                             owner=owner, overdue=overdue)
     except ValueError as e:
         _fail(str(e))
-    if not lines:
+    if json:
+        typer.echo(json.dumps(lines, indent=2, ensure_ascii=False))
+    elif not lines:
         typer.echo("(no items)")
-        return
-    typer.echo("\n".join(lines))
+    else:
+        typer.echo("\n".join(lines))
 
 
 @item_app.command("add")
