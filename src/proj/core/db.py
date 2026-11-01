@@ -54,8 +54,12 @@ def show_date(ts: str) -> str:
 class Db:
     def __init__(self, path: Path):
         self.path = path
-        self.conn = sqlite3.connect(path)
+        # WAL + busy_timeout: several agents may share the project db; a reader
+        # no longer fails with "database is locked" while another writes.
+        self.conn = sqlite3.connect(path, timeout=5.0)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA busy_timeout = 5000")
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -331,6 +335,20 @@ class Db:
                  it.get("created") or utc_now(), it.get("closed_at", ""),
                  1 if it.get("deleted") else 0))
         self.conn.commit()
+
+    def __enter__(self) -> "Db":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        """One command = one transaction: commit on success, roll back on error,
+        close either way (A4 — no leaked connection holds the write lock)."""
+        try:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+        finally:
+            self.conn.close()
 
     def close(self) -> None:
         self.conn.close()
