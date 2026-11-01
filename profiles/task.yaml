@@ -24,6 +24,8 @@ items:
   states: [{name: todo}, {name: done, closed: true}]
   fields: [owner, due]
   promote: {from: [Draft], to: In Progress}
+wip:
+  enter: [In Progress]
 verbs:
   start: {from: Any, to: In Progress}
   done:  {from: Any, to: Done}

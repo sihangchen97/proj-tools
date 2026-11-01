@@ -118,6 +118,9 @@ class RecordTypeSpec:
     gates_tasks: list[str] = field(default_factory=list)
     gates_items: list[str] = field(default_factory=list)
     items: ItemsSpec | None = None
+    # WIP (plans §5): statuses that, when a record SWITCHES INTO them, add it to
+    # WIP.md automatically. Empty = manual `proj wip add` only.
+    wip_enter: list[str] = field(default_factory=list)
     # (generated views are derived; no per-type render toggles)
 
     def emojify(self, status: str) -> str:
@@ -183,7 +186,7 @@ def parse_template(text: str) -> RecordTypeSpec:
     items = _parse_items(data["record_type"], data.get("items"))
     spec = RecordTypeSpec(
         record_type=data["record_type"],
-        dir=data.get("dir", f"docs/{data['record_type']}s").rstrip("/"),
+        dir=data.get("dir", f"docs/{data['record_type']}s"),
         numbered=numbered,
         status_allowed=status_allowed,
         status_emoji=status_emoji,
@@ -198,6 +201,7 @@ def parse_template(text: str) -> RecordTypeSpec:
         gates_tasks=[str(s) for s in gates.get("tasks", [])],
         gates_items=[str(s) for s in gates.get("items", [])],
         items=items,
+        wip_enter=[str(s) for s in (data.get("wip") or {}).get("enter", [])],
     )
     unknown = [s for s in spec.status_done + spec.status_terminal if s not in spec.status_allowed]
     if unknown:
@@ -209,6 +213,16 @@ def parse_template(text: str) -> RecordTypeSpec:
         if bad:
             raise ValueError(
                 f"template {spec.record_type!r}: {kind} {bad} not in status-allowed")
+    # WIP (plans §5): wip.enter statuses must be allowed and never terminal
+    # (a terminal status would immediately auto-return what it just auto-added)
+    bad = [s for s in spec.wip_enter if s not in spec.status_allowed]
+    if bad:
+        raise ValueError(
+            f"template {spec.record_type!r}: wip.enter {bad} not in status-allowed")
+    bad = [s for s in spec.wip_enter if s in spec.status_terminal]
+    if bad:
+        raise ValueError(
+            f"template {spec.record_type!r}: wip.enter {bad} must not be terminal")
         if spec.items is not None:
             _validate_items(spec)
         if spec.gates_items and spec.items is None:
@@ -229,6 +243,13 @@ def parse_template(text: str) -> RecordTypeSpec:
         raise ValueError(
             f"template {spec.record_type!r}: code + numbered must total 7 "
             f"(got {len(spec.code)}+{spec.numbered})")
+    # record dirs are always docs/<record_type>s (singular type name, plural dir);
+    # a hand-set dir is validated, not silently kept (PLAN §11: docs/tech-debt)
+    expected_dir = f"docs/{spec.record_type}s"
+    if spec.dir != expected_dir:
+        raise ValueError(
+            f"template {spec.record_type!r}: dir must be '{expected_dir}' "
+            f"(got {spec.dir!r})")
     return spec
 
 

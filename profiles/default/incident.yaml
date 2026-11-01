@@ -4,6 +4,8 @@ dir: docs/incidents
 numbered: 4
 contain_task: false
 # 无 features:（supersede 是纯 relation，所有类型通用）
+wip:
+  enter: [Open]
 verbs:
   draft: {from: Any, to: Draft}
   open: {from: Any, to: Open}

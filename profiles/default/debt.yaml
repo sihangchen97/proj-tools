@@ -1,9 +1,11 @@
 record_type: debt
 code: DEB
-dir: docs/tech-debt
+dir: docs/debts
 numbered: 4
 contain_task: false
 # 无 features:（supersede 是纯 relation，所有类型通用）
+wip:
+  enter: [In Progress]
 verbs:
   draft: {from: Any, to: Draft}
   open: {from: Any, to: Open}

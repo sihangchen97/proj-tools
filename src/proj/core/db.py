@@ -158,6 +158,13 @@ class Db:
             "trailer TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, "
             "closed_at TEXT NOT NULL DEFAULT '', deleted INTEGER NOT NULL DEFAULT 0, "
             "PRIMARY KEY (record_id, no))")
+        # WIP.md (plans §5): the hand/registered "in progress" list — any record
+        # type may sit in it (manual add or an auto switch into wip.enter)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS wip_entries "
+            "(record_id TEXT PRIMARY KEY REFERENCES records(id) ON DELETE CASCADE, "
+            "pos INTEGER NOT NULL, added_at TEXT NOT NULL, "
+            "source TEXT NOT NULL)")  # source: 'manual' | 'auto'
     # ---- template-driven schema -------------------------------------------
 
     def ensure_type(self, spec: RecordTypeSpec) -> None:
@@ -453,6 +460,7 @@ def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]
             "status_terminal": list(s.status_terminal),
             "gates": {"tasks": list(s.gates_tasks), "items": list(s.gates_items)},
             "items": (asdict(s.items) if s.items is not None else None),
+            "wip": {"enter": list(s.wip_enter)},
         } for s in specs.values()},
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
@@ -489,6 +497,8 @@ def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
             gates_tasks=list(d.get("gates", {}).get("tasks", [])),
             gates_items=list(d.get("gates", {}).get("items", [])),
             items=_items_from_lock(d.get("items")),
+            # WIP: the lock may predate it (old projects) - manual-only default
+            wip_enter=list(d.get("wip", {}).get("enter", [])),
         )
     return out
 

@@ -7,6 +7,8 @@ numbered: 4
 # Draft 且名下有未结束的后代任务时出现），无需注册
 # 无 features:（supersede 是纯 relation，所有类型通用）
 # 无 fields:（commit 是 records 表的通用列，所有类型可用 --commit）
+wip:
+  enter: [Running]
 verbs:
   draft: {from: Any, to: Draft}
   propose: {from: Any, to: Proposed}
