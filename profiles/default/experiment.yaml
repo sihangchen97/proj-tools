@@ -43,18 +43,6 @@ sections:
       hyperparameters that differ from the baseline (diff or table), random
       seeds, run command, and where logs/artifacts/checkpoints are stored
       (paths or tracker URLs).
-  - name: Task List
-    type: task
-    hint: >-
-      Not a body section: the task tree (tasks with parent = this experiment)
-      is rendered by proj in the head block's `subtask:` row — never hand-edit
-      it. The experiment's work is tasks, not checkboxes in this record: one
-      task per phase that has its own status or result, e.g. data prep,
-      implementation, baseline run, treatment runs, evaluation —
-      `proj task new "Title" --parent EXP-xxxx`. The detailed procedure of
-      each phase (commands, configs to try) goes into that task's own
-      `## Steps` checkboxes. Task = tracked unit with id and status; step =
-      checklist item inside one task.
   - name: Results
     hint: >-
       Raw outcomes only, no interpretation: a table of every run (including
