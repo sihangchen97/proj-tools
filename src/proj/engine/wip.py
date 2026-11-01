@@ -102,3 +102,140 @@ def render_wip_md(cfg: ProjConfig, db, registry: dict[str, RecordTypeSpec]) -> V
     lines += body or ["_nothing in progress_"]
     lines += ["", FOOTER]
     return View(cfg.root / WIP_FILE, "\n".join(lines).rstrip("\n") + "\n")
+
+
+# ---- reading the editable item section back (§5.5) ------------------------------
+
+def _entry_slice(wip_text: str, record_id: str) -> str:
+    """The body of one entry (from its `## ID.` heading to the next `## ` or EOF) —
+    '' when the entry is absent (a hand-removed entry is NOT a return: it
+    re-renders, and only `proj wip return` removes it, §5.5)."""
+    start = wip_text.find(f"## {record_id}. ")
+    if start < 0:
+        return ""
+    nxt = wip_text.find("\n## ", start + 1)
+    return wip_text[start: nxt if nxt > 0 else len(wip_text)]
+
+
+def entry_items_text(wip_text: str, record_id: str) -> str:
+    """Just the editable item lines of an entry (its checklist as rendered in the
+    record md): from the first `- [` / `### ` line to the end of the entry. The
+    heading, marker, metadata line and summary are tool-owned and ignored."""
+    body = _entry_slice(wip_text, record_id)
+    if not body:
+        return ""
+    for i, line in enumerate(body.splitlines()):
+        if line.startswith("- [") or line.startswith("### "):
+            return "\n".join(body.splitlines()[i:])
+    return ""
+
+
+def _changed(db, spec: RecordTypeSpec, record_id: str, md_section: str) -> bool:
+    """Does an item section differ from the DB's checklist? (compare the rendered
+    section to the stored rows; the intro is not part of WIP.md)."""
+    from proj.engine import items as items_mod  # lazy
+    state = items_mod.load(db, record_id, spec)
+    return items_mod.normalize(md_section) != items_mod.normalize(items_mod.render_section(state, spec))
+
+
+def auto_status_wip(db, spec: RecordTypeSpec, record_id: str, old: str, to: str) -> None:
+    """The automatic WIP side of a status SWITCH (called by store.status_set inside
+    its transaction, W3/W6): entering a `wip.enter` status adds the record
+    (manual-return-then-same-status never re-adds — only a real switch triggers);
+    entering a TERMINAL status returns it, writing WIP.md's edited item section
+    back first. Both write a changelog line."""
+    from proj.engine import items as items_mod  # lazy
+    if to in spec.wip_enter and not db.wip_has(record_id):
+        db.wip_add(record_id, "auto")
+        db.add_log(record_id, f"added to WIP (auto: {to})", category="Changed")
+    if (to in spec.status_terminal and old not in spec.status_terminal
+            and db.wip_has(record_id)):
+        wip_text = (db.path.parent / WIP_FILE).read_text(encoding="utf-8") \
+            if (db.path.parent / WIP_FILE).exists() else ""
+        section = entry_items_text(wip_text, record_id)
+        if section and _changed(db, spec, record_id, section):
+            row = dict(db.conn.execute(
+                "SELECT * FROM records WHERE id=?", (record_id,)).fetchone())
+            problems, _ = items_mod.sync_section(db, spec, row, section, source="WIP.md")
+            if problems:
+                raise ValueError(f"{record_id}: WIP.md write-back on auto-return failed:\n"
+                                 + "\n".join(problems))
+        db.wip_remove(record_id)
+        db.add_log(record_id, f"returned from WIP (auto: {to})", category="Changed")
+
+
+def wip_add(cfg, record_ids: list[str], source: str = "manual") -> tuple[list[str], list[str]]:
+    """Register records in WIP.md (§5.6): a record already in it is skipped (not
+    an error); the WIP.md + changelog (`added to WIP`) are re-rendered. One
+    transaction."""
+    from proj.engine import store as rec  # lazy: wip↔store cycle
+    added, notes = [], []
+    with rec.open_db(cfg) as db:
+        db.begin()
+        for rid in record_ids:
+            row = _record_by_id(db, rid)
+            if row is None:
+                raise ValueError(f"{rid} not found")
+            if db.wip_has(rid):
+                notes.append(f"{rid} is already in WIP (skipped)")
+                continue
+            db.wip_add(rid, source)
+            db.add_log(rid, "added to WIP", category="Changed")
+            added.append(rid)
+        rec.render_all(cfg, db)
+    return added, notes
+
+
+def wip_return(cfg, record_ids: list[str]) -> tuple[list[str], list[str]]:
+    """Remove records from WIP.md (§5.6): first write WIP.md's (possibly edited,
+    unsynced) item section back into the record, then un-register; a record not
+    in WIP is an error. One transaction; the changelog says `returned from WIP`."""
+    from proj.engine import store as rec  # lazy: wip↔store cycle
+    wip_path = cfg.root / WIP_FILE
+    wip_text = wip_path.read_text(encoding="utf-8") if wip_path.exists() else ""
+    returned, notes = [], []
+    with rec.open_db(cfg) as db:
+        db.begin()
+        for rid in record_ids:
+            if not db.wip_has(rid):
+                raise ValueError(f"{rid} is not in WIP")
+            reg = rec.load_registry(cfg.root)
+            spec = reg[_record_by_id(db, rid)["type"]]
+            section = entry_items_text(wip_text, rid)
+            if section and _changed(db, spec, rid, section):
+                row = dict(db.conn.execute("SELECT * FROM records WHERE id=?", (rid,)).fetchone())
+                problems, n = _sync_items(db, spec, row, section, source="WIP.md")
+                if problems:
+                    raise ValueError(f"{rid}: WIP.md write-back failed:\n" + "\n".join(problems))
+                notes += [f"WIP.md: {x}" for x in n]
+            db.wip_remove(rid)
+            db.add_log(rid, "returned from WIP", category="Changed")
+            returned.append(rid)
+        rec.render_all(cfg, db)
+    return returned, notes
+
+
+def wip_ls(cfg) -> list[dict]:
+    """The WIP list (id, status, title, closed/total) for `proj wip ls`."""
+    from proj.engine import store as rec  # lazy
+    with rec.open_db(cfg) as db:
+        reg = rec.load_registry(cfg.root)
+        out = []
+        for entry in db.wip_all():
+            row = _record_by_id(db, entry["record_id"])
+            if row is None:
+                continue
+            spec = reg[row["type"]]
+            out.append({"id": row["id"], "status": row["status"], "type": row["type"],
+                        "title": row["title"], "progress": _progress(row, spec, db),
+                        "source": entry["source"]})
+        return out
+
+
+def _sync_items(db, spec: RecordTypeSpec, row: dict, md_section: str,
+                source: str) -> tuple[list[str], list[str]]:
+    """Write one checklist section into the DB (items is the only writer); returns
+    (problems, notes). The caller is inside the transaction."""
+    from proj.engine import items as items_mod  # lazy
+    problems, notes = items_mod.sync_section(db, spec, row, md_section, source=source)
+    return problems, notes

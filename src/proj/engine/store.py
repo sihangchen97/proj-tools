@@ -646,6 +646,12 @@ def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
         db.set(spec, row["id"], status=status)
         if old != status:
             db.add_log(row["id"], category="Changed", when=when)  # row = the new status
+            # WIP (W3/W6): a switch into a wip.enter status auto-adds to WIP.md,
+            # a switch into a terminal status auto-returns (writing WIP.md's
+            # edited item section back first); manual return is never re-triggered
+            # by a same-status op — only a real switch triggers here.
+            from proj.engine import wip as wipmod  # lazy: store↔wip cycle
+            wipmod.auto_status_wip(db, spec, row["id"], old, status)
         fresh = db.get(spec, row["id"])
         p = file_path(cfg, spec, fresh)
         p.write_text(render_record(spec, fresh, db), encoding="utf-8")

@@ -39,6 +39,7 @@ from proj.core.db import ProjError
 from proj.core.templates import resolve_record_type
 from proj.engine import item_ops, present
 from proj.engine import store as rec
+from proj.engine import wip as wipmod
 from proj.engine.record import record_for
 from proj.record_types import changelog as cl
 from proj.record_types import task as taskmod
@@ -360,6 +361,50 @@ def proj_task_move(id: str, parent: str | None = None, detach: bool = False,
         return f"error: {e}"
 
 
+# ---- WIP.md (the "in progress" list) ----------------------------------------------------
+
+def proj_wip_add(ids: list[str], root: str | None = None) -> str:
+    """Register records in WIP.md (the "in progress" list). A record already in
+    it is skipped (not an error). Returns the fresh WIP list."""
+    cfg = _cfg(root)
+    try:
+        wipmod.wip_add(cfg, ids)
+        rows = wipmod.wip_ls(cfg)
+        return "\n".join(f"{r['id']}  {r['status']}  {r['title']}"
+                         + (f"  {r['progress']}" if r["progress"] else "")
+                         for r in rows) or "(no records in WIP)"
+    except (ValueError, ProjError) as e:
+        return f"error: {e}"
+
+
+def proj_wip_return(ids: list[str], root: str | None = None) -> str:
+    """Remove records from WIP.md, writing any edited items back into the record
+    first. A record not in WIP is an error. Returns what was returned."""
+    cfg = _cfg(root)
+    try:
+        returned, notes = wipmod.wip_return(cfg, ids)
+        return "\n".join([f"note: {n}" for n in notes]
+                         + [f"returned {r}" for r in returned])
+    except (ValueError, ProjError) as e:
+        return f"error: {e}"
+
+
+def proj_wip_ls(root: str | None = None) -> str:
+    """The WIP list: ID  status  title  n/m."""
+    cfg = _cfg(root)
+    try:
+        rows = wipmod.wip_ls(cfg)
+        if not rows:
+            return "(no records in WIP)"
+        w = max(len(r["id"]) for r in rows)
+        s = max(len(r["status"]) for r in rows)
+        return "\n".join(f"{r['id']:<{w}}  {r['status']:<{s}}  {r['title']}"
+                         + (f"  {r['progress']}" if r["progress"] else "")
+                         for r in rows)
+    except (ValueError, ProjError) as e:
+        return f"error: {e}"
+
+
 # ---- items (record checklists): the engine in engine/items.py validates refs,
 # unsynced md edits, closed-record re-open and due dates; on success it re-renders
 # and returns the record's fresh item list. item ref format: ID#nnn (T-000001#002
@@ -475,6 +520,7 @@ for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
             proj_changelog_list,
             proj_task_move,
             proj_item_ls, proj_item_add, proj_item_update, proj_item_rm,
+            proj_wip_add, proj_wip_return, proj_wip_ls,
                         ):
     mcp.tool(name=_fn.__name__)(_fn)
 

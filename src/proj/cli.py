@@ -36,6 +36,7 @@ from proj.check import check as run_checks
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
 from proj.core.templates import _registry_key, resolve_record_type
 from proj.engine import item_ops, present
+from proj.engine import wip as wip_ops
 from proj.engine import store as rec
 from proj.engine.record import record_for
 from proj.hooks import install as hooks_install
@@ -105,6 +106,8 @@ cl_app = typer.Typer(add_completion=False, help="CHANGELOG.md maintenance.")
 hooks_app = typer.Typer(add_completion=False, help="Git hooks.")
 item_app = typer.Typer(add_completion=False,
                        help="Record items (checklists): ls / add / set / check / …")
+wip_app = typer.Typer(add_completion=False,
+                      help="WIP.md (what is being worked on): add / return / ls.")
 
 # no no_args_is_help: a bare `proj` shows project status (handled in the callback).
 # token_normalize_func: command names (record_types AND subcommands/verbs) are
@@ -119,6 +122,7 @@ app = typer.Typer(
 app.add_typer(cl_app, name="changelog")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(item_app, name="item")
+app.add_typer(wip_app, name="wip")
 
 @app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context,
@@ -775,6 +779,50 @@ def item_group_mv(ref: str, letter: str,
         typer.echo(item_ops.group_mv(cfg, ref, letter, after=after, first=first).rstrip())
     except ValueError as e:
         _fail(str(e))
+
+
+# ---- WIP.md (what is being worked on) ---------------------------------------------------
+
+@wip_app.command("add")
+def wip_add_cmd(ids: list[str] = typer.Argument(..., help="one or more record ids")):
+    """Register records in WIP.md (the "in progress" list)."""
+    cfg = _cfg()
+    try:
+        _, notes = wip_ops.wip_add(cfg, ids)
+    except ValueError as e:
+        _fail(str(e))
+    for n in notes:  # a record already in WIP is skipped, not an error (§5.6)
+        typer.echo(f"note: {n}")
+    typer.echo("\n".join(f"{r['id']}  {r['status']}  {r['title']}"
+                        for r in wip_ops.wip_ls(cfg)) or "(no records in WIP)")
+
+
+@wip_app.command("return")
+def wip_return_cmd(ids: list[str] = typer.Argument(..., help="one or more record ids")):
+    """Remove records from WIP.md (writing any edited items back first)."""
+    cfg = _cfg()
+    try:
+        returned, notes = wip_ops.wip_return(cfg, ids)
+    except ValueError as e:
+        _fail(str(e))
+    for n in notes:
+        typer.echo(f"note: {n}")
+    typer.echo("\n".join(f"returned {r}" for r in returned))
+
+
+@wip_app.command("ls")
+def wip_ls_cmd():
+    """The WIP list: ID  status  title  n/m."""
+    cfg = _cfg()
+    rows = wip_ops.wip_ls(cfg)
+    if not rows:
+        typer.echo("(no records in WIP)")
+        return
+    w = max(len(r["id"]) for r in rows)
+    s = max(len(r["status"]) for r in rows)
+    for r in rows:
+        typer.echo(f"{r['id']:<{w}}  {r['status']:<{s}}  {r['title']}"
+                   + (f"  {r['progress']}" if r["progress"] else ""))
 
 
 # ---- hooks ------------------------------------------------------------------------------
