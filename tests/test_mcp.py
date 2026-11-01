@@ -125,7 +125,7 @@ def test_tools_registered_once_sync(proj):
     for expected in ("proj_adopt", "proj_render", "proj_open", "proj_ls",
                      "proj_update", "proj_changelog_version",
                      "proj_changelog_release_notes", "proj_changelog_list",
-                     "proj_task_move", "proj_item_group_add"):
+                     "proj_task_move", "proj_item_update"):  # R8: merged item tools
         assert expected in names
     # no leftover old names
     assert "proj_update_record" not in names
@@ -160,10 +160,19 @@ def test_cli_command_coverage(proj):
             return set()
         if len(parts) == 1:
             return {f"proj_{parts[0]}"}
-        if parts[0] == "item" and parts[1] == "group" and len(parts) >= 3:
-            return {f"proj_item_group_{parts[2]}"}
+        # R8: the item MCP tools are merged (4 tools cover every item command —
+        # capability, not one tool per command): ls→ls; add / group add→add
+        # (new_group); set/check/uncheck/edit/mv / group rename / group mv→
+        # update; rm / group rm→rm
         if parts[0] == "item":
-            return {f"proj_item_{parts[1]}"}
+            cmd = parts[1] + (f" group {parts[2]}" if parts[1] == "group" else "")
+            if cmd in ("ls",):
+                return {"proj_item_ls"}
+            if cmd in ("add", "group add"):
+                return {"proj_item_add"}
+            if cmd in ("rm", "group rm"):
+                return {"proj_item_rm"}
+            return {"proj_item_update"}
         if parts[0] == "changelog":
             return {f"proj_changelog_{parts[1].replace('-', '_')}"}
         rt, verb = parts[0], parts[1]

@@ -413,85 +413,74 @@ def proj_item_ls(ref: str | None = None, group: str | None = None, open_only: bo
     return lines or "(no items)"
 
 
-def proj_item_add(ref: str, text: str, group: str | None = None, after: str | None = None,
-                  state: str | None = None, note: str = "", owner: str = "", due: str = "",
+def proj_item_add(ref: str, text: str, group: str | None = None,
+                  after: str | None = None, state: str | None = None, note: str = "",
+                  owner: str = "", due: str = "", new_group: bool = False,
                   root: str | None = None) -> str:
     """Add an item to a record's checklist (auto-numbered, appended to its
-    group). group: the group letter L (default the ungrouped list); after:
-    insert right after ITEM; state/note/owner/due optional. Returns the fresh
-    item list."""
+    group), or a whole new group. new_group=true: `text` is the GROUP name —
+    the next free letter (A-Z, never reused) is assigned. group: the group
+    letter L (default the ungrouped list); after: insert right after ITEM;
+    state/note/owner/due optional. Returns the fresh item list."""
+    if new_group:
+        return _item_call(item_ops.group_add, ref, text, root=root)
     return _item_call(item_ops.add, ref, text, group=group, after=after, state=state,
                       note=note, owner=owner, due=due, root=root)
 
 
-def proj_item_set(item: str, state: str, note: str | None = None, commit: str = "",
-                  root: str | None = None) -> str:
-    """Set an item's state (item = 'ID#n'). note / commit optional. Returns the
-    fresh item list. Refused when it would un-close an item on a record in a
-    closed (gates.items) status."""
-    return _item_call(item_ops.set_state, item, state, note=note, commit=commit, root=root)
+def proj_item_update(item: str, state: str | None = None, text: str | None = None,
+                     note: str | None = None, owner: str | None = None, due: str | None = None,
+                     commit: str = "", group: str | None = None, ungroup: bool = False,
+                     after: str | None = None, first: bool = False,
+                     root: str | None = None) -> str:
+    """Change an item or a group of a record's checklist (item = 'ID#nn'; a
+    group = 'ID#L00', its X00 row — `text` on a group renames it). Pass only
+    the fields to change. state: one of the checklist's states, or 'closed'
+    (the first closed state) / 'open' (the first unclosed state); text/note/
+    owner/due on an item (an empty string clears a field); commit: a git
+    commit hash. Move: exactly one of group (into L, fresh number) / ungroup
+    (to the ungrouped list) / after (right after ITEM) / first (top of its
+    group) — for a group, after/first moves the group. Returns the fresh item
+    list. Refused when it would un-close an item on a record in a closed
+    (gates) status."""
+    cfg = _cfg(root)
+    try:
+        if item.rsplit("#", 1)[-1].endswith("00") and item.rsplit("#", 1)[-1][0].isalpha():
+            # a group row (ID#L00): rename / move / delete-ish via the group ops
+            ref, letter = item.rsplit("#", 1)
+            if text is not None:
+                return _item_call(item_ops.group_rename, ref, letter, text, root=root)
+            if after is not None or first:
+                return _item_call(item_ops.group_mv, ref, letter, after=after,
+                                  first=first, root=root)
+            raise ValueError(f"group {item!r}: nothing to change (pass text or after/first)")
+        if state in ("closed", "open"):
+            if state == "closed":
+                return _item_call(item_ops.check, item, note=note, commit=commit, root=root)
+            return _item_call(item_ops.uncheck, item, root=root)
+        if state is not None:
+            return _item_call(item_ops.set_state, item, state, note=note, commit=commit,
+                              root=root)
+        if any(v is not None for v in (text, note, owner, due)):
+            return _item_call(item_ops.edit, item, text=text, note=note, owner=owner,
+                              due=due, root=root)
+        if group is not None or ungroup or after is not None or first:
+            return _item_call(item_ops.move, item, group=group, ungroup=ungroup,
+                              after=after, first=first, root=root)
+        raise ValueError(f"{item!r}: nothing to change (pass state or text/note/owner/"
+                         f"due or group/ungroup/after/first)")
+    except (ValueError, ProjError) as e:
+        return f"error: {e}"
 
 
-def proj_item_check(item: str, note: str | None = None, commit: str = "",
-                    root: str | None = None) -> str:
-    """Mark an item ('ID#n') closed (first closed state). Returns the fresh item
-    list."""
-    return _item_call(item_ops.check, item, note=note, commit=commit, root=root)
-
-
-def proj_item_uncheck(item: str, root: str | None = None) -> str:
-    """Re-open an item ('ID#n') (first unclosed state). Returns the fresh item
-    list."""
-    return _item_call(item_ops.uncheck, item, root=root)
-
-
-def proj_item_edit(item: str, text: str | None = None, note: str | None = None,
-                   owner: str | None = None, due: str | None = None,
-                   root: str | None = None) -> str:
-    """Edit an item's ('ID#n') text / note / owner / due (empty string clears).
-    Returns the fresh item list."""
-    return _item_call(item_ops.edit, item, text=text, note=note, owner=owner, due=due,
-                      root=root)
-
-
-def proj_item_mv(item: str, group: str | None = None, ungroup: bool = False,
-                 after: str | None = None, first: bool = False,
-                 root: str | None = None) -> str:
-    """Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
-    ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
-    first (top of its group). Cross-group moves get a fresh number. Returns the
-    fresh item list."""
-    return _item_call(item_ops.move, item, group=group, ungroup=ungroup, after=after,
-                      first=first, root=root)
-
-
-def proj_item_rm(item: str, root: str | None = None) -> str:
-    """Remove an item ('ID#A01'); its number is never reused. Returns the fresh
-    item list."""
+def proj_item_rm(item: str, items: str | None = None, root: str | None = None) -> str:
+    """Remove an item ('ID#nn'; its number is never reused) or a whole group
+    ('ID#L00' — when the group still holds items, `items` must be 'ungroup' or
+    'delete'). Returns the fresh item list."""
+    if item.rsplit("#", 1)[-1].endswith("00") and item.rsplit("#", 1)[-1][0].isalpha():
+        ref, letter = item.rsplit("#", 1)
+        return _item_call(item_ops.group_rm, ref, letter, items_mode=items, root=root)
     return _item_call(item_ops.remove, item, root=root)
-
-
-def proj_item_group_add(ref: str, title: str, root: str | None = None) -> str:
-    """Add a group; the tool assigns the next free letter (A-Z, never reused).
-    Returns the fresh item list."""
-    return _item_call(item_ops.group_add, ref, title, root=root)
-
-
-def proj_item_group_rename(ref: str, letter: str, title: str, root: str | None = None) -> str:
-    """Rename a group. Returns the fresh item list."""
-    return _item_call(item_ops.group_rename, ref, letter, title, root=root)
-
-
-def proj_item_group_rm(ref: str, letter: str, items: str | None = None,
-                       root: str | None = None) -> str:
-    """Delete a group; `items` = 'ungroup' or 'delete' when it holds items."""
-    return _item_call(item_ops.group_rm, ref, letter, items_mode=items, root=root)
-
-
-def proj_item_group_mv(ref: str, letter: str, after: str | None = None,
-                       first: bool = False, root: str | None = None) -> str:
-    """Move a group: exactly one of after / first. Returns the fresh item list."""
-    return _item_call(item_ops.group_mv, ref, letter, after=after, first=first, root=root)
 
 
 # ---- D3: register the functions above ONCE (FastMCP accepts sync functions —
@@ -503,10 +492,8 @@ for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
             proj_changelog_add, proj_changelog_version, proj_changelog_release_notes,
             proj_changelog_list,
             proj_task_move,
-            proj_item_ls, proj_item_add, proj_item_set, proj_item_check,
-            proj_item_uncheck, proj_item_edit, proj_item_mv, proj_item_rm,
-            proj_item_group_add, proj_item_group_rename, proj_item_group_rm,
-            proj_item_group_mv):
+            proj_item_ls, proj_item_add, proj_item_update, proj_item_rm,
+                        ):
     mcp.tool(name=_fn.__name__)(_fn)
 
 
