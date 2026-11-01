@@ -120,3 +120,30 @@ def test_unsynced_edit_survives_an_unrelated_write(proj, monkeypatch):
     row = db.get(spec, rid)
     db.close()
     assert "hand-written line kept" in json.loads(row["sections"]).get("context", "")
+
+def test_cross_type_show_and_ls(proj, monkeypatch):
+    """C5: the id carries the type — `proj show ID` / `proj ls` work without
+    a per-type subcommand."""
+    monkeypatch.chdir(proj.root)
+    rid = "DEC-" + runner.invoke(app, ["decision", "new", "Cross", "-y"])\
+        .output.split("docs/decisions/")[1].split("-")[1]
+    tid = runner.invoke(app, ["task", "new", "Tasky", "-y"])\
+        .output.split("docs/tasks/")[1].split("-")[0]
+    out = runner.invoke(app, ["show", rid]).output
+    assert f"id: {rid}" in out and "Cross" in out
+    out = runner.invoke(app, ["ls", "--type", "task"]).output
+    assert tid in out
+    out = runner.invoke(app, ["ls"]).output          # every record_type
+    assert rid in out and tid in out
+    # unknown id / unknown type are clean errors
+    assert runner.invoke(app, ["show", "DEC-9999"]).exit_code != 0
+    assert runner.invoke(app, ["ls", "--type", "bogus"]).exit_code != 0
+
+
+def test_list_is_a_hidden_alias_for_ls(proj, monkeypatch):
+    """C4: `list` still works (hidden alias) but only `ls` is advertised."""
+    monkeypatch.chdir(proj.root)
+    help = runner.invoke(app, ["decision", "--help"]).output
+    assert "ls" in help
+    assert runner.invoke(app, ["decision", "ls"]).exit_code == 0
+    assert runner.invoke(app, ["decision", "list"]).exit_code == 0

@@ -373,7 +373,7 @@ grep -qF "T-000005" "docs/tasks/${TOK}-"*.md \
 $PROJ check >/dev/null && ok "check after ambiguous-ref tests" || fail "check after ambiguous-ref tests"
 
 # 8. final
-expect_ok "update"                     "OK" -- $PROJ update
+expect_ok "final sync (C2: no global update)" "OK" -- $PROJ sync
 expect_ok "final check"                "OK" -- $PROJ check
 
 cd - >/dev/null

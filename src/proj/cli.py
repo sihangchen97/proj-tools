@@ -190,34 +190,38 @@ def _dyn_new(name: str, title: str | None, supersede: list[str], parent: str | N
         _editor(p)
 
 
-def _dyn_list(name: str, status: str | None) -> None:
-    """List records of `name` (from DB)."""
+def _dyn_list(name: str | None, status: str | None) -> None:
+    """List records (from DB); `name` may be None — then every record_type
+    is listed (C5: `proj ls`). One line per record: id, status, title, parent."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
-    rec_obj = record_for(name, reg)
-    rows = rec_obj.list(cfg, status)
-    if not rows:
-        typer.echo(f"(no {name} records)" + (f" with status {status!r}" if status else ""))
-        return
-    spec = rec_obj.spec
+    names = [name] if name else list(reg)
     db = rec.open_db(cfg)
-    for r in rows:
-        parent = db.parent_of(r["id"])
-        parent = f"  (parent {parent['source']})" if parent else ""
-        typer.echo(f"{r['id']:<8} {spec.status_display(r['status']):<24} {r['title']}{parent}")
+    shown = 0
+    for n in names:
+        rows = record_for(n, reg).list(cfg, status)
+        spec = reg[n]
+        for r in rows:
+            parent = db.parent_of(r["id"])
+            parent = f"  (parent {parent['source']})" if parent else ""
+            typer.echo(f"{r['id']:<8} {spec.status_display(r['status']):<24} {r['title']}{parent}")
+            shown += 1
     db.close()
+    if not shown:
+        typer.echo("(no records)" + (f" with status {status!r}" if status else ""))
 
 
-def _dyn_show(name: str, id_: str, history: bool) -> None:
-    """Show one record of `name` (from DB)."""
+def _dyn_show(name: str | None, id_: str, history: bool) -> None:
+    """Show one record (from DB); `name` may be None — the id then resolves
+    across every record_type (C5: `proj show T-000001`)."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
-    spec = reg[name]
     db = rec.open_db(cfg)
-    row = rec.by_id(cfg, spec, db, id_)
+    spec, row = (reg[name], rec.by_id(cfg, reg[name], db, id_)) if name else \
+        rec.ref_record(cfg, db, id_)
     if row is None:
         db.close()
-        _fail(f"{name} {id_} not found")
+        _fail(f"{(name + ' ' if name else '') + id_} not found")
     typer.echo(f"id: {row['id']}")
     typer.echo(f"title: {row['title']}")
     typer.echo(f"status: {row['status']}")
@@ -294,9 +298,14 @@ def _build_record_group(name: str):
         """Create a new record (DB insert + render md)."""
         _dyn_new(name, title, supersede, parent, related, commit, summary, yes)
 
-    @sub.command("list")
-    def list_(status: str | None = typer.Option(None, "--status")):
+    @sub.command()
+    def ls(status: str | None = typer.Option(None, "--status")):
         """List records of this type (from DB)."""
+        _dyn_list(name, status)
+
+    @sub.command("list", hidden=True)
+    def list_(status: str | None = typer.Option(None, "--status")):
+        """(alias for `ls`, kept hidden for compatibility)"""
         _dyn_list(name, status)
 
     @sub.command()
@@ -314,12 +323,6 @@ def _build_record_group(name: str):
                    help="append a changelog entry ('Category: text')")):
         """Update a record's title / summary (+ optional changelog entry)."""
         _dyn_update(name, id_, title, summary, message)
-
-    @sub.command()
-    def render(id: str | None = typer.Argument(
-            None, help="record id (bare number or full); omitted = all of this type")):
-        """DB → md for this type (no md input)."""
-        _render_type(_cfg(), name, id)
 
     if name == "task":
         @sub.command()
@@ -405,54 +408,78 @@ def adopt(files: list[Path] = typer.Argument(
 
 
 @app.command()
-def update():
-    """sync all + re-render every view (TASKLIST.md, CHANGELOG.md, view sections)."""
-    cfg = _cfg()
-    problems, notes = rec.sync(cfg, None)
-    _print_problems(problems, notes)
-    if problems:
-        raise typer.Exit(1)
-    typer.echo("OK — updated")
-
-
-def _render_type(cfg: ProjConfig, name: str, id_: str | None) -> None:
-    """DB → md for one record (or all of a type). Shared by `proj render --record-type`
-    and the per-type `proj <rt> render` (a bare number or full id, via by_id)."""
-    spec = rec.load_registry(cfg.root)[name]
-    db = rec.open_db(cfg)
-    if id_ is None:
-        rows = db.all(spec)
-    else:
-        row = rec.by_id(cfg, spec, db, id_)
-        if row is None:
-            db.close()
-            _fail(f"{name} {id_} not found")
-        rows = [row]
-    for row in rows:
-        p = rec.file_path(cfg, spec, row)
-        p.write_text(rec.render_record(spec, row, db), encoding="utf-8")
-        typer.echo(f"Rendered {p.relative_to(cfg.root)}")
-    db.close()
-
-
-@app.command()
-def render(record_type: str | None = typer.Option(None, "--record-type"),
-           id: str | None = typer.Option(None, "--id")):
-    """DB → md (no md input). No args = every record + views; else one type/record."""
+def render(ref: list[str] = typer.Argument(
+        None, help="record id or record_type (default: all)")):
+    """DB → md (no md input). No args = every record + views; else a type/record."""
+    # A1: render is a write command — ingest unsynced hand edits first so they are
+    # never clobbered (problems abort before any file is written)
     cfg = _cfg()
     try:
-        # A1: render is a write command — ingest unsynced hand edits first so
-        # they are never clobbered (problems abort before any file is written)
         rec.ensure_synced(cfg)
-        if record_type is None:
+        if not ref:
             written = rec.render_all(cfg)
             typer.echo(f"Rendered {len(written)} file(s)")
             return
-        _render_type(cfg, record_type, id)
+        reg = rec.load_registry(cfg.root)
+        db = rec.open_db(cfg)
+        try:
+            for r in ref:
+                spec, row = rec.ref_record(cfg, db, r)
+                if row is None:
+                    if r not in reg:
+                        _fail(f"unknown record or record_type {r!r}")
+                    spec, rows = reg[r], db.all(reg[r])
+                else:
+                    rows = [row]
+                for row in rows:
+                    p = rec.file_path(cfg, spec, row)
+                    p.write_text(rec.render_record(spec, row, db, reg), encoding="utf-8")
+                    typer.echo(f"Rendered {p.relative_to(cfg.root)}")
+        finally:
+            db.close()
     except rec.ProjError as e:
         _fail(str(e))
-    except KeyError as e:
-        _fail(f"unknown record_type {e.args[0]!r}")
+    except ValueError as e:
+        _fail(str(e))
+
+
+@app.command()
+def show(id_: str, history: bool = typer.Option(False, "--history")):
+    """Show one record (the id resolves across every record_type — C5)."""
+    _dyn_show(None, id_, history)
+
+
+@app.command()
+def ls(status: str | None = typer.Option(None, "--status"),
+       type: str | None = typer.Option(None, "--type",
+                                       help="restrict to one record_type")):
+    """List records (C5); no --type = every record_type, else just that one."""
+    if type is not None and type not in rec.load_registry(_cfg().root):
+        _fail(f"unknown record_type {type!r}")
+    _dyn_list(type, status)
+
+
+def _open_record(id_: str) -> None:
+    """C5: open a record's md in $EDITOR, then sync it back (auto-ingest)."""
+    cfg = _cfg()
+    db = rec.open_db(cfg)
+    spec, row = rec.ref_record(cfg, db, id_)
+    if row is None:
+        db.close()
+        _fail(f"{id_} not found")
+    p = rec.file_path(cfg, spec, row)
+    db.close()
+    _editor(p)
+    problems, notes = rec.sync(cfg, [p])
+    _print_problems(problems, notes)
+    if problems:
+        raise typer.Exit(1)
+
+
+@app.command()
+def open(id_: str) -> None:
+    """Open a record's md in $EDITOR; on close, sync it back (C5)."""
+    _open_record(id_)
 
 
 @app.command()
