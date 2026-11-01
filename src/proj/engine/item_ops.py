@@ -195,9 +195,26 @@ def group_rm(cfg: ProjConfig, ref: str, letter: str, items_mode: str | None = No
 def ls(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
        open_only: bool = False, record_type: str | None = None,
        owner: str | None = None, overdue: bool = False) -> list[str]:
-    """Item lines as `ID#A01  state  text  [owner]  [due]` (one record or all).
-    A ref that exists but has no items (or no such record) is an error — the
-    old silent empty result is gone."""
+    """Item lines as `ID#A01  state  text  [owner]  [due]` (one record or all)."""
+    out = []
+    for r in ls_rows(cfg, ref, group=group, open_only=open_only,
+                     record_type=record_type, owner=owner, overdue=overdue):
+        parts = [r["ref"], r["state"], r["text"]]
+        if r["owner"]:
+            parts.append(r["owner"])
+        if r["due"]:
+            parts.append(r["due"])
+        out.append("  ".join(parts))
+    return out
+
+
+def ls_rows(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
+            open_only: bool = False, record_type: str | None = None,
+            owner: str | None = None, overdue: bool = False) -> list[dict]:
+    """The items `ls` lists, as dicts (ref, record, no, group, state, closed,
+    text, note, owner, due) — the --json / as_json form. A ref that exists
+    but has no items (or no such record) is an error — the old silent empty
+    result is gone."""
     reg = rec.load_registry(cfg.root)
     if record_type is not None and record_type not in reg:
         raise items.ItemsError(
@@ -205,7 +222,7 @@ def ls(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
             f"{', '.join(sorted(reg))})")
     db = rec.open_db(cfg)
     try:
-        out: list[str] = []
+        out: list[dict] = []
         today = date.today().isoformat()
         grp = group.upper() if group else None
 
@@ -226,12 +243,12 @@ def ls(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
                 if overdue and (not i.due or i.due >= today
                                or i.state in spec.items.closed_states):
                     continue
-                parts = [f"{row['id']}#{i.no}", i.state, i.text]
-                if i.owner:
-                    parts.append(i.owner)
-                if i.due:
-                    parts.append(i.due)
-                out.append("  ".join(parts))
+                out.append({"ref": f"{row['id']}#{i.no}", "record": row["id"],
+                            "no": i.no, "group": items.group_of(i.no),
+                            "state": i.state,
+                            "closed": i.state in spec.items.closed_states,
+                            "text": i.text, "note": i.note, "owner": i.owner,
+                            "due": i.due})
 
         if ref is not None:
             spec, row = rec.ref_record(cfg, db, ref.partition("#")[0])

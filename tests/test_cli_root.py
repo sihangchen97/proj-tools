@@ -147,3 +147,22 @@ def test_list_is_a_hidden_alias_for_ls(proj, monkeypatch):
     assert "ls" in help
     assert runner.invoke(app, ["decision", "ls"]).exit_code == 0
     assert runner.invoke(app, ["decision", "list"]).exit_code == 0
+
+
+def test_json_outputs_parse(proj):
+    """R2/C10: every --json output is ONLY JSON (it used to crash — the option
+    shadowed the json module — or print the text table before the JSON), and
+    per-type `ls`/`show` take --json too. `item ls --json` gives objects."""
+    import json
+
+    root = ["--root", str(proj.root)]
+    assert runner.invoke(app, [*root, "task", "new", "T", "-y"]).exit_code == 0
+    assert runner.invoke(app, [*root, "item", "add", "T-000001", "a"]).exit_code == 0
+    for cmd, kind in ((["ls"], list), (["task", "ls"], list), (["task", "list"], list),
+                      (["show", "T-000001"], dict), (["task", "show", "T-000001"], dict),
+                      (["item", "ls"], list)):
+        r = runner.invoke(app, [*root, *cmd, "--json"])
+        assert r.exit_code == 0, (cmd, r.output)
+        assert isinstance(json.loads(r.output), kind), cmd
+    rows = json.loads(runner.invoke(app, [*root, "item", "ls", "--json"]).output)
+    assert rows[0]["ref"] == "T-000001#001" and rows[0]["closed"] is False

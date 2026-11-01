@@ -204,9 +204,8 @@ def _dyn_new(name: str, title: str | None, supersede: list[str], parent: str | N
 
 
 def _dyn_list(name: str | None, status: str | None) -> list[dict]:
-    """List records (from DB); `name` may be None — then every record_type
-    is listed (C5: `proj ls`). One line per record: id, status, title, parent.
-    Returns the rows (C10: the caller may print them as JSON)."""
+    """The records to list (from DB); `name` None = every type (`proj ls`).
+    Data only — `_print_rows` prints them as text or JSON."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
     names = [name] if name else list(reg)
@@ -218,12 +217,20 @@ def _dyn_list(name: str | None, status: str | None) -> list[dict]:
             rows.append({"id": r["id"], "type": n, "status": r["status"],
                          "title": r["title"], "parent": (parent["source"] if parent else None)})
     db.close()
+    return rows
+
+
+def _print_rows(rows: list[dict], status: str | None, as_json: bool) -> None:
+    """`ls` output: one line per record (id, status, title, parent), or — with
+    --json — only a JSON array of the rows (nothing else, so it parses)."""
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
+        return
     for row in rows:
         parent = f"  (parent {row['parent']})" if row["parent"] else ""
         typer.echo(f"{row['id']:<8} {row['status']:<24} {row['title']}{parent}")
     if not rows:
         typer.echo("(no records)" + (f" with status {status!r}" if status else ""))
-    return rows
 
 
 def _dyn_show(name: str | None, id_: str, history: bool, json_out: bool = False) -> None:
@@ -314,19 +321,22 @@ def _build_record_group(name: str):
         _dyn_new(name, title, supersede, parent, related, commit, summary, yes)
 
     @sub.command()
-    def ls(status: str | None = typer.Option(None, "--status")):
+    def ls(status: str | None = typer.Option(None, "--status"),
+           as_json: bool = typer.Option(False, "--json", help="a JSON array")):
         """List records of this type (from DB)."""
-        _dyn_list(name, status)
+        _print_rows(_dyn_list(name, status), status, as_json)
 
     @sub.command("list", hidden=True)
-    def list_(status: str | None = typer.Option(None, "--status")):
+    def list_(status: str | None = typer.Option(None, "--status"),
+              as_json: bool = typer.Option(False, "--json", help="a JSON array")):
         """(alias for `ls`, kept hidden for compatibility)"""
-        _dyn_list(name, status)
+        _print_rows(_dyn_list(name, status), status, as_json)
 
     @sub.command()
-    def show(ID: str, history: bool = typer.Option(False, "--history", help="full changelog")):
+    def show(ID: str, history: bool = typer.Option(False, "--history", help="full changelog"),
+             as_json: bool = typer.Option(False, "--json", help="a JSON object")):
         """Show one record of this type (from DB)."""
-        _dyn_show(name, ID, history)
+        _dyn_show(name, ID, history, json_out=as_json)
 
     @sub.command()
     def update(ID: str,
@@ -464,23 +474,21 @@ def render(ref: list[str] = typer.Argument(
 @app.command()
 def show(ID: str,
          history: bool = typer.Option(False, "--history"),
-         json: bool = typer.Option(False, "--json")):
+         as_json: bool = typer.Option(False, "--json", help="a JSON object")):
     """Show one record's current state; the id may be any type (T-/DEC-/...)."""
-    _dyn_show(None, ID, history, json_out=json)
+    _dyn_show(None, ID, history, json_out=as_json)
 
 
 @app.command()
 def ls(status: str | None = typer.Option(None, "--status"),
        type: str | None = typer.Option(None, "--type",
                                        help="restrict to one record_type"),
-       json: bool = typer.Option(False, "--json")):
+       as_json: bool = typer.Option(False, "--json", help="a JSON array")):
     """List records (C5); no --type = every record_type, else just that one."""
     cfg = _cfg()
     if type is not None and type not in rec.load_registry(cfg.root):
         _fail(f"unknown record_type {type!r}")
-    rows = _dyn_list(type, status)
-    if json:
-        typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
+    _print_rows(_dyn_list(type, status), status, as_json)
 
 
 def _open_record(ID: str) -> None:
@@ -599,18 +607,22 @@ def item_ls(ref: str | None = typer.Argument(None, help="one record id (omit = e
             owner: str | None = typer.Option(None, "--owner", help="only items with this owner"),
             overdue: bool = typer.Option(False, "--overdue",
                                         help="only past-due unclosed items"),
-            json: bool = typer.Option(False, "--json")):
+            as_json: bool = typer.Option(False, "--json", help="a JSON array of objects")):
     """List items as `ID#A01  state  text  [owner]  [due]` (one record, or
-    across all); --json prints them as a JSON array of lines."""
+    across all); --json prints a JSON array of objects (ref, record, no,
+    group, state, closed, text, note, owner, due)."""
     cfg = _cfg()
     try:
+        if as_json:
+            rows = item_ops.ls_rows(cfg, ref, group=group, open_only=open_only,
+                                    record_type=type_, owner=owner, overdue=overdue)
+            typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
+            return
         lines = item_ops.ls(cfg, ref, group=group, open_only=open_only, record_type=type_,
                             owner=owner, overdue=overdue)
     except ValueError as e:
         _fail(str(e))
-    if json:
-        typer.echo(json.dumps(lines, indent=2, ensure_ascii=False))
-    elif not lines:
+    if not lines:
         typer.echo("(no items)")
     else:
         typer.echo("\n".join(lines))

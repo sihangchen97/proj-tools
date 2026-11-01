@@ -407,15 +407,18 @@ def proj_item_ls(ref: str | None = None, group: str | None = None, open_only: bo
                  root: str | None = None) -> str:
     """List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
     (omit = every record); group / open_only / record_type / owner / overdue
-    filter. as_json: a JSON array of the lines."""
+    filter. as_json: a JSON array of objects (ref, record, no, group, state,
+    closed, text, note, owner, due)."""
+    if as_json:
+        try:
+            rows = item_ops.ls_rows(_cfg(root), ref, group=group, open_only=open_only,
+                                    record_type=record_type, owner=owner, overdue=overdue)
+        except (ValueError, ProjError) as e:
+            return f"error: {e}"
+        return json.dumps(rows, indent=2, ensure_ascii=False)
     lines = _item_call(item_ops.ls, ref, group=group, open_only=open_only,
                        record_type=record_type, owner=owner, overdue=overdue, root=root)
-    if lines.startswith("error:"):
-        return lines
-    lines = [] if lines == "(no items)" else lines.splitlines()
-    if as_json:
-        return json.dumps(lines, indent=2, ensure_ascii=False)
-    return "\n".join(lines) or "(no items)"
+    return lines or "(no items)"
 
 
 def proj_item_add(ref: str, text: str, group: str | None = None, after: str | None = None,
