@@ -144,7 +144,7 @@ def render_tasks_block(task_rows: list[dict], db, task_spec: RecordTypeSpec,
                 continue
             seen.add(r["id"])
             out.append(_task_line(r, depth, registry, record_dir, task_dir, db,
-                                  summary=r.get("one_sentence") or ""))
+                                  summary=r.get("summary") or ""))
             emit(r["id"], depth + 1)
 
     emit(root_id, 0)

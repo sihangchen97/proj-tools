@@ -145,7 +145,7 @@ def test_check_detects_schema_mismatch(proj):
     d.conn.execute("DROP TABLE records")
     d.conn.execute(
         "CREATE TABLE records (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, "
-        "status TEXT, created TEXT, sections TEXT)")  # one_sentence missing
+        "status TEXT, created TEXT, sections TEXT)")  # summary missing
     d.close()
     problems = checkmod.check(proj)
     assert any("does not match" in p for p in problems)

@@ -2,7 +2,7 @@
 
 Unified tables (schema v4):
 
-    records(id PK, type, title, status, one_sentence, commit, created, sections JSON)
+    records(id PK, type, title, status, summary, commit, created, sections JSON)
     record_changelog(id PK, record_id, date, category, message, status)
     relations(source, target, kind) — PK (source, target, kind); one-parent unique index
 
@@ -95,7 +95,7 @@ class Db:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS records "
             "(id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, status TEXT, "
-            "one_sentence TEXT, \"commit\" TEXT, created TEXT, sections TEXT)")
+            "summary TEXT, \"commit\" TEXT, created TEXT, sections TEXT)")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS record_changelog "
             "(id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, date TEXT, "
@@ -120,7 +120,7 @@ class Db:
             "PRIMARY KEY (record_id, no))")
     # ---- template-driven schema -------------------------------------------
 
-    def ensure_kind(self, spec: RecordTypeSpec) -> None:
+    def ensure_type(self, spec: RecordTypeSpec) -> None:
         """No-op: records/record_changelog are single shared tables (created in
         __init__); the spec only names the `type` value it stores."""
 
@@ -129,19 +129,19 @@ class Db:
 
     def template_matches_table(self, spec: RecordTypeSpec) -> bool:
         cols = self.table_columns("records")
-        base = {"id", "type", "title", "status", "one_sentence",
+        base = {"id", "type", "title", "status", "summary",
                 "commit", "created", "sections"}
         return base <= cols
 
     # ---- records (single table, type column) --------------------------------
 
     def insert(self, spec: RecordTypeSpec, id_: str, title: str,
-               status: str, created: str, one_sentence: str = "",
+               status: str, created: str, summary: str = "",
                commit: str = "") -> None:
         self.conn.execute(
-            "INSERT INTO records (id, type, title, status, one_sentence, \"commit\", "
+            "INSERT INTO records (id, type, title, status, summary, \"commit\", "
             "created, sections) VALUES (?,?,?,?,?,?,?,?)",
-            (id_, spec.record_type, title, status, one_sentence, commit, created, "{}"))
+            (id_, spec.record_type, title, status, summary, commit, created, "{}"))
         self.conn.commit()
 
     def get(self, spec: RecordTypeSpec, id_: str) -> dict | None:

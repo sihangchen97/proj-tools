@@ -141,12 +141,12 @@ def test_cli_command_coverage(proj):
     type-specific one (task move) maps to proj_<type>_<verb>; item group
     expands to proj_item_group_<verb>."""
     import asyncio
+
     import typer.main
 
     from proj.cli import app
 
     tools = {t.name for t in asyncio.run(mcp.mcp.list_tools())}
-    REGISTRY = {"decision", "task", "plan", "debt", "incident", "experiment", "changelog"}
 
     # explicit exceptions: install/dev-only (no MCP tool by design)
     EXCEPTIONS = {"docs", "hooks install", "init --zoo"}

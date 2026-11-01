@@ -340,8 +340,8 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
              # trailing spaces) so each row stays on its own line in any renderer
              "\n".join(line + "  " for line in head) if head else "",
              ""]
-    if row.get("one_sentence"):
-        lines.append(f"_{row['one_sentence']}_")  # one-sentence summary, inside
+    if row.get("summary"):
+        lines.append(f"_{row['summary']}_")  # one-sentence summary, inside
     limit = _logs_limit()
     if limit != 0:
         logs = db.logs(row["id"], limit=limit)  # newest first
@@ -662,7 +662,7 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
         db.set(spec, row["id"], title=title.strip())
         db.add_log(row["id"], f"title: {row['title']} → {title.strip()}", "Changed")
     if summary is not None:
-        db.set(spec, row["id"], one_sentence=summary.strip())
+        db.set(spec, row["id"], summary=summary.strip())
         db.add_log(row["id"], "summary updated", "Changed")
     if message:
         from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
@@ -733,8 +733,8 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
             if problems:
                 return problems, []
             notes += n
-        # one_sentence: md wins (hand-written result/progress), DB otherwise
-        db.set(spec, u, one_sentence=md_summary(text) or (row.get("one_sentence") or ""))
+        # summary: md wins (hand-written result/progress), DB otherwise
+        db.set(spec, u, summary=md_summary(text) or (row.get("summary") or ""))
         # record_type-specific ingest side effects (base: no-op)
         from proj.engine.record import record_for  # lazy: record↔store cycle
         record_for(spec).on_ingest(db, row, sections, notes, p.name)

@@ -32,7 +32,7 @@ def show(spec, row: dict, db, history: bool = False) -> tuple[str, dict]:
         "title": row["title"],
         "status": row["status"],
         "created": show_date(row["created"]),
-        "summary": row.get("one_sentence") or None,
+        "summary": row.get("summary") or None,
         "commit": row.get("commit") or None,
         "parent": parent,
         "changelog": [{"date": show_date(e["date"]), "category": e["category"],

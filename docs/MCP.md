@@ -11,10 +11,10 @@
 
 ### `proj_init`
 
-Scaffold a new project: files, DB tables (lock wins over templates), seed, adopt.
-root: absolute project path (default: the current directory).
-profile: default plus additive names (cv, infra, quality, ...); the choice
-is pinned in .proj.lock — repeat inits append new profiles.
+Scaffold a new project: files, DB tables (lock wins over templates), seed,
+adopt. root: absolute project path (default: the current directory).
+profile: default plus additive names (cv, infra, quality, …); the choice is
+pinned in .proj.lock — repeat inits append new profiles.
 
 ### `proj_new`
 
@@ -28,56 +28,95 @@ summary: one-sentence summary.
 ### `proj_sync`
 
 md → DB (validate, normalize) → re-render all md. files: comma-separated
-paths (default: all managed dirs). FAIL lines mean the DB was not fully updated.
+paths (default: all managed dirs). FAIL lines mean the DB was not fully
+updated.
+
+### `proj_adopt`
+
+Absorb pre-existing md files into the DB (id marker if present, else an
+id check). files: comma-separated paths (default: all managed dirs).
+
+### `proj_render`
+
+Regenerate md from the DB (no md input). ref: comma-separated record ids
+and/or record_types (default: every record + every view). Unsynced hand
+edits are ingested first (problems abort before any file is written).
 
 ### `proj_check`
 
 Validate DB ↔ lock ↔ templates ↔ md invariants. 'OK' or FAIL lines.
 
+### `proj_ls`
+
+List records (from DB), one line each (id, status, title). record_type:
+restrict to one type (name or code); omitted = every record_type.
+status: filter (display name, e.g. 'In Progress').
+
 ### `proj_list`
 
-List records of a record_type (from DB), optionally filtered by status.
+List records of one record_type (alias of proj_ls with the type given).
 
 ### `proj_show`
 
-Show one record (from DB); history: append its full changelog.
+Show one record (from DB); the id carries its type so record_type is
+optional. history: append the full changelog. as_json: a JSON object
+(id/type/title/status/created/summary/parent/changelog) instead of text.
+
+### `proj_open`
+
+Open a record's md file path for the agent to read/edit (no editor).
+On the next write command (or proj_sync) the edit is ingested into the DB.
+
+### `proj_update`
+
+Update a record's title / summary (a title change renames its md file);
+message: optionally append a changelog entry ('Category: text'). The id
+carries the type — record_type is optional.
 
 ### `proj_verb`
 
 Run a template verb (a state-machine step) on a record, e.g.
-`('decision','accept','DEC-0002')`, `('plan','activate','PLN-0001')`,
-`('task','done','T-000001')`. verb must be one the record_type's template
-declares; title/summary/message optionally also update it after the step.
-
-### `proj_update_record`
-
-Update a record's title / summary (a title change renames its md file);
-message: optionally append a changelog entry ('Category: text').
-
-### `proj_update`
-
-sync all + re-render every view (TASKLIST.md, CHANGELOG.md, view sections).
+`('DEC-0002','accept')`, `('PLN-0001','activate')`, `('T-000001','done')`.
+The id carries the type — record_type is optional. verb must be one the
+type's template declares; `from: Any` verbs work from any status.
+title/summary/message: optionally also update them after the step
+(message appends a changelog entry, 'Category: text').
 
 ### `proj_info`
 
-What this project manages (record_types, counts, statuses) + verb cheatsheet.
+What this project manages (record_types, counts, statuses) + the verb
+cheatsheet (which verb moves which record where, with its gate).
 
 ### `proj_changelog_add`
 
 Add a CHANGELOG.md entry: 'Category: text' (Added/Changed/Fixed/…; plain
 text ok). version: default the Unreleased placeholder.
 
+### `proj_changelog_version`
+
+Release a version: move Unreleased into a version (name: the version,
+e.g. v0.1.0; bump: major | minor | patch from the latest). Exactly one.
+
+### `proj_changelog_release_notes`
+
+Print one version's CHANGELOG section (for PR/tag bodies).
+
+### `proj_changelog_list`
+
+List released versions (newest first): 'vX.Y.Z  date'.
+
 ### `proj_task_move`
 
-Move an existing task under a (possibly new) parent record, or detach it.
-parent: new parent id (any record type); detach: True to unparent. Exactly
-one of the two. Refused for itself / its own descendants / closed records.
+Re-home an existing task: parent = the new parent record id (any type),
+detach = True to remove the parent edge entirely (the task becomes
+Unparented). Exactly one of parent/detach. Refused when the target is the
+task itself, one of its own descendants (cycle), or a closed record.
 
 ### `proj_item_ls`
 
 List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
 (omit = every record); group / open_only / record_type / owner / overdue
-filter.
+filter. as_json: a JSON array of the lines.
 
 ### `proj_item_add`
 
@@ -89,7 +128,8 @@ item list.
 ### `proj_item_set`
 
 Set an item's state (item = 'ID#n'). note / commit optional. Returns the
-fresh item list.
+fresh item list. Refused when it would un-close an item on a record in a
+closed (gates.items) status.
 
 ### `proj_item_check`
 

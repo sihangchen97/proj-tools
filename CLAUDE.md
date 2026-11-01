@@ -42,9 +42,10 @@ Layers (`src/proj/`):
 - `core/templates.py` — loads YAML profiles into `RecordTypeSpec`s (record_type, `code`, dir,
   `numbered`, `verbs` state machine, `status-allowed` with emoji/`done`, fields, sections,
   `features`, `render` toggles). Docstring documents the profile format.
-- `core/db.py` — SQLite `Db` wrapper (per-record_type tables + changelog tables + a `relations`
-  table for supersede/related), id allocation (`next_id`), and `.proj.lock` read/write (pins the
-  templates/schema the DB was built from; `proj init` follows an existing lock).
+- `core/db.py` — SQLite `Db` wrapper (one shared `records` table with a `type` column, plus
+  `record_changelog`, `items`, and a `relations` table for supersede/related/parent edges), id
+  allocation (`next_id`), and `.proj.lock` read/write (pins the templates/schema the DB was built
+  from; `proj init` follows an existing lock).
 - `engine/store.py` — module-level storage functions: md parsing (id marker on line 1, the
   tool-owned head fence `<!-- proj:head:start … -->` … `<!-- proj:head:end -->` with title,
   `> **key:** value` blockquote metadata and optional italic summary, rendered changelog table,
@@ -61,10 +62,11 @@ Layers (`src/proj/`):
   one item line (`- [ ] #NN text`), merge the md list on sync, the `item` ops (add/set/
   check/uncheck/edit/mv/rm/ls), the `gates.items` block, the closed-state re-open
   restriction, and the `n/m` progress suffix on task lines.
-- `engine/views.py` — generated views (`TASKLIST.md`, `_TOC.md`, plan task trees, `CHANGELOG.md`).
-- `cli.py` — Typer app; per-record_type subcommands (`new/list/show/update/<verb>`) are built
-  dynamically from the registry, so a new record_type needs only a YAML file; plus the
-  static `item` group (`proj item ls/add/set/check/uncheck/edit/mv/rm`).
+- `engine/views.py` — generated views (`TASKLIST.md`, plan task trees, `CHANGELOG.md`).
+- `cli.py` — Typer app; per-record_type subcommands (`new/ls/show/update/<verb>`) are built
+  dynamically from the registry, so a new record_type needs only a YAML file; plus cross-type
+  `proj show/ls/open ID` (the id carries its type) and the static `item` group
+  (`proj item ls/add/set/check/uncheck/edit/mv/rm/group`).
 - `mcp.py` — `proj-mcp` stdio server exposing the same engine functions (one tool per CLI verb,
   optional `root`, falls back to `$PROJ_HOME`); includes the `proj_item_*` tools.
 - `check.py` (invariants: md↔DB, filename↔id, schema↔template, nesting, relation consistency),
@@ -76,6 +78,27 @@ Key invariants:
 - Bundled profiles live in repo-root `profiles/` (`default/*.yaml`, plus top-level `task.yaml`,
   `changelog.yaml`, `texts.yaml` — the latter holds all human-facing text written into projects).
   A project's own `profiles/<record_type>.yaml` overrides the bundled one.
+
+## Terminology (single vocabulary — do not mix in)
+
+One canonical name per concept; use it in code, CLI output and MCP:
+
+| term | meaning | not to confuse with |
+|---|---|---|
+| **record** | one governed object = one md file + one DB row (`records` table, `type` column) | a DB table, a template |
+| **record type** | the registered kind (task, decision, plan, …), defined by one YAML profile | `kind` (a section's text-kind or a relations-edge kind — internal, not the same concept) |
+| **id** | `{CODE}-{digits}` (e.g. `DEC-0001`, `T-000001`); the digits carry no letters, the code carries the type — a bare/shortened id resolves across types | a uuid, a filename (slug is derived from the title) |
+| **status** | the record's state in the template's state machine (`status-allowed`, one display name each) | a verb (which changes it), a gate (which must pass) |
+| **verb** | a template-declared state transition (`from` → `to`), run as `proj <type> <verb> ID` / `proj_verb` | a CLI subcommand name in general |
+| **gate** | a status that requires a check before entering (`gates.tasks` = all descendant tasks terminal; `gates.items` = all checklist items closed) | a status itself |
+| **item** | one line of a record's structured checklist (the `items:` section), ref `ID#nnn` (`#A01` = group A) | a checkbox in a task's Steps, a section |
+| **group** | a lettered (A–Z) sub-list inside an item checklist | a directory, a plan |
+| **WIP** | `WIP.md` — the work-in-progress list any record type can join (phase 3; replaces TASKLIST.md) | TASKLIST.md (removed) |
+| **summary** | the record's one-sentence line (DB column `summary`); the `--summary`/`-s` option | `one_sentence` (old name, gone) |
+| **changelog** | the per-record log (rows in `record_changelog`) + the project's `CHANGELOG.md` release notes (the `changelog` record type) | a record's status history (same rows, shown via `--history`) |
+
+Language (Q7): tool output, md structure and profile hints are English; docs and
+design plans are Chinese; the e2e demo project's prose is Chinese.
 
 ## Notes
 

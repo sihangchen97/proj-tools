@@ -321,17 +321,17 @@ def test_children_rendered_indented_in_main_tasklist(proj):
 
 
 def test_summary_roundtrip(proj):
-    """one-sentence summary: stored in the one_sentence column, rendered as an
+    """one-sentence summary: stored in the summary column, rendered as an
     italic line in the head fence (no "summary:" label), md wins."""
     row, p = rec.new_record(proj, "task", "S1", summary="kickoff")
-    assert row["one_sentence"] == "kickoff"
+    assert row["summary"] == "kickoff"
     text = p.read_text()
     assert "_kickoff_" in text.splitlines()
     p.write_text(text.replace("_kickoff_", "_shipped the core_"))
     rec.sync(proj)
     spec = rec.load_registry(proj.root)["task"]
     db = rec.open_db(proj)
-    assert db.get(spec, row["id"])["one_sentence"] == "shipped the core"
+    assert db.get(spec, row["id"])["summary"] == "shipped the core"
     db.close()
 
 

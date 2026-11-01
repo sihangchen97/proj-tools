@@ -104,7 +104,7 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
         dbmod.write_lock(cfg.root, specs, pinned)
         created.append(dbmod.LOCK_FILE)
     for spec in specs.values():
-        db.ensure_kind(spec)
+        db.ensure_type(spec)
     db.close()
 
     # seed decision 0001 only if none exist yet
