@@ -54,8 +54,9 @@ class Record:
         related = related or []
         if not supersede and not related:
             return row, p
-        db = rec.open_db(cfg)
-        try:
+        # R3: every edge + its changelog lines land in ONE transaction
+        with rec.open_db(cfg) as db:
+            db.begin()  # R3: one write transaction for the whole command
             for old_id in supersede:
                 # supersede is a pure relation on every record_type (D1): the
                 # target must exist and be the SAME type; no status side effect
@@ -82,19 +83,18 @@ class Record:
                 db.add_relation(row["id"], target["id"], "related")
             if related:
                 db.add_log(row["id"], "related: " + ", ".join(related), "Added")
-        finally:
-            db.close()
         rec.render_all(cfg)
-        spec, db = rec.spec_and_db(cfg, self.record_type)
-        fresh = rec.by_id(cfg, spec, db, row["id"])
-        db.close()
+        # the final fresh row is a plain read — one short-lived connection
+        with rec.open_db(cfg) as db:
+            fresh = rec.by_id(cfg, rec.spec_of(cfg, self.record_type), db, row["id"])
         return fresh, p
 
     def add_related(self, cfg: ProjConfig, id_: str, refs: list[str]) -> dict:
         """Attach related records (any type, unordered) to an existing record."""
         rec.ensure_synced(cfg)  # A1
-        db = rec.open_db(cfg)
-        try:
+        # R3: the related edges + changelog line land in ONE transaction
+        with rec.open_db(cfg) as db:
+            db.begin()  # R3: one write transaction for the whole command
             row = rec.by_id(cfg, self.spec, db, id_)
             if row is None:
                 raise ValueError(f"{self.record_type} {id_} not found")
@@ -107,27 +107,22 @@ class Record:
                     raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
                 db.add_relation(row["id"], target["id"], "related")
             db.add_log(row["id"], "related: " + ", ".join(refs), "Added")
-        finally:
-            db.close()
         rec.render_all(cfg)
-        spec, db = rec.spec_and_db(cfg, self.record_type)
-        fresh = rec.by_id(cfg, spec, db, id_)
-        db.close()
+        with rec.open_db(cfg) as db:
+            fresh = rec.by_id(cfg, self.spec, db, id_)
         return fresh
 
     def list(self, cfg: ProjConfig, status: str | None = None) -> list[dict]:
-        spec, db = rec.spec_and_db(cfg, self.record_type)
-        rows = db.all(spec)
-        db.close()
+        with rec.open_db(cfg) as db:
+            rows = db.all(self.spec)
         if status:
             rows = [r for r in rows if r["status"] == status]
         return rows
 
     def show(self, cfg: ProjConfig, id_: str) -> dict:
-        spec, db = rec.spec_and_db(cfg, self.record_type)
-        row = rec.by_id(cfg, spec, db, id_)
-        logs = db.logs(row["id"]) if row else []
-        db.close()
+        with rec.open_db(cfg) as db:
+            row = rec.by_id(cfg, self.spec, db, id_)
+            logs = db.logs(row["id"]) if row else []
         if row is None:
             raise ValueError(f"{self.record_type} {id_} not found")
         return row | {"logs": logs}
@@ -146,21 +141,18 @@ class Record:
         """State-machine step: verb maps to (from_status, to_status)."""
         if verb not in self.verbs:
             raise ValueError(f"unknown verb {verb!r} (expected: {', '.join(self.verbs)})")
-        spec, db = rec.spec_and_db(cfg, self.record_type)
-        row = rec.by_id(cfg, spec, db, id_)
-        if row is None:
-            db.close()
-            raise ValueError(f"{self.record_type} {id_} not found")
-        (from_s, to_s) = self.verbs[verb]
-        allowed = from_s if isinstance(from_s, list) else [from_s]
-        if from_s != "Any" and row["status"] not in allowed:
-            db.close()
-            raise ValueError(f"{self.record_type} {id_} is {row['status']!r}, "
-                             f"{verb} requires {from_s!r}")
-        try:
+        # R3: the gate check is read-only (its own connection); the status change
+        # is the single write transaction (status_set)
+        with rec.open_db(cfg) as db:
+            row = rec.by_id(cfg, self.spec, db, id_)
+            if row is None:
+                raise ValueError(f"{self.record_type} {id_} not found")
+            (from_s, to_s) = self.verbs[verb]
+            allowed = from_s if isinstance(from_s, list) else [from_s]
+            if from_s != "Any" and row["status"] not in allowed:
+                raise ValueError(f"{self.record_type} {id_} is {row['status']!r}, "
+                                 f"{verb} requires {from_s!r}")
             self.validate_transition(cfg, row, verb, db)
-        finally:
-            db.close()
         return rec.status_set(cfg, self.record_type, id_, to_s)
 
     # ---- extension points (subclasses override) ------------------------------

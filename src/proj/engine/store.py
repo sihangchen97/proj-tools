@@ -92,12 +92,18 @@ def open_db(cfg: ProjConfig) -> dbmod.Db:
     return dbmod.Db(cfg.db_path)
 
 
-def spec_and_db(cfg: ProjConfig, record_type: str):
+def spec_of(cfg: ProjConfig, record_type: str) -> RecordTypeSpec:
+    """The record_type's spec (validated to be registered) — no connection opened.
+    R3: write functions resolve the spec, then hold ONE connection themselves."""
     reg = load_registry(cfg.root)
     if record_type not in reg:
         raise ValueError(f"unknown record_type {record_type!r} "
                          f"(registered: {', '.join(sorted(reg))})")
-    return reg[record_type], open_db(cfg)
+    return reg[record_type]
+
+
+def spec_and_db(cfg: ProjConfig, record_type: str):
+    return spec_of(cfg, record_type), open_db(cfg)
 
 
 # a bare "sequence" ref: pure digits, optionally zero-shortened ("1"/"0001").
@@ -434,8 +440,10 @@ def ensure_synced(cfg: ProjConfig) -> None:
     file with unsynced hand edits (md → DB). No-op when nothing drifted.
     Problems abort the whole operation — nothing is rendered or half-written."""
     reg = load_registry(cfg.root)
-    db = open_db(cfg)
-    try:
+    # R3: one write transaction — the hand edits are ingested atomically (or the
+    # whole ingest rolls back when a file is malformed)
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
         for spec in reg.values():
             for p in _scan_files(cfg, spec, None):
                 (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
@@ -448,19 +456,21 @@ def ensure_synced(cfg: ProjConfig) -> None:
                 if problems:
                     raise ProjError("unsynced md edits with problems — fix and retry:\n"
                                     + "\n".join(f"  {x}" for x in problems))
-    finally:
-        db.close()
 
 
-def render_all(cfg: ProjConfig) -> list[Path]:
+def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
     """Phase 2: DB → every record file + global views. Returns written paths.
     B1: writes only files whose rendered content actually changed (a command no
     longer rewrites every file). No auto-sync here: render_all always runs AFTER
     a write, when the md is stale by design — A1's auto-sync lives at the write
-    command entry points (ensure_synced), not in the render itself."""
+    command entry points (ensure_synced), not in the render itself.
+    R3: when called from inside a write command, pass that command's connection
+    (render reads its UNCOMMITTED writes — a fresh connection would not see them
+    under WAL); a standalone render opens and closes its own read connection."""
     from proj.engine.views import render_changelog_md, render_tasklist_md
     reg = load_registry(cfg.root)
-    db = open_db(cfg)
+    own_db = db is None
+    db = open_db(cfg) if own_db else db
     try:
         written: list[Path] = []
         # R7: the Tasks block needs the task rows for EVERY record — fetch the
@@ -486,7 +496,8 @@ def render_all(cfg: ProjConfig) -> list[Path]:
             written.append(view.path)
         return written
     finally:
-        db.close()
+        if own_db:
+            db.close()
 
 
 # ---- parsing ----------------------------------------------------------------
@@ -601,17 +612,18 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
         reg = load_registry(cfg.root)
         spec = spec or reg[record_type]
     ensure_synced(cfg)  # A1: an unsynced hand edit is ingested, never clobbered
-    db = open_db(cfg)
-    id_ = dbmod.next_id(spec, db)
-    status = spec.status_allowed[0] if spec.status_allowed else ""
-    created = dbmod.utc_now()  # D10: UTC timestamp (rendered as the date part)
-    db.insert(spec, id_, title, status, created, summary, commit)
-    db.add_log(id_, "created", category="Added", when=created)
-    row = db.get(spec, id_)
-    p = file_path(cfg, spec, row)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(render_record(spec, row, db), encoding="utf-8")
-    db.close()
+    # R3: one write transaction — insert + created-log + the rendered md file
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
+        id_ = dbmod.next_id(spec, db)
+        status = spec.status_allowed[0] if spec.status_allowed else ""
+        created = dbmod.utc_now()  # D10: UTC timestamp (rendered as the date part)
+        db.insert(spec, id_, title, status, created, summary, commit)
+        db.add_log(id_, "created", category="Added", when=created)
+        row = db.get(spec, id_)
+        p = file_path(cfg, spec, row)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(render_record(spec, row, db), encoding="utf-8")
     render_all(cfg)  # keep views (TASKLIST etc.) in sync with the new record
     return row, p
 
@@ -619,72 +631,73 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
 def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
                when: str | None = None) -> dict:
     ensure_synced(cfg)  # A1
-    spec, db = spec_and_db(cfg, record_type)
-    row = by_id(cfg, spec, db, id_)
-    if row is None:
-        db.close()
-        raise ValueError(f"{record_type} {id_} not found")
-    if not any(re.fullmatch(a.format(id=row["id"]), status) for a in spec.status_allowed):
-        db.close()
-        raise ValueError(f"status {status!r} not allowed for {record_type} "
-                         f"(allowed: {', '.join(spec.status_allowed)})")
-    old = row["status"]
-    db.set(spec, row["id"], status=status)
-    if old != status:
-        db.add_log(row["id"], category="Changed", when=when)  # row = the new status
-    fresh = db.get(spec, row["id"])
-    p = file_path(cfg, spec, fresh)
-    p.write_text(render_record(spec, fresh, db), encoding="utf-8")
-    db.close()
+    spec = spec_of(cfg, record_type)
+    # R3: one write transaction — the status set + changelog + the re-rendered md
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
+        row = by_id(cfg, spec, db, id_)
+        if row is None:
+            raise ValueError(f"{record_type} {id_} not found")
+        if not any(re.fullmatch(a.format(id=row["id"]), status) for a in spec.status_allowed):
+            raise ValueError(f"status {status!r} not allowed for {record_type} "
+                             f"(allowed: {', '.join(spec.status_allowed)})")
+        old = row["status"]
+        db.set(spec, row["id"], status=status)
+        if old != status:
+            db.add_log(row["id"], category="Changed", when=when)  # row = the new status
+        fresh = db.get(spec, row["id"])
+        p = file_path(cfg, spec, fresh)
+        p.write_text(render_record(spec, fresh, db), encoding="utf-8")
     render_all(cfg)  # status changes affect rendered views
     return fresh
 
 
 def add_log(cfg: ProjConfig, record_type: str, id_: str, summary: str,
             category: str | None = None) -> None:
-    spec, db = spec_and_db(cfg, record_type)
-    row = by_id(cfg, spec, db, id_)
-    if row is None:
-        db.close()
-        raise ValueError(f"{record_type} {id_} not found")
+    spec = spec_of(cfg, record_type)
     from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
     cat, text = dbmod.parse_summary(summary, load_changelog_spec(cfg.root))
-    db.add_log(row["id"], text, category or cat)
-    fresh = db.get(spec, row["id"])
-    p = file_path(cfg, spec, fresh)
-    p.write_text(render_record(spec, fresh, db), encoding="utf-8")
-    db.close()
+    # R3: one write transaction — the changelog entry + the re-rendered md
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
+        row = by_id(cfg, spec, db, id_)
+        if row is None:
+            raise ValueError(f"{record_type} {id_} not found")
+        db.add_log(row["id"], text, category or cat)
+        fresh = db.get(spec, row["id"])
+        p = file_path(cfg, spec, fresh)
+        p.write_text(render_record(spec, fresh, db), encoding="utf-8")
 
 
 def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None = None,
                   summary: str | None = None, message: str | None = None) -> dict:
     """Update a record's title / summary (and optionally append a changelog entry)."""
     ensure_synced(cfg)  # A1
-    spec, db = spec_and_db(cfg, record_type)
-    row = by_id(cfg, spec, db, id_)
-    if row is None:
-        db.close()
-        raise ValueError(f"{record_type} {id_} not found")
-    old_p = file_path(cfg, spec, row)  # a title change also renames the md file
-    if title is not None:
-        if not title.strip():
-            db.close()
-            raise ValueError("title must be non-empty")
-        db.set(spec, row["id"], title=title.strip())
-        db.add_log(row["id"], f"title: {row['title']} → {title.strip()}", "Changed")
-    if summary is not None:
-        db.set(spec, row["id"], summary=summary.strip())
-        db.add_log(row["id"], "summary updated", "Changed")
-    if message:
-        from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
-        cat, text = dbmod.parse_summary(message, load_changelog_spec(cfg.root))
-        db.add_log(row["id"], text, cat)
-    fresh = db.get(spec, row["id"])
-    p = file_path(cfg, spec, fresh)
-    if p != old_p and old_p.is_file():
-        old_p.rename(p)
-    p.write_text(render_record(spec, fresh, db), encoding="utf-8")
-    db.close()
+    spec = spec_of(cfg, record_type)
+    # R3: one write transaction — the update(s) + changelogs + the re-rendered md
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
+        row = by_id(cfg, spec, db, id_)
+        if row is None:
+            raise ValueError(f"{record_type} {id_} not found")
+        old_p = file_path(cfg, spec, row)  # a title change also renames the md file
+        if title is not None:
+            if not title.strip():
+                raise ValueError("title must be non-empty")
+            db.set(spec, row["id"], title=title.strip())
+            db.add_log(row["id"], f"title: {row['title']} → {title.strip()}", "Changed")
+        if summary is not None:
+            db.set(spec, row["id"], summary=summary.strip())
+            db.add_log(row["id"], "summary updated", "Changed")
+        if message:
+            from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
+            cat, text = dbmod.parse_summary(message, load_changelog_spec(cfg.root))
+            db.add_log(row["id"], text, cat)
+        fresh = db.get(spec, row["id"])
+        p = file_path(cfg, spec, fresh)
+        if p != old_p and old_p.is_file():
+            old_p.rename(p)
+        p.write_text(render_record(spec, fresh, db), encoding="utf-8")
     render_all(cfg)
     return fresh
 
@@ -814,16 +827,17 @@ def _scan_files(cfg: ProjConfig, spec: RecordTypeSpec, files: list[Path] | None)
 def sync(cfg: ProjConfig, files: list[Path] | None = None):
     """md → DB (validated, normalized) → render all md. Returns (problems, notes)."""
     reg = load_registry(cfg.root)
-    db = open_db(cfg)
     problems, notes = [], []
-    for spec in reg.values():
-        for p in _scan_files(cfg, spec, files):
-            pr, nt = _ingest_md(cfg, spec, db, p, strict=True)
-            problems += pr
-            notes += nt
-    if not problems:
-        render_all(cfg)
-    db.close()
+    # R3: one write transaction — ingest every drifted md, then re-render the views
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
+        for spec in reg.values():
+            for p in _scan_files(cfg, spec, files):
+                pr, nt = _ingest_md(cfg, spec, db, p, strict=True)
+                problems += pr
+                notes += nt
+        if not problems:
+            render_all(cfg, db=db)
     return problems, notes
 
 
@@ -831,16 +845,17 @@ def adopt(cfg: ProjConfig, files: list[Path] | None = None):
     """Absorb existing md files (id marker if present; otherwise id check).
     Then render everything. Returns (problems, notes)."""
     reg = load_registry(cfg.root)
-    db = open_db(cfg)
     problems, notes = [], []
-    for spec in reg.values():
-        for p in _scan_files(cfg, spec, files):
-            pr, nt = _ingest_md(cfg, spec, db, p, strict=False)
-            problems += pr
-            notes += nt
-    if not problems:
-        render_all(cfg)
-    db.close()
+    # R3: one write transaction — adopt every file, then re-render the views
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
+        for spec in reg.values():
+            for p in _scan_files(cfg, spec, files):
+                pr, nt = _ingest_md(cfg, spec, db, p, strict=False)
+                problems += pr
+                notes += nt
+        if not problems:
+            render_all(cfg, db=db)
     return problems, notes
 
 

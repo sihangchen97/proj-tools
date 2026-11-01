@@ -25,7 +25,7 @@ def check(cfg: ProjConfig) -> list[str]:
             if record_type not in load_registry(cfg.root):
                 problems.append(f"lock declares record_type {record_type!r} missing from profiles/")
 
-    db = rec.open_db(cfg)
+    db = rec.open_db(cfg)  # R3: check is read-only; the context closes it
     reg = load_registry(cfg.root)
 
     if not db.conn.execute(

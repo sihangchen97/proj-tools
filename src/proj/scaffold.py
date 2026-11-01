@@ -99,30 +99,33 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     if zoo:
         copy_tpl("zoo-rule.md", ".roo/rules/proj-tools.md")
 
-    db = rec.open_db(cfg)
+    # R3: the init DB writes (schema) are ONE transaction
+    with rec.open_db(cfg) as db:
+        db.begin()
+        for spec in specs.values():
+            db.ensure_type(spec)
     if lock is None or pinned != list(lock.get("profiles", [])):
         dbmod.write_lock(cfg.root, specs, pinned)
         created.append(dbmod.LOCK_FILE)
-    for spec in specs.values():
-        db.ensure_type(spec)
-    db.close()
 
     # seed decision 0001 only if none exist yet
     if "decision" in specs:
         spec = specs["decision"]
-        if not rec.open_db(cfg).all(spec) and not any(
-                x for x in (cfg.root / spec.dir).glob("*.md")
-                if not x.name.startswith("_")):
-            seed = texts["scaffold"]["seed_decision"]
-            row, p = rec.new_record(cfg, "decision", seed["title"],
-                                     summary=seed.get("summary", ""), spec=spec)
-            rec.status_set(cfg, "decision", row["id"], seed["status"])
-            d = rec.open_db(cfg)
-            d.set(spec, row["id"], sections=json.dumps(seed["sections"]))
-            fresh = d.get(spec, row["id"])
-            p.write_text(rec.render_record(spec, fresh, d), encoding="utf-8")
-            d.close()
-            created.append(str(p.relative_to(cfg.root)))
+        with rec.open_db(cfg) as db:  # R3: read-only (the seed check)
+            if not db.all(spec) and not any(
+                    x for x in (cfg.root / spec.dir).glob("*.md")
+                    if not x.name.startswith("_")):
+                seed = texts["scaffold"]["seed_decision"]
+                row, p = rec.new_record(cfg, "decision", seed["title"],
+                                         summary=seed.get("summary", ""), spec=spec)
+                rec.status_set(cfg, "decision", row["id"], seed["status"])
+                # R3: the seed's section write + re-render are ONE transaction
+                with rec.open_db(cfg) as d:
+                    d.begin()
+                    d.set(spec, row["id"], sections=json.dumps(seed["sections"]))
+                    fresh = d.get(spec, row["id"])
+                    p.write_text(rec.render_record(spec, fresh, d), encoding="utf-8")
+                created.append(str(p.relative_to(cfg.root)))
 
     # adopt any pre-existing managed files, then render views
     problems, notes = rec.adopt(cfg)

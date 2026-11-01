@@ -93,15 +93,13 @@ def _resolve(root: str | None, record_type: str | None, id_: str) -> tuple:
         spec = _rtype(record_type, reg)
         if spec is None:
             raise ValueError("unknown record_type (name or code, case-insensitive)")
-        db = rec.open_db(cfg)
-        row = rec.by_id(cfg, reg[spec], db, id_)
-        db.close()
+        with rec.open_db(cfg) as db:  # R3: read-only
+            row = rec.by_id(cfg, reg[spec], db, id_)
         if row is None:
             raise ValueError(f"{spec} {id_} not found")
         return cfg, reg[spec], row
-    db = rec.open_db(cfg)
-    spec, row = rec.ref_record(cfg, db, id_)
-    db.close()
+    with rec.open_db(cfg) as db:  # R3: read-only
+        spec, row = rec.ref_record(cfg, db, id_)
     if row is None:
         raise ValueError(f"{id_} not found in any record_type")
     return cfg, spec, row
@@ -199,9 +197,8 @@ def proj_render(ref: str | None = None, root: str | None = None) -> str:
         if not refs:
             return f"Rendered {len(rec.render_all(cfg))} file(s)"
         reg = rec.load_registry(cfg.root)
-        db = rec.open_db(cfg)
         out = []
-        try:
+        with rec.open_db(cfg) as db:  # R3: one read connection (no DB writes)
             for r in refs:
                 spec, row = rec.ref_record(cfg, db, r)
                 if row is None:
@@ -214,8 +211,6 @@ def proj_render(ref: str | None = None, root: str | None = None) -> str:
                     p = rec.file_path(cfg, spec, row)
                     p.write_text(rec.render_record(spec, row, db, reg), encoding="utf-8")
                     out.append(f"Rendered {p.relative_to(cfg.root)}")
-        finally:
-            db.close()
         return "\n".join(out)
     except (ValueError, rec.ProjError) as e:
         return f"error: {e}"
@@ -259,11 +254,8 @@ def proj_show(id: str, record_type: str | None = None, history: bool = False,
         cfg, spec, row = _resolve(root, record_type, id)
     except ValueError as e:
         return f"error: {e}"
-    db = rec.open_db(cfg)
-    try:
+    with rec.open_db(cfg) as db:  # R3: one read connection
         text, data = present.show(spec, row, db, history=history)
-    finally:
-        db.close()
     return json.dumps(data, indent=2, ensure_ascii=False) if as_json else text
 
 

@@ -210,14 +210,13 @@ def _dyn_list(name: str | None, status: str | None) -> list[dict]:
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
     names = [name] if name else list(reg)
-    db = rec.open_db(cfg)
     rows: list[dict] = []
-    for n in names:
-        for r in record_for(n, reg).list(cfg, status):
-            parent = db.parent_of(r["id"])
-            rows.append({"id": r["id"], "type": n, "status": r["status"],
-                         "title": r["title"], "parent": (parent["source"] if parent else None)})
-    db.close()
+    with rec.open_db(cfg) as db:  # R3: one read connection for the whole ls
+        for n in names:
+            for r in record_for(n, reg).list(cfg, status):
+                parent = db.parent_of(r["id"])
+                rows.append({"id": r["id"], "type": n, "status": r["status"],
+                             "title": r["title"], "parent": (parent["source"] if parent else None)})
     return rows
 
 
@@ -241,14 +240,12 @@ def _dyn_show(name: str | None, id_: str, history: bool, json_out: bool = False)
     a JSON object (C10) and nothing else is printed."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
-    db = rec.open_db(cfg)
-    spec, row = (reg[name], rec.by_id(cfg, reg[name], db, id_)) if name else \
-        rec.ref_record(cfg, db, id_)
-    if row is None:
-        db.close()
-        _fail(f"{(name + ' ' if name else '') + id_} not found")
-    text, data = present.show(spec, row, db, history=history)
-    db.close()
+    with rec.open_db(cfg) as db:  # R3: one read connection for the whole show
+        spec, row = (reg[name], rec.by_id(cfg, reg[name], db, id_)) if name else \
+            rec.ref_record(cfg, db, id_)
+        if row is None:
+            _fail(f"{(name + ' ' if name else '') + id_} not found")
+        text, data = present.show(spec, row, db, history=history)
     if json_out:
         typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
         return
@@ -452,8 +449,7 @@ def render(ref: list[str] = typer.Argument(
             typer.echo(f"Rendered {len(written)} file(s)")
             return
         reg = rec.load_registry(cfg.root)
-        db = rec.open_db(cfg)
-        try:
+        with rec.open_db(cfg) as db:  # R3: one read connection (no DB writes)
             for r in ref:
                 spec, row = rec.ref_record(cfg, db, r)
                 if row is None:
@@ -466,8 +462,6 @@ def render(ref: list[str] = typer.Argument(
                     p = rec.file_path(cfg, spec, row)
                     p.write_text(rec.render_record(spec, row, db, reg), encoding="utf-8")
                     typer.echo(f"Rendered {p.relative_to(cfg.root)}")
-        finally:
-            db.close()
     except rec.ProjError as e:
         _fail(str(e))
     except ValueError as e:
@@ -497,13 +491,11 @@ def ls(status: str | None = typer.Option(None, "--status"),
 def _open_record(ID: str) -> None:
     """C5: open a record's md in $EDITOR, then sync it back (auto-ingest)."""
     cfg = _cfg()
-    db = rec.open_db(cfg)
-    spec, row = rec.ref_record(cfg, db, ID)
-    if row is None:
-        db.close()
-        _fail(f"{ID} not found")
-    p = rec.file_path(cfg, spec, row)
-    db.close()
+    with rec.open_db(cfg) as db:  # R3: one read connection
+        spec, row = rec.ref_record(cfg, db, ID)
+        if row is None:
+            _fail(f"{ID} not found")
+        p = rec.file_path(cfg, spec, row)
     _editor(p)
     problems, notes = rec.sync(cfg, [p])
     _print_problems(problems, notes)

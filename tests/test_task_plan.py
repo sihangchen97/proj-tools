@@ -381,3 +381,29 @@ def test_render_all_fetches_task_table_once(proj, monkeypatch):
     # render_all fetches the task rows once (for every record's Tasks block);
     # the TASKLIST view reads it again — a small CONSTANT, never ~N reads.
     assert task_reads <= 3, f"task table read {task_reads}x (expected constant, not per-record)"
+
+
+def test_mid_command_exception_leaves_no_half_rows(proj, monkeypatch):
+    """R3: a write command is one transaction — an exception MIDWAY through it
+    (after the insert, before the second statement) leaves NO half-written rows:
+    the record is absent, its changelog empty, its relations absent."""
+    reg = rec.load_registry(proj.root)
+    before = len(rec.open_db(proj).all(reg["decision"]))
+    dbmod = __import__("proj.core.db", fromlist=["Db"])
+
+    real_insert = dbmod.Db.insert
+
+    def explode(self, spec, id_, title, status, created, summary="", commit=""):
+        real_insert(self, spec, id_, title, status, created, summary, commit)
+        raise ValueError("boom mid-command")
+
+    monkeypatch.setattr(dbmod.Db, "insert", explode)
+    with pytest.raises(ValueError, match="boom"):
+        rec.new_record(proj, "decision", "Half written")
+    # the insert rolled back with the rest of the command
+    with rec.open_db(proj) as db:
+        assert len(db.all(reg["decision"])) == before
+        # no changelog row pointing at a record that no longer exists
+        assert not db.conn.execute(
+            "SELECT 1 FROM record_changelog lc WHERE lc.record_id NOT IN "
+            "(SELECT id FROM records)").fetchone()

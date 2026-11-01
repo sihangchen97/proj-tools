@@ -62,7 +62,10 @@ class Db:
         self.path = path
         # WAL + busy_timeout: several agents may share the project db; a reader
         # no longer fails with "database is locked" while another writes.
-        self.conn = sqlite3.connect(path, timeout=5.0)
+        # R3/N1: isolation_level=None (autocommit) — write transactions are
+        # explicit (BEGIN IMMEDIATE in __enter__, one per command); non-context
+        # callers keep legacy per-statement commits (read-only / one statement).
+        self.conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA busy_timeout = 5000")
@@ -142,7 +145,6 @@ class Db:
             "INSERT INTO records (id, type, title, status, summary, \"commit\", "
             "created, sections) VALUES (?,?,?,?,?,?,?,?)",
             (id_, spec.record_type, title, status, summary, commit, created, "{}"))
-        self.conn.commit()
 
     def get(self, spec: RecordTypeSpec, id_: str) -> dict | None:
         row = self.conn.execute(
@@ -159,14 +161,12 @@ class Db:
         self.conn.execute(
             f"UPDATE records SET {assignments} WHERE type=? AND id=?",
             (*cols.values(), spec.record_type, id_))
-        self.conn.commit()
 
     def delete(self, spec: RecordTypeSpec, id_: str) -> None:
         self.conn.execute("DELETE FROM record_changelog WHERE record_id = ?", (id_,))
         # relations edges cascade with the record (D8 FK), no manual cleanup
         self.conn.execute("DELETE FROM records WHERE type=? AND id=?",
                           (spec.record_type, id_))
-        self.conn.commit()
 
     def max_seq(self, spec: RecordTypeSpec) -> int:
         """The largest record number carried by this type's ids (digits only)."""
@@ -192,7 +192,6 @@ class Db:
             "INSERT INTO record_changelog (record_id, date, category, message, "
             "status) VALUES (?,?,?,?,?)",
             (record_id, when or utc_now(), category, message, status))
-        self.conn.commit()
 
     def logs(self, record_id: str, limit: int | None = None) -> list[dict]:
         q = ("SELECT date, category, message, status "
@@ -215,7 +214,6 @@ class Db:
             "INSERT INTO changelog_entries (version, category, message, date) "
             "VALUES (?, ?, ?, ?)",
             (version, category, message, when or utc_now()))
-        self.conn.commit()
 
     def cl_entries(self, version: str | None = None) -> list[dict]:
         if version:
@@ -240,13 +238,11 @@ class Db:
         self.conn.execute(
             "INSERT OR IGNORE INTO relations (source, target, kind) VALUES (?,?,?)",
             (source, target, kind))
-        self.conn.commit()
 
     def remove_relation(self, source: str, target: str, kind: str) -> None:
         self.conn.execute(
             "DELETE FROM relations WHERE source=? AND target=? AND kind=?",
             (source, target, kind))
-        self.conn.commit()
 
     def set_parent(self, child_id: str, parent_id: str | None) -> None:
         """Re-home a task: drop its old parent edge (if any), write the new one
@@ -258,7 +254,6 @@ class Db:
             self.conn.execute(
                 "INSERT INTO relations (source, target, kind) VALUES (?,?,?)",
                 (parent_id, child_id, "parent"))
-        self.conn.commit()
 
     def supersede_of(self, source_id: str) -> list[dict]:
         """Targets this record supersedes (kind=supersede, source=row), id order."""
@@ -339,19 +334,29 @@ class Db:
                  it.get("commit", ""), it.get("trailer", ""),
                  it.get("created") or utc_now(), it.get("closed_at", ""),
                  1 if it.get("deleted") else 0))
-        self.conn.commit()
+
+    def begin(self) -> None:
+        # R3: open the write transaction (deferred — the exclusive lock is taken
+        # lazily on the FIRST write, so a pure read through a `with` takes no
+        # lock at all, and an inner READ-ONLY connection of the same command
+        # (e.g. _check_parent_ref inside task.move) can close before we commit).
+        self.conn.execute("BEGIN")
 
     def __enter__(self) -> Db:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        """One command = one transaction: commit on success, roll back on error,
-        close either way (A4 — no leaked connection holds the write lock)."""
+        """One command = one transaction: commit on success, roll back on error
+        (a mid-command exception leaves no half-written rows, R3), close either
+        way (A4 — no leaked connection holds the write lock)."""
         try:
             if exc_type is None:
                 self.conn.commit()
             else:
                 self.conn.rollback()
+        except sqlite3.Error:
+            # a BEGIN-less (read-only) `with` has nothing to end — close goes on
+            pass
         finally:
             self.conn.close()
 

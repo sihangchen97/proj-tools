@@ -41,8 +41,9 @@ class Task(Record):
         if parent:
             self._check_parent_ref(cfg, parent)
             canonical = rec.canonical_id(cfg, parent)
-            db = rec.open_db(cfg)
-            try:
+            # R3: the parent edge + its log line land in ONE transaction
+            with rec.open_db(cfg) as db:
+                db.begin()  # R3: one write transaction for the whole command
                 # re-open restriction: never parent a fresh task under a closed
                 # ancestor (its state is in that ancestor's gates.tasks)
                 p_spec, p_row = rec.ref_record(cfg, db, canonical)
@@ -54,8 +55,6 @@ class Task(Record):
                 # the edge's FK requires both ids to exist (D8)
                 db.add_relation(canonical, row["id"], "parent")
                 db.add_log(row["id"], f"parent: {canonical}", "Added")
-            finally:
-                db.close()
             rec.render_all(cfg)
         if related:
             row = self.add_related(cfg, row["id"], related)
@@ -80,8 +79,10 @@ class Task(Record):
         Guards: target exists (any type), is not the task itself, is not one of
         its own descendants (cycle), and is not in a closed (gates.tasks) state."""
         rec.ensure_synced(cfg)  # A1
-        db = rec.open_db(cfg)
-        try:
+        # R3: the whole re-home (guards read, old edge dropped, new edge + log
+        # written, fresh row fetched) is ONE transaction
+        with rec.open_db(cfg) as db:
+            db.begin()  # R3: one write transaction for the whole command
             row = rec.by_id(cfg, self.spec, db, id_)
             if row is None:
                 raise ValueError(f"{self.record_type} {id_} not found")
@@ -105,8 +106,6 @@ class Task(Record):
             new_s = rec.canonical_id(cfg, parent) if parent else None
             db.add_log(row["id"], f"parent: {old_s} → {new_s or 'none'}", "Changed")
             fresh = rec.by_id(cfg, self.spec, db, row["id"])
-        finally:
-            db.close()
         rec.render_all(cfg)
         return fresh
 
@@ -143,13 +142,10 @@ class Task(Record):
     def _check_parent_ref(self, cfg: ProjConfig, parent: str) -> None:
         """A task pointing at a nonexistent parent would render nowhere, silently."""
         reg = rec.load_registry(cfg.root)
-        db = rec.open_db(cfg)
-        try:
+        with rec.open_db(cfg) as db:
             for record_type in reg:
                 if rec.by_id(cfg, reg[record_type], db, parent) is not None:
                     return
-        finally:
-            db.close()
         raise ValueError(
             f"parent {parent!r} not found in any record_type "
             f"({', '.join(reg)}) — create it first or drop --parent")

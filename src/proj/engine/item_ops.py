@@ -69,7 +69,9 @@ class _Ctx:
         the notes (`note: …` lines — renumbering moves, promote, …) followed by
         the fresh item list."""
         notes = items.commit(self.db, self.spec, self.row, self.state, new, notes)
-        rec.render_all(self.cfg)
+        # R3: render on the SAME connection — it reads the (still uncommitted)
+        # item write; a fresh connection would not see it under WAL
+        rec.render_all(self.cfg, db=self.db)
         row = self.db.get(self.spec, self.row["id"])
         state = _load_state(self.db, self.spec, row)
         listing = items.render_section(state, self.it)
