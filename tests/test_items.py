@@ -660,3 +660,17 @@ def test_md_drifts_false_after_sync_for_item_records(proj):
     ops.check(proj, f"{row['id']}#001")
     rec.sync(proj)
     assert rec.md_drift(proj) == [], "post-sync record must not be flagged drifted"
+
+
+def test_command_output_reports_notes(proj):
+    # R5: a command prints its notes (promote, renumbering) above the list
+    row, _ = taskmod.new(proj, "T")
+    ops.add(proj, row["id"], "a")
+    out = ops.check(proj, f"{row['id']}#001")
+    assert f"note: {row['id']} promoted Draft → In Progress" in out.splitlines()
+    assert "- [x] #001 a" in out
+    ops.group_add(proj, row["id"], "G")
+    out = ops.move(proj, f"{row['id']}#001", group="A")
+    assert "note: item #001 → #A01" in out
+    out = ops.edit(proj, f"{row['id']}#A01", note="n")
+    assert out.splitlines()[0] == "note: item #A01 edited"

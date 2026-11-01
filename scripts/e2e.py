@@ -404,17 +404,17 @@ def ch4() -> None:
     expect_ok("item edit 加备注", "产线相机实拍", "item", "edit", f"{T_DS}#A01",
               "--note", "产线相机实拍")
     # cross-group move: A01 takes a FRESH number in group C (#C02), A01 is void
-    expect_ok("item mv 跨组换号（A01 → C02）", "#C02", "item", "mv", f"{T_DS}#A01", "--group", "C")
+    expect_ok("item mv 跨组换号（A01 → C02，提示新编号）", "note: item #A01 → #C02",
+              "item", "mv", f"{T_DS}#A01", "--group", "C")
     expect_ok("item ls 分组过滤（C 组两行）", "#C02", "item", "ls", T_DS, "--group", "C")
     expect_fail("换号后旧编号作废（A01 已无效）", "item", "check", f"{T_DS}#A01")
     expect_ok("item rm（编号永不复用，重列清单）", "#C01", "item", "rm", f"{T_DS}#C02")
     expect_fail("rm 后编号不复用（C02 已删）", "item", "check", f"{T_DS}#C02")
-    # the first closed item promotes Draft → In Progress (task promote)
-    # the first closed item promotes Draft → In Progress (the task profile's promote)
-    expect_ok("首次勾选", "- [x]", "item", "check", f"{T_DS}#B01")
-    run("sync")
+    # the first closed item promotes Draft → In Progress (the task profile's
+    # promote); the command reports it as a note above the list (R5)
+    expect_ok("首次勾选 promote Draft → In Progress（命令输出提示）",
+              f"note: {T_DS} promoted Draft → In Progress", "item", "check", f"{T_DS}#B01")
     assert "`🚧 In Progress`" in read(md_of(T_DS))
-    REP.ok("首次勾选 promote Draft → In Progress（md status 已变）")
     # hand-edit the record md (the LLM's primary input channel) → sync it back
     p = SANDBOX / md_of(T_DS)
     t = p.read_text(encoding="utf-8")

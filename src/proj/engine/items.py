@@ -873,7 +873,7 @@ def commit(db, spec, row: dict, old: ItemsState, new: ItemsState,
             db.add_log(row["id"],
                        f"promoted {row['status']} → {itspec.promote_to}",
                        category="Changed")
-            notes.append(f"promoted to {itspec.promote_to}")
+            notes.append(f"{row['id']} promoted {row['status']} → {itspec.promote_to}")
     return list(notes)
 
 

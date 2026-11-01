@@ -66,12 +66,14 @@ class _Ctx:
 
     def save(self, new: items.ItemsState, notes: list[str]) -> str:
         """Commit (one changelog), re-render the record and views, and return
+        the notes (`note: …` lines — renumbering moves, promote, …) followed by
         the fresh item list."""
-        items.commit(self.db, self.spec, self.row, self.state, new, notes)
+        notes = items.commit(self.db, self.spec, self.row, self.state, new, notes)
         rec.render_all(self.cfg)
         row = self.db.get(self.spec, self.row["id"])
         state = _load_state(self.db, self.spec, row)
-        return items.render_section(state, self.it)
+        listing = items.render_section(state, self.it)
+        return "\n".join([*(f"note: {n}" for n in notes), listing]).strip("\n")
 
 
 @contextmanager
