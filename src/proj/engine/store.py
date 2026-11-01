@@ -920,6 +920,8 @@ def info_text(d: dict) -> str:
     if d.get("journal_mode", "WAL").startswith("DELETE"):
         lines.append("Journal: DELETE (rollback journal — the project is on a network "
                      "filesystem; avoid several machines writing it at once)")
+    else:
+        lines.append("Journal: WAL (local filesystem)")
     for rt, k in d["record_types"].items():
         lines.append(f"  {rt:<11} {k['count']:<3} record(s)  @ {k['dir']}/  [{k['numbered']}]")
         if k["statuses"]:

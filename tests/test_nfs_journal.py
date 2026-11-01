@@ -73,3 +73,10 @@ def test_info_reports_journal_mode(proj, monkeypatch):
         assert "network filesystem" in rec.info_text(d)
     finally:
         shutil.move(str(sandbox), str(real))
+
+
+def test_info_shows_journal_on_local_fs(proj):
+    # A9 (§17.1): local (WAL) projects also show a Journal line
+    d = rec.info(proj)
+    assert d["journal_mode"] == "WAL"
+    assert "Journal: WAL" in rec.info_text(d)
