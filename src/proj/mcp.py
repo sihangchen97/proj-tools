@@ -443,7 +443,6 @@ def proj_item_update(item: str, state: str | None = None, text: str | None = Non
     group) — for a group, after/first moves the group. Returns the fresh item
     list. Refused when it would un-close an item on a record in a closed
     (gates) status."""
-    cfg = _cfg(root)
     try:
         if item.rsplit("#", 1)[-1].endswith("00") and item.rsplit("#", 1)[-1][0].isalpha():
             # a group row (ID#L00): rename / move / delete-ish via the group ops
