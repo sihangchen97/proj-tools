@@ -113,8 +113,9 @@ app = typer.Typer(
     cls=_DynamicGroup,
     context_settings={"token_normalize_func": str.lower},
     help="Project governance: decisions, tasks, plans, changelog, tech debt, "
-         "incidents, experiments. `proj <record_type> new|list|show|<verb>` "
-         "+ lifecycle commands (init/sync/…).")
+         "incidents, experiments. Per type: `proj <type> new|ls|show|update|<verb>`; "
+         "any record: `proj show|ls|open`; checklists: `proj item …`; "
+         "keep files and database in line: `proj sync` / `proj check`.")
 app.add_typer(cl_app, name="changelog")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(item_app, name="item")
@@ -305,7 +306,7 @@ def _build_record_group(name: str):
     root = find_root(_ROOT["root"], strict=False)
     spec = rec.load_registry(root).get(name)
     sub = typer.Typer(add_completion=False,
-                        help=f"{name} records: new / list / show + template verbs.")
+                        help=f"{name} records: new / ls / show / update + its state changes.")
 
     @sub.command()
     def new(title: str | None = typer.Argument(None, help="record title"),
@@ -317,13 +318,13 @@ def _build_record_group(name: str):
             commit: str | None = typer.Option(None, "--commit", help="git commit hash"),
             summary: str | None = typer.Option(None, "--summary", "-s", help="one-line summary"),
             yes: bool = typer.Option(False, "--yes", "-y", help="don't open the editor")):
-        """Create a new record (opens the editor; -y skips it)."""
+        """Create a new record of this type (opens the editor; -y skips it)."""
         _dyn_new(name, title, supersede, parent, related, commit, summary, yes)
 
     @sub.command()
     def ls(status: str | None = typer.Option(None, "--status"),
            as_json: bool = typer.Option(False, "--json", help="a JSON array")):
-        """List records of this type (from DB)."""
+        """List the records of this type."""
         _print_rows(_dyn_list(name, status), status, as_json)
 
     @sub.command("list", hidden=True)
@@ -335,7 +336,7 @@ def _build_record_group(name: str):
     @sub.command()
     def show(ID: str, history: bool = typer.Option(False, "--history", help="full changelog"),
              as_json: bool = typer.Option(False, "--json", help="a JSON object")):
-        """Show one record of this type (from DB)."""
+        """Show one record of this type."""
         _dyn_show(name, ID, history, json_out=as_json)
 
     @sub.command()
@@ -391,7 +392,8 @@ def init(profiles: list[str] = typer.Option(
         ["default"], "--profile", help="default, cv, infra, quality (additive)"),
         zoo: bool = typer.Option(
         False, "--zoo", help="also drop the agent rule file (.roo/rules/proj-tools.md)")):
-    """Scaffold, build tables (lock wins over templates), seed, adopt files."""
+    """Create a proj project in this directory (or add profiles to an existing
+    one): database, record folders, starter files; existing md files are adopted."""
     cfg = _cfg(strict=False)
     try:
         created = scaffold.init(cfg, profiles, zoo=zoo)
@@ -425,7 +427,8 @@ def sync(files: list[Path] = typer.Argument(
 @app.command()
 def adopt(files: list[Path] = typer.Argument(
         None, help="Files (default: all managed dirs)")):
-    """Absorb pre-existing md files (id marker if present; else id check)."""
+    """Take in existing md files as records (by the id marker on their first
+    line if they have one, else by the id in the file name)."""
     cfg = _cfg()
     problems, notes = rec.adopt(cfg, list(files) if files else None)
     _print_problems(problems, notes)
@@ -436,7 +439,7 @@ def adopt(files: list[Path] = typer.Argument(
 
 @app.command()
 def render(ref: list[str] = typer.Argument(
-        None, help="record id or record_type (default: all)")):
+        None, help="record id or type (default: all)")):
     """Regenerate files from the DB (no md input). No args = every record +
     every view; otherwise just the named record or type."""
     # A1: render is a write command — ingest unsynced hand edits first so they are
@@ -455,7 +458,7 @@ def render(ref: list[str] = typer.Argument(
                 spec, row = rec.ref_record(cfg, db, r)
                 if row is None:
                     if r not in reg:
-                        _fail(f"unknown record or record_type {r!r}")
+                        _fail(f"unknown record or type {r!r}")
                     spec, rows = reg[r], db.all(reg[r])
                 else:
                     rows = [row]
@@ -482,12 +485,12 @@ def show(ID: str,
 @app.command()
 def ls(status: str | None = typer.Option(None, "--status"),
        type: str | None = typer.Option(None, "--type",
-                                       help="restrict to one record_type"),
+                                       help="only this type"),
        as_json: bool = typer.Option(False, "--json", help="a JSON array")):
-    """List records (C5); no --type = every record_type, else just that one."""
+    """List records of every type, or of one type with --type."""
     cfg = _cfg()
     if type is not None and type not in rec.load_registry(cfg.root):
-        _fail(f"unknown record_type {type!r}")
+        _fail(f"unknown type {type!r}")
     _print_rows(_dyn_list(type, status), status, as_json)
 
 
@@ -510,13 +513,14 @@ def _open_record(ID: str) -> None:
 
 @app.command()
 def open(ID: str) -> None:
-    """Open a record's md in $EDITOR; on close, sync it back (C5)."""
+    """Open a record's md in $EDITOR; it is synced back when you close it."""
     _open_record(ID)
 
 
 @app.command()
 def check():
-    """Validate DB ↔ lock ↔ templates ↔ md invariants; exit 1 on failure."""
+    """Check that the md files, the database and the profiles agree (the
+    pre-commit hook runs this); exit 1 on any problem."""
     cfg = _cfg()
     problems = run_checks(cfg)
     if problems:
@@ -603,14 +607,14 @@ def cl_list():
 def item_ls(ref: str | None = typer.Argument(None, help="one record id (omit = every record)"),
             group: str | None = typer.Option(None, "--group", help="only items of group L"),
             open_only: bool = typer.Option(False, "--open", help="only unclosed items"),
-            type_: str | None = typer.Option(None, "--type", help="limit to one record_type"),
+            type_: str | None = typer.Option(None, "--type", help="only records of this type"),
             owner: str | None = typer.Option(None, "--owner", help="only items with this owner"),
             overdue: bool = typer.Option(False, "--overdue",
                                         help="only past-due unclosed items"),
             as_json: bool = typer.Option(False, "--json", help="a JSON array of objects")):
-    """List items as `ID#A01  state  text  [owner]  [due]` (one record, or
-    across all); --json prints a JSON array of objects (ref, record, no,
-    group, state, closed, text, note, owner, due)."""
+    """List items, one per line: ref (ID#A01), state, text, then owner and
+    due when set — for one record, or across all. --json prints a JSON array
+    of objects (ref, record, no, group, state, closed, text, note, owner, due)."""
     cfg = _cfg()
     try:
         if as_json:
@@ -651,7 +655,7 @@ def item_add(ref: str, text: str,
 def item_set(item: str, state: str,
              note: str | None = typer.Option(None, "--note", help="also set the note"),
              commit: str = typer.Option("", "--commit", help="a git commit hash")):
-    """Set an item's state (e.g. met / missed / done / skipped); optional note/commit."""
+    """Set an item's state (one of its checklist's states); optional note / commit."""
     cfg = _cfg()
     try:
         typer.echo(item_ops.set_state(cfg, item, state, note=note, commit=commit).rstrip())

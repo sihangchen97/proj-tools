@@ -116,7 +116,8 @@ task itself, one of its own descendants (cycle), or a closed record.
 
 List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
 (omit = every record); group / open_only / record_type / owner / overdue
-filter. as_json: a JSON array of the lines.
+filter. as_json: a JSON array of objects (ref, record, no, group, state,
+closed, text, note, owner, due).
 
 ### `proj_item_add`
 
