@@ -45,6 +45,38 @@ class ProjError(ValueError):
     (engine/items.py) and friends subclass it."""
 
 
+NETWORK_FS_TYPES = ("nfs", "nfs4", "cifs", "smb", "smbfs", "fuse.sshfs")
+
+
+def _mounts_lines() -> list[str]:
+    try:
+        return Path("/proc/mounts").read_text().splitlines()
+    except OSError:
+        return []
+
+
+def on_network_fs(path: Path) -> bool:
+    """True when `path` lives on a network filesystem (Linux /proc/mounts).
+    SQLite's WAL mode relies on shared memory and must not be used on NFS:
+    two hosts writing the same project could corrupt the DB. Unknown platform
+    (no /proc/mounts) → False (keep WAL)."""
+    mounts = _mounts_lines()
+    if not mounts:
+        return False
+    target = str(path.resolve())
+    best = ""
+    for line in mounts:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mount_point, fs_type = parts[1], parts[2]
+        if (fs_type in NETWORK_FS_TYPES
+                and (mount_point == target or target.startswith(mount_point + "/"))
+                and len(mount_point) > len(best)):
+            best = mount_point
+    return bool(best)
+
+
 def utc_now() -> str:
     """D10: timestamps are stored as UTC ISO8601 (second precision, sortable);
     the DATE part is what gets rendered (show_date)."""
@@ -60,14 +92,19 @@ def show_date(ts: str) -> str:
 class Db:
     def __init__(self, path: Path):
         self.path = path
-        # WAL + busy_timeout: several agents may share the project db; a reader
-        # no longer fails with "database is locked" while another writes.
+        # §13.2: WAL needs shared memory and must not be used on network
+        # filesystems — fall back to the rollback journal there (one writer at a
+        # time; busy_timeout still serializes them).
+        self.network_fs = on_network_fs(path)
+        journal_mode = "DELETE" if self.network_fs else "WAL"
+        # busy_timeout: several agents may share the project db; a reader no
+        # longer fails with "database is locked" while another writes.
         # R3/N1: isolation_level=None (autocommit) — write transactions are
         # explicit (BEGIN IMMEDIATE in __enter__, one per command); non-context
         # callers keep legacy per-statement commits (read-only / one statement).
         self.conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute(f"PRAGMA journal_mode = {journal_mode}")
         self.conn.execute("PRAGMA busy_timeout = 5000")
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute(

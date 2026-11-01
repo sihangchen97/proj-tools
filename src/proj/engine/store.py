@@ -896,6 +896,8 @@ def info(cfg: ProjConfig) -> dict:
         views.append("plan 'Task List' sections")
     out = {
         "root": str(cfg.root),
+        "journal_mode": "DELETE (rollback journal — network filesystem)" if db.network_fs
+        else "WAL",
         "record_types": record_types,
         "changelog": {"entries": len(cl), "versions": versions,
                       "latest": versions[-1] if versions else None},
@@ -908,6 +910,9 @@ def info(cfg: ProjConfig) -> dict:
 
 def info_text(d: dict) -> str:
     lines = [f"Project: {d['root']} — managed by proj (.proj.sqlite)", ""]
+    if d.get("journal_mode", "WAL").startswith("DELETE"):
+        lines.append("Journal: DELETE (rollback journal — the project is on a network "
+                     "filesystem; avoid several machines writing it at once)")
     for rt, k in d["record_types"].items():
         lines.append(f"  {rt:<11} {k['count']:<3} record(s)  @ {k['dir']}/  [{k['numbered']}]")
         if k["statuses"]:
