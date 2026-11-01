@@ -296,7 +296,10 @@ def _head_lines(fm: dict) -> list[str]:
 
 
 def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
-                  registry: dict[str, RecordTypeSpec] | None = None) -> str:
+                  registry: dict[str, RecordTypeSpec] | None = None,
+                  task_rows: list[dict] | None = None) -> str:
+    # R7: bulk renderers pre-fetch the task rows once and pass them in; a
+    # single-record caller leaves it None (one db.all, fine).
     # tool-owned head: id marker comment (line 1) + blockquote metadata
     # (status/created/done rows + relation rows, id refs as links to the
     # target's full filename); the one-sentence summary is an italic line
@@ -364,7 +367,8 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     # is fetched ONCE per render_all.
     from proj.engine.views import render_tasks_block  # lazy: cycle
     task_spec = reg.get("task")
-    task_rows = db.all(task_spec) if task_spec else []
+    if task_rows is None and task_spec is not None:
+        task_rows = db.all(task_spec)
     block = render_tasks_block(
         task_rows, db, task_spec, reg,
         Path(db.path).parent / spec.dir,
@@ -396,8 +400,11 @@ def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db) -> bool:
         from proj.engine import items as items_mod  # lazy: store↔items cycle
         if items_mod.drift(db, spec, row, raw.get(spec.items.section.lower(), "")):
             return True
+    item_sec = spec.items.section.lower() if spec.items else None
     for s in spec.sections:
-        if s.kind == "text" and \
+        # R6: the items section is judged above via items_mod.drift — its raw
+        # list text never matches the stored section, so skip it there
+        if s.kind == "text" and s.name.lower() != item_sec and \
                 normalize(raw.get(s.name.lower(), "")) != stored.get(s.name.lower(), ""):
             return True
     return False
@@ -456,12 +463,16 @@ def render_all(cfg: ProjConfig) -> list[Path]:
     db = open_db(cfg)
     try:
         written: list[Path] = []
+        # R7: the Tasks block needs the task rows for EVERY record — fetch the
+        # task table ONCE here (otherwise render_record re-reads it per record,
+        # O(N^2) db.all) and hand it down.
+        task_rows = db.all(reg["task"]) if "task" in reg else []
         for spec in reg.values():
             d = cfg.root / spec.dir
             d.mkdir(parents=True, exist_ok=True)
             for row in db.all(spec):
                 p = file_path(cfg, spec, row)
-                text = render_record(spec, row, db, reg)
+                text = render_record(spec, row, db, reg, task_rows=task_rows)
                 if p.exists() and p.read_text(encoding="utf-8") == text:
                     continue  # unchanged (B1)
                 p.write_text(text, encoding="utf-8")

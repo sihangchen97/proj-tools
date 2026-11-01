@@ -301,15 +301,34 @@ def bundled_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "profiles"
 
 
+# R4: the profiles list pinned in the lock, parsed at most once per (mtime, size) —
+# computing a cache key must not re-parse the lock (it did ~1200x per e2e run).
+_LOCK_PROFILES: dict[tuple, list[str]] = {}
+
+
+def _lock_profiles(project_root: Path | None) -> list[str]:
+    """Profiles pinned in `.proj.lock` (no lock → []). Cached by lock mtime/size;
+    a lock rewrite changes the key, so a re-parse is always fresh."""
+    if project_root is None:
+        return []
+    path = project_root / ".proj.lock"
+    if not path.is_file():
+        return []
+    st = path.stat()
+    key = (st.st_mtime_ns, st.st_size)
+    prof = _LOCK_PROFILES.get(key)
+    if prof is None:
+        lock = _yaml_load(path.read_text(encoding="utf-8"))
+        prof = list(lock.get("profiles", []) if isinstance(lock, dict) else [])
+        _LOCK_PROFILES.clear()
+        _LOCK_PROFILES[key] = prof
+    return prof
+
+
 def default_profile_dirs(project_root: Path | None) -> list[str]:
     """Selected profile dirs: the profiles list pinned in the lock (always
     'default' first), or ['default'] before init."""
-    lock = None
-    if project_root is not None:
-        path = project_root / ".proj.lock"
-        if path.is_file():
-            lock = _yaml_load(path.read_text(encoding="utf-8"))
-    pinned = list(lock.get("profiles", []) if isinstance(lock, dict) else [])
+    pinned = list(_lock_profiles(project_root))
     if "default" not in pinned:
         pinned.insert(0, "default")
     return pinned

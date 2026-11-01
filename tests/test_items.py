@@ -611,3 +611,13 @@ def test_adopt_parses_items_as_new(proj):
     rows = db_items(proj, "DEB-0001")
     assert [i["state"] for i in rows] == ["todo", "done"]
     assert [i["no"] for i in rows] == ["001", "002"]
+
+
+def test_md_drifts_false_after_sync_for_item_records(proj):
+    """R6: an item-bearing record is NOT flagged as drifted right after a sync —
+    the items section is judged via items.drift, not as a plain text section."""
+    row, _ = taskmod.new(proj, "R6")
+    ops.add(proj, row["id"], "step one")
+    ops.check(proj, f"{row['id']}#001")
+    rec.sync(proj)
+    assert rec.md_drift(proj) == [], "post-sync record must not be flagged drifted"

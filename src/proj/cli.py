@@ -34,7 +34,7 @@ from typer.main import get_command as _to_click_command
 from proj import scaffold
 from proj.check import check as run_checks
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
-from proj.core.templates import resolve_record_type
+from proj.core.templates import _registry_key, resolve_record_type
 from proj.engine import item_ops, present
 from proj.engine import store as rec
 from proj.engine.record import record_for
@@ -65,6 +65,10 @@ def _resolve_type(name: str) -> str | None:
         return None
 
 
+# the generated `proj <type>` sub-groups, keyed by (root, canonical, registry key)
+_GROUP_CACHE: dict[tuple, object] = {}
+
+
 class _DynamicGroup(TyperGroup):
     """Top-level group that resolves `proj <record_type> …` on the fly.
 
@@ -80,9 +84,20 @@ class _DynamicGroup(TyperGroup):
         if cmd is not None:
             return cmd
         canonical = _resolve_type(name)
-        if canonical is not None:
-            return _build_record_group(canonical)
-        return None
+        if canonical is None:
+            return None
+        # R4 顺带: typer rebuilds the whole sub-group on EVERY command (each
+        # build re-resolves the root + registry and re-decorates new/ls/show +
+        # every verb). The group depends only on (root, canonical, registry key)
+        # and its command bodies read _ROOT fresh at run time — cache and reuse.
+        root = find_root(_ROOT["root"], strict=False)
+        key = (root, canonical, _registry_key(root, None))
+        cached = _GROUP_CACHE.get(key)
+        if cached is None:
+            cached = _build_record_group(canonical)
+            _GROUP_CACHE.clear()
+            _GROUP_CACHE[key] = cached
+        return cached
 
 
 # non-record_type sub-apps (changelog + hooks are not record_type verbs)
@@ -572,7 +587,8 @@ def cl_list():
 #
 # ITEM is the per-record item ref `ID#nnn` (e.g. T-000001#002, zero-padded to 3 digits);
 # `#` needs no quoting in zsh. The engine (engine/items.py) validates every ref, the
-# item's type/number, unsynced md edits, closed-record re-open and the due date; on
+# item's type/number (unsynced md edits are auto-ingested first, A1), the closed-record
+# re-open and the due date; on
 # success it re-renders and returns the record's fresh item list, which we echo verbatim.
 
 @item_app.command("ls")

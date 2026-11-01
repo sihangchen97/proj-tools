@@ -3,6 +3,7 @@ derived TASKLIST (no T-000000, no registration), Tasks-block D11 checks."""
 import pytest
 
 from proj import check as checkmod
+from proj.core import db as dbmod
 from proj.engine import store as rec
 from proj.engine.record import record_for
 from proj.record_types import task as taskmod
@@ -357,3 +358,27 @@ def test_logs_limit_env(proj, monkeypatch):
     text = p.read_text()
     assert "event 7`" in text and "event 3`" in text
     assert "event 2`" not in text
+
+
+def test_render_all_fetches_task_table_once(proj, monkeypatch):
+    """R7: a bulk render reads the TASK table a constant number of times for ALL
+    records — not once per rendered record (that was O(N^2): 300 records -> 326
+    reads of the task table). The bound is independent of record count."""
+    reg = rec.load_registry(proj.root)
+    for i in range(300):
+        rec.new_record(proj, "task", f"Task {i}")
+    task_reads = 0
+
+    real_all = dbmod.Db.all
+
+    def counting(self, spec):
+        nonlocal task_reads
+        if spec.record_type == "task":
+            task_reads += 1
+        return real_all(self, spec)
+
+    monkeypatch.setattr(dbmod.Db, "all", counting)
+    rec.render_all(proj)
+    # render_all fetches the task rows once (for every record's Tasks block);
+    # the TASKLIST view reads it again — a small CONSTANT, never ~N reads.
+    assert task_reads <= 3, f"task table read {task_reads}x (expected constant, not per-record)"
