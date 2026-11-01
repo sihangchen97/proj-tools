@@ -21,14 +21,15 @@ pixi install                      # dev env
 pixi run test                     # pytest -q (dev env)
 pixi run -e dev pytest tests/test_task_plan.py::test_name -q   # single test
 pixi run lint                     # ruff check src tests
-pixi run e2e                      # bash scripts/e2e.sh: full CLI lifecycle in .testproj/ (rebuilt each run)
-bash scripts/init-demo.sh         # browseable demo project in .testproj/
+pixi run e2e                      # scripts/e2e.py: the full usage scenario, in-process (~5 s); runs in a
+                                  # local tmp dir, then copies the result to .testproj/ (browseable demo)
+pixi run e2e-full                 # same scenario, every command as a real `proj` subprocess (~25 s)
 pixi run proj --help
 hatch build                       # wheel (profiles/ is force-included as proj/profiles)
 ```
 
 After changing any render/template logic, run both `pixi run test` and `pixi run e2e`. New e2e
-checks go into `scripts/e2e.sh` using `expect_ok` / `expect_fail`. Pytest tests that need a full
+checks go into the matching chapter (`ch0`…) of `scripts/e2e.py` using `expect_ok` / `expect_fail`. Pytest tests that need a full
 project use the `proj` fixture in `tests/conftest.py` (inits `default` + `quality` profiles in
 `tmp_path`) — don't hardcode the repo root or `chdir` into it.
 

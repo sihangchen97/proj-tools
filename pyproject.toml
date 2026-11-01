@@ -64,5 +64,7 @@ dev = ["dev"]
 [tool.pixi.tasks]
 test = { cmd = "pytest -q", default-environment = "dev" }
 lint = { cmd = "ruff check src tests", default-environment = "dev" }
-# e2e 冒烟：在 .testproj 沙盒里跑完整 CLI 生命周期（每次重建沙盒）
-e2e = { cmd = "bash scripts/e2e.sh", default-environment = "dev" }
+# e2e 情境（PCB 缺陷检测模型 v1）：在本地临时目录里跑，结束后拷回 .testproj/ 供浏览
+e2e = { cmd = "python scripts/e2e.py", default-environment = "dev" }
+# 同一套情境，每条命令启动真实的 proj 子进程（覆盖真实入口，较慢）
+e2e-full = { cmd = "python scripts/e2e.py", env = { PROJ_E2E_SUBPROCESS = "1" }, default-environment = "dev" }
