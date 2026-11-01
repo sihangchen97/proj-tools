@@ -53,6 +53,7 @@ proj-tools = { path = ".", editable = true }
 
 [tool.pixi.feature.dev.dependencies]
 pytest = "*"
+pytest-xdist = "*"
 ruff = "*"
 
 [tool.pixi.feature.dev.pypi-dependencies]
@@ -62,7 +63,7 @@ build = "*"
 dev = ["dev"]
 
 [tool.pixi.tasks]
-test = { cmd = "pytest -q", default-environment = "dev" }
+test = { cmd = "pytest -q -n auto", default-environment = "dev" }
 lint = { cmd = "ruff check src tests", default-environment = "dev" }
 # e2e 情境（PCB 缺陷检测模型 v1）：在本地临时目录里跑，结束后拷回 .testproj/ 供浏览
 e2e = { cmd = "python scripts/e2e.py", default-environment = "dev" }

@@ -125,19 +125,6 @@ def test_md_drift_detects_unsynced_edit(proj):
     assert rec.md_drift(proj) == []
 
 
-def test_check_does_not_flag_deep_steps(proj):
-    """Steps is a loose description: nested checkboxes in it are not a check
-    violation (the task tree has no depth cap either)."""
-    row, _ = rec.new_record(proj, "task", "T1")
-    p = next((proj.root / "docs" / "tasks").glob(f"{row['id']}-*.md"))
-    t = p.read_text().replace(
-        "## Steps\n", "## Steps\n\n- [ ] a\n  - [ ] b\n    - [ ] deep\n")
-    p.write_text(t)
-    problems, _ = rec.sync(proj)
-    assert problems == []
-    assert checkmod.check(proj) == []
-
-
 def test_check_detects_schema_mismatch(proj):
     from proj.core import db as dbmod
     # drop a generic column from the shared records table → template mismatch

@@ -64,15 +64,12 @@ def test_mcp_update_record(proj):
     assert "[Added] ✅ ok" in mcp.proj_show(did, history=True, root=root)
 
 
-def test_mcp_record_type_code_and_case(proj):
+def test_mcp_record_type_passthrough(proj):
+    """The record_type argument is passed through verbatim (case-insensitive
+    code resolution itself is covered by test_cli_root)."""
     root = str(proj.root)
-    # code (case-insensitive) resolves to the canonical record_type
-    out = mcp.proj_new("DEC", "Via code", root=root)
-    assert "Created docs/decisions/DEC-" in out and "error" not in out
-    out = mcp.proj_new("T", "Via code", root=root)
-    assert "Created docs/tasks/T-" in out and "error" not in out
-    assert mcp.proj_list("debt", root=root)
-    # an explicit record_type still works and must MATCH the id's type (D2)
+    assert mcp.proj_ls(record_type="debt", root=root)
+    # an explicit record_type must MATCH the id's type (D2)
     assert "DEC-" in mcp.proj_show("DEC-0001", record_type="DEC", root=root)
     assert "error" in mcp.proj_show("DEC-0001", record_type="task", root=root)
 

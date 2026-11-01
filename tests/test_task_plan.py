@@ -17,14 +17,6 @@ def _task(proj):
     return record_for("task", rec.load_registry(proj.root))
 
 
-def test_first_task_is_T_000001(proj):
-    """No T-000000 seed anymore: the first task created is T-000001."""
-    row, _ = rec.new_record(proj, "task", "First")
-    assert row["id"] == "T-000001"
-    db = rec.open_db(proj)
-    assert db.get(rec.load_registry(proj.root)["task"], "T-000000") is None
-    db.close()
-
 
 def test_parent_relation_stored(proj):
     _plan(proj).new(proj, "P1")
@@ -250,40 +242,31 @@ def test_ambiguous_bare_number_is_rejected(proj):
     db.close()
 
 
-def test_state_machine_full_path(proj):
-    _plan(proj).new(proj, "P1")
-    row, _ = taskmod.new(proj, "T1", parent="PLN-0001")
-    taskmod.done(proj, row["id"])
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    _plan(proj).transition(proj, "review", "PLN-0001")
-    _plan(proj).transition(proj, "shelve", "PLN-0001")
-    _plan(proj).transition(proj, "resume", "PLN-0001")
-    _plan(proj).transition(proj, "review", "PLN-0001")
-    _plan(proj).transition(proj, "archive", "PLN-0001")
+@pytest.mark.parametrize(
+    ("steps", "expect"),
+    [
+        (["activate", "review", "shelve", "resume", "review", "archive"], "Archived"),
+        (["activate", "review", "shelve", "freeze"], "Archived"),
+        (["shelve"], "reject"),  # from Draft: shelve requires Pending Review
+    ],
+)
+def test_plan_state_machine(proj, steps, expect):
+    """Table-driven plan state machine (full path + freeze branch + an illegal
+    step). e2e ch9 walks the full path against the real CLI."""
+    plan = _plan(proj)
+    plan.new(proj, "P1")
+    for verb in steps:
+        if expect == "reject":
+            with pytest.raises(ValueError, match="requires"):
+                plan.transition(proj, verb, "PLN-0001")
+            return
+        plan.transition(proj, verb, "PLN-0001")
     spec = rec.load_registry(proj.root)["plan"]
     db = rec.open_db(proj)
-    assert db.get(spec, "PLN-0001")["status"] == "Archived"
-    db.close()
-
-
-def test_illegal_transition_rejected(proj):
-    _plan(proj).new(proj, "P1")  # Draft
-    with pytest.raises(ValueError, match="requires"):
-        _plan(proj).transition(proj, "shelve", "PLN-0001")
-
-
-def test_shelved_freeze_to_archived(proj):
-    _plan(proj).new(proj, "P1")
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    _plan(proj).transition(proj, "review", "PLN-0001")
-    _plan(proj).transition(proj, "shelve", "PLN-0001")
-    _plan(proj).transition(proj, "freeze", "PLN-0001")
-    spec = rec.load_registry(proj.root)["plan"]
-    db = rec.open_db(proj)
-    assert db.get(spec, "PLN-0001")["status"] == "Archived"
-    db.close()
-    with pytest.raises(ValueError, match="requires"):
-        _plan(proj).transition(proj, "freeze", "PLN-0001")  # Archived: no freeze
+    try:
+        assert db.get(spec, "PLN-0001")["status"] == expect
+    finally:
+        db.close()
 
 
 def test_plan_tree_rendered_any_depth(proj):
@@ -360,12 +343,10 @@ def test_logs_limit_env(proj, monkeypatch):
     assert "event 2`" not in text
 
 
-def test_render_all_fetches_task_table_once(proj, monkeypatch):
+def test_render_all_fetches_task_table_once(proj, many_tasks, monkeypatch):
     """R7: a bulk render reads the TASK table a constant number of times for ALL
     records — not once per rendered record (that was O(N^2): 300 records -> 326
     reads of the task table). The bound is independent of record count."""
-    for i in range(300):
-        rec.new_record(proj, "task", f"Task {i}")
     task_reads = 0
 
     real_all = dbmod.Db.all

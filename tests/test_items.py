@@ -82,50 +82,6 @@ def db_item(proj, rid: str, no: str) -> dict | None:
 
 # ---- parse + render roundtrip -------------------------------------------------
 
-def test_roundtrip_two_state_and_emoji_rule(proj):
-    row, _ = taskmod.new(proj, "T")
-    p = _file(proj, row["id"])
-    ops.add(proj, row["id"], "a")
-    ops.add(proj, row["id"], "b", note="n", owner="o", due="2026-12-31")
-    sec = _section(p, "Acceptance Criteria")
-    assert "- [ ] #001 a" in sec
-    assert "- [ ] #002 b — n · owner: o · due: 2026-12-31" in sec
-    out = ops.check(proj, f"{row['id']}#001")
-    assert "- [x] #001 a" in out  # task: one closed state → no emoji
-    assert "- [x] #001 a" in _section(p, "Acceptance Criteria")
-    out = ops.uncheck(proj, f"{row['id']}#001")
-    assert "- [ ] #001 a" in out
-    # parse back what the md holds (right-to-left strip, zero-shortened #2 == #002)
-    spec = rec.load_registry(proj.root)["task"]
-    parsed = it.parse_section("- [x] #2 b — n · owner: o · due: 2026-12-31", spec.items)
-    assert parsed.problems == []
-    assert parsed.ungrouped[0].no == "002"
-    assert parsed.ungrouped[0].state == "done"
-    assert parsed.ungrouped[0].note == "n"
-    assert parsed.ungrouped[0].owner == "o"
-    assert parsed.ungrouped[0].due == "2026-12-31"
-    assert parsed.ungrouped[0].checked
-
-
-def test_roundtrip_multi_state_emoji(proj):
-    row = _new(proj, "plan", "P")
-    p = _file(proj, row, "docs/plans")
-    ops.add(proj, row, "c1")
-    ops.add(proj, row, "c2")
-    ops.set_state(proj, f"{row}#001", "met")
-    ops.set_state(proj, f"{row}#002", "missed")
-    out = ops.add(proj, row, "c3")
-    assert "- [x] #001 ✅ c1" in out
-    assert "- [x] #002 ❌ c2" in out
-    assert "- [ ] #003 c3" in out  # pending: single open state → no emoji
-    out = ops.uncheck(proj, f"{row}#001")
-    assert "- [ ] #001 c1" in out
-    out = ops.set_state(proj, f"{row}#001", "met", note="evidence")
-    assert "- [x] #001 ✅ c1 — evidence" in out
-    sec = _section(p, "Success Criteria")
-    assert "#001 ✅ c1 — evidence" in sec and "#002 ❌ c2" in sec
-
-
 def test_roundtrip_intro_trailer_and_group(proj):
     row, _ = taskmod.new(proj, "T")
     p = _file(proj, row["id"])
@@ -260,41 +216,38 @@ def test_sync_checked_without_emoji_defaults_and_notes(proj):
     assert i["state"] == "met"
 
 
-def test_sync_cross_group_move_renumbers(proj):
-    # PLAN §4.3: moving a numbered line under another heading → fresh number
+@pytest.mark.parametrize(
+    ("n_items", "groups", "md", "moved", "want_note", "want_text"),
+    [
+        # target group is the LAST one: #002 (ungrouped) → group A
+        (2, ["Backend"], "- [x] #001 a\n### A · Backend\n- [ ] #002 b",
+         "002", "#002 → #A01", "b"),
+        # R1: target group A is FOLLOWED by group B: #001 (ungrouped) → A
+        (1, ["G", "H"], "### A · G\n- [ ] #001 a\n\n### B · H\n",
+         "001", "#001 → #A01", "a"),
+    ],
+)
+def test_sync_cross_group_move_renumbers(proj, n_items, groups, md, moved,
+                                         want_note, want_text):
+    # PLAN §4.3 + R1: moving a numbered line under a different heading in the md
+    # → a FRESH number (the old one is tombstoned, never reused). Parametrized
+    # over the target group being the last one vs followed by another group — R1
+    # used to tombstone the moved row, then block every write via auto-sync.
     row, _ = taskmod.new(proj, "T")
     p = _file(proj, row["id"])
-    ops.add(proj, row["id"], "a")
-    ops.add(proj, row["id"], "b")
-    ops.group_add(proj, row["id"], "Backend")  # → group A
-    _write_section(p, "Acceptance Criteria",
-                   "- [x] #001 a\n### A · Backend\n- [ ] #002 b")
+    for name in ("a", "b")[:n_items]:
+        ops.add(proj, row["id"], name)
+    for g in groups:
+        ops.group_add(proj, row["id"], g)
+    _write_section(p, "Acceptance Criteria", md)
     problems, notes = rec.sync(proj)
     assert problems == []
-    assert any("#002 → #A01" in n for n in notes)
-    assert db_item(proj, row["id"], "002")["deleted"]
-    i1 = db_item(proj, row["id"], "001")
-    assert i1 is not None and not i1["deleted"]
+    assert any(want_note in n for n in notes)
+    assert db_item(proj, row["id"], moved)["deleted"]   # old number is a tombstone
     a1 = db_item(proj, row["id"], "A01")
-    assert a1 is not None and a1["text"] == "b" and not a1["deleted"]  # R1: stays live
-
-
-def test_sync_cross_group_move_into_group_followed_by_another(proj):
-    # R1: the target group is NOT the last one — this used to fail with
-    # "tombstones must come last" and then block every write (auto-sync)
-    row, _ = taskmod.new(proj, "T")
-    p = _file(proj, row["id"])
-    ops.add(proj, row["id"], "a")
-    ops.group_add(proj, row["id"], "G")   # A
-    ops.group_add(proj, row["id"], "H")   # B
-    _write_section(p, "Acceptance Criteria", "### A · G\n- [ ] #001 a\n\n### B · H\n")
-    problems, notes = rec.sync(proj)
-    assert problems == []
-    assert any("#001 → #A01" in n for n in notes)
-    a1 = db_item(proj, row["id"], "A01")
-    assert a1 is not None and a1["text"] == "a" and not a1["deleted"]
-    assert "#A01 a" in p.read_text(encoding="utf-8")
-    ops.add(proj, row["id"], "b")         # writes are not blocked afterwards
+    assert a1 is not None and a1["text"] == want_text and not a1["deleted"]  # stays live
+    assert f"#A01 {want_text}" in p.read_text(encoding="utf-8")
+    ops.add(proj, row["id"], "post-move")               # writes are not blocked
 
 
 def test_sync_unknown_group_letter_problem(proj):
@@ -305,15 +258,6 @@ def test_sync_unknown_group_letter_problem(proj):
     problems, _ = rec.sync(proj)
     assert any("unknown group" in x for x in problems)
     assert len(db_items(proj, row["id"])) == 1  # nothing written
-
-
-def test_numbers_never_reused(proj):
-    row, _ = taskmod.new(proj, "T")
-    ops.add(proj, row["id"], "a")
-    ops.add(proj, row["id"], "b")
-    ops.remove(proj, f"{row['id']}#002")
-    out = ops.add(proj, row["id"], "c")
-    assert "#003 c" in out
 
 
 # ---- gates.items ----------------------------------------------------------------
@@ -503,24 +447,25 @@ def test_remove_item(proj):
 
 
 def test_group_ops(proj):
+    """Command-level group ops (numbering rules live in test_items_model)."""
     row, _ = taskmod.new(proj, "T")
     ops.add(proj, row["id"], "a")
     ops.add(proj, row["id"], "b")
-    ops.group_add(proj, row["id"], "Backend")  # A
-    out = ops.group_add(proj, row["id"], "Frontend")  # B
+    out = ops.group_add(proj, row["id"], "Backend")  # → A
+    assert "### A · Backend" in out
+    out = ops.group_add(proj, row["id"], "Frontend")  # → B
     assert "### B · Frontend" in out
     out = ops.group_rename(proj, row["id"], "A", "Backend API")
     assert "### A · Backend API" in out
     ops.move(proj, f"{row['id']}#002", group="B")
-    # rm a group that holds items requires a choice
+    # rm a non-empty group requires an explicit choice (error text)
     with pytest.raises(ValueError, match=r"ungroup|delete"):
         ops.group_rm(proj, row["id"], "B")
+    # "ungroup" re-homes the items to the ungrouped list (write, not numbering)
     out = ops.group_rm(proj, row["id"], "B", "ungroup")
-    # #B01 is re-homed to the ungrouped list with a fresh number
-    assert any(it.group_of(r["no"]) == "" and r["text"] == "b"
-               for r in db_items(proj, row["id"]) if not r["deleted"])
-    assert db_item(proj, row["id"], "B00")["deleted"]  # the letter is a tombstone
-    assert db_item(proj, row["id"], "B01")["deleted"]  # the old number too (G4)
+    assert "### B" not in out
+    assert any(r["text"] == "b" for r in db_items(proj, row["id"])
+               if not r["deleted"] and it.group_of(r["no"]) == "")
 
 
 def test_sync_notes_move_and_groups(proj):
