@@ -72,10 +72,6 @@ proj <rt> update <ID> [-t <TITLE>] [-s <SUMMARY>] [-m <MESSAGE>]
 ## task
 
 ```
-proj task new [<TITLE>] [--supersede <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary -s <SUMMARY>] [--yes -y]
-proj task ls [--status <STATUS>]
-proj task show <ID> [--history]
-proj task update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj task move <ID> [--parent <PARENT>] [--detach]
 proj task start <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj task done <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -107,10 +103,6 @@ proj task fail <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m 
 ## debt
 
 ```
-proj debt new [<TITLE>] [--supersede <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary -s <SUMMARY>] [--yes -y]
-proj debt ls [--status <STATUS>]
-proj debt show <ID> [--history]
-proj debt update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj debt draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj debt open <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj debt progress <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -121,10 +113,6 @@ proj debt waive <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m
 ## decision
 
 ```
-proj decision new [<TITLE>] [--supersede <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary -s <SUMMARY>] [--yes -y]
-proj decision ls [--status <STATUS>]
-proj decision show <ID> [--history]
-proj decision update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj decision draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj decision propose <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj decision accept <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -141,10 +129,6 @@ proj decision deprecate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--me
 ## experiment
 
 ```
-proj experiment new [<TITLE>] [--supersede <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary -s <SUMMARY>] [--yes -y]
-proj experiment ls [--status <STATUS>]
-proj experiment show <ID> [--history]
-proj experiment update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj experiment draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj experiment propose <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj experiment run <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -155,10 +139,6 @@ proj experiment abandon <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--me
 ## incident
 
 ```
-proj incident new [<TITLE>] [--supersede <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary -s <SUMMARY>] [--yes -y]
-proj incident ls [--status <STATUS>]
-proj incident show <ID> [--history]
-proj incident update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj incident draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj incident open <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj incident mitigate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -169,10 +149,6 @@ proj incident reopen <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--messa
 ## plan
 
 ```
-proj plan new [<TITLE>] [--supersede <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary -s <SUMMARY>] [--yes -y]
-proj plan ls [--status <STATUS>]
-proj plan show <ID> [--history]
-proj plan update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj plan activate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj plan resume <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj plan review <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]

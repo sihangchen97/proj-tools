@@ -75,11 +75,15 @@ def _cli_sections() -> list[tuple[str, str]]:
         sections.append(("生命周期（顶层命令）",
                          "\n".join(_cmd_line(c) for c in top)))
     sections.append(("所有 record 共用的命令", _COMMON_CMD_BLOCK))
-    # dynamic record_type groups: new / list / show + that type's template verbs
+    # dynamic record_type groups: the type-specific verbs only (new/ls/show/update are the
+    # shared commands shown once above — do not repeat them here)
     for rtype in rec.load_registry(None):
         grp = cli_mod._build_record_group(rtype)
-        sections.append((rtype, "\n".join(_cmd_line(c, prefix=f"proj {rtype}")
-                                           for c in grp.commands.values() if not c.hidden)))
+        lines = [_cmd_line(c, prefix=f"proj {rtype}")
+                 for c in grp.commands.values()
+                 if not c.hidden and c.name not in _COMMON_CMD_NAMES]
+        if lines:
+            sections.append((rtype, "\n".join(lines)))
     # static sub-groups (changelog / hooks are not record_types)
     for g in app.registered_groups:
         cmd = click_group.commands[g.name]
@@ -89,6 +93,9 @@ def _cli_sections() -> list[tuple[str, str]]:
 
 
 # Hand-written group notes, keyed by heading — the code blocks are the source of truth.
+# the record_type-specific commands are the type verbs; these are the shared ones
+_COMMON_CMD_NAMES = {"new", "ls", "list", "show", "update"}
+
 _COMMON_CMD_BLOCK = """\
 proj <rt> new [<TITLE>] [-s <SUMMARY>] [--supersede <ID…>] [--parent <PARENT>] \
     [-r <RELATED…>] [--commit <COMMIT>] [-y]
