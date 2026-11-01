@@ -48,8 +48,8 @@ def load_project_env(root: Path) -> None:
     env = root / ".env"
     if not env.is_file():
         return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    for raw in env.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")

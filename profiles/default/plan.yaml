@@ -2,8 +2,26 @@ record_type: plan
 code: PLN
 dir: docs/plans
 numbered: 4
-contain_task: true        # tasks attach (parent -> this): head task tree, subtask row
+# 无 contain_task：任务挂接靠 relations 的 parent 边（proj task new --parent），
+# 有子任务就在 head 下渲染任务树（任意深度、全展开）；全局 TASKLIST.md 的成员
+# 自动推导：plan 离开 Draft 且名下有未结束的后代任务时就出现，无需注册
 # 无 features:（supersede 是纯 relation，所有类型通用）
+# 门禁（由 Record.validate_transition 统一实现）：
+# gates.tasks — 进入 Pending Review / Shelved / Archived 前，整棵后代任务树必须
+# 处于终止状态（Done/Failed）；Shelved/Archived 是 done 状态（done 即终止）
+# gates.items — 进入 Archived 前，Success Criteria 每条都必须已评估（met/missed）；
+# Shelved（暂停）故意不设 item 门禁——暂停不要求清单处理完
+gates:
+  tasks: [Pending Review, Shelved, Archived]
+  items: [Archived]
+# items: Success Criteria 节的结构化清单；评审时逐条 set met/missed 并留证据
+items:
+  section: Success Criteria
+  noun: criterion
+  states:
+    - {name: pending}
+    - {name: met, emoji: ✅, closed: true}
+    - {name: missed, emoji: ❌, closed: true}
 # 状态机 verbs（from 是具体状态，非 Any）：每个状态都有进入它的动词
 verbs:
   activate: {from: Draft, to: Active}
@@ -14,8 +32,7 @@ verbs:
   freeze: {from: Shelved, to: Archived}
 # status 按生命周期顺序排列：Draft → Active → Pending Review → Shelved | Archived
 # （Shelved/Archived 是并列的终态；Shelved 可 resume 回 Active 或 freeze 冻结成 Archived）
-# 注意：Shelved/Archived 是 done 状态，进入时正文所有 `- [ ]` 必须已勾 —
-# 所以 plan 正文一律用普通列表，工作由子 task 承载
+# done: true 的状态进入即算"已完成"（记录 created/done 的首个日期）
 status-allowed:
   - {name: Draft, emoji: ✏️}               # 起草中，任务暂不入主 TASKLIST
   - {name: Active, emoji: 🚧}              # 执行中，任务提升到主 TASKLIST
@@ -41,15 +58,17 @@ sections:
   - name: Success Criteria
     hint: >-
       Measurable conditions that decide at review time whether the goal was
-      met, as plain bullets with a number or a yes/no test (e.g. "- error rate
-      < 0.1% for 7 days", "- 3 pilot users onboarded"). Do NOT use checkboxes:
-      unticked boxes block shelve/archive. Evaluate each one in Review.
+      met, one per line as an item: "- [ ] error rate < 0.1% for 7 days",
+      "- [ ] 3 pilot users onboarded" (the number is added by the tool).
+      States: `[ ]` pending, `[x] ✅` met, `[x] ❌` missed. At review,
+      evaluate each one with `proj item set PLN-xxxx#n met|missed --note
+      <evidence>`; `proj plan archive` is refused while any is still pending.
   - name: Milestones
     hint: >-
       The intermediate checkpoints in order, as plain bullets: `- <date or
       week>: <observable result> (T-xxxxxx, T-yyyyyy)` (e.g. "- W2: schema
       migrated in staging (T-000004)"). A milestone is a checkpoint, not work:
-      the work behind it lives in tasks (see Task List), referenced by id.
+      the work behind it lives in tasks (see the Tasks block), referenced by id.
       Mark slips inline ("(slipped to W4: reason)") rather than deleting.
   - name: Risks & Dependencies
     hint: >-
@@ -59,8 +78,8 @@ sections:
       the date each is needed by. Revisit when the plan is resumed.
   - name: Review
     hint: >-
-      Filled at `proj plan review`: for each Success Criterion — met / not met
-      with evidence (numbers, links). Then a short retrospective: what went
-      well, what did not, what to change next time, and the verdict (archive =
-      done, shelve = pause with reason and resume condition). Turn lasting
-      lessons into decisions or tasks.
+      Filled at `proj plan review`: the retrospective and verdict — what went
+      well, what did not, what to change next time, and the outcome (archive =
+      done, shelve = pause with reason and resume condition); each Success
+      Criterion's result (met / missed + evidence) lives in the Success
+      Criteria list. Turn lasting lessons into decisions or tasks.

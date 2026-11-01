@@ -10,8 +10,26 @@ verbs:
   progress: {from: Any, to: In Progress}
   repay: {from: Any, to: Repaid}
   waive: {from: Any, to: Waived}
+# 门禁（由 Record.validate_transition 统一实现）：
+# gates.tasks — 进入 Repaid 前，名下所有后代任务必须已终止（Done/Failed）
+# gates.items — 进入 Repaid 前，Repayment Plan 里每步都必须已处理（done/skipped）
+# Waived（长期接受）故意不设门禁——放弃不要求任务树和清单处理完
+gates:
+  tasks: [Repaid]
+  items: [Repaid]
+# items: Repayment Plan 节的结构化步骤清单；第一个 closed 步骤出现时
+# Draft/Open 自动升到 In Progress（promote）
+items:
+  section: Repayment Plan
+  noun: step
+  states:
+    - {name: todo}
+    - {name: done, emoji: ✅, closed: true}
+    - {name: skipped, emoji: ⏭️, closed: true}
+  fields: [owner, due]
+  promote: {from: [Draft, Open], to: In Progress}
 # status 按时间顺序排列：Draft → Open → In Progress → Repaid | Waived
-# 注意：Repaid/Waived 是 done 状态，进入时正文所有 `- [ ]` 必须已勾（Repayment Plan 的步骤）
+# Repaid/Waived 是 done 状态（done 即终止，不再阻塞任何门禁）
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Open, emoji: ⚠️}            # 已记录，未动
@@ -48,8 +66,14 @@ sections:
   - name: Repayment Plan
     hint: >-
       First line: `Effort: S (< 1 day) | M (1-5 days) | L (> 1 week)`. Then how
-      to pay it back, as a checkbox list of steps (including tests and
-      removing the TODO marker); `proj debt repay` is refused until every box
-      is ticked. For L-sized debt create real tasks instead
-      (proj task new ... --related DEB-xxxx) and list their ids here as plain
-      text. If you decide to live with it (`proj debt waive`), write why here.
+      to pay it back, one step per line as an item (including tests and removing
+      the TODO marker): "- [ ] add the test", "- [ ] remove the TODO marker"
+      (the number is added by the tool). States: `[ ]` todo, `[x] ✅` done,
+      `[x] ⏭️` skipped (a skipped step must say why in a note); optional
+      `--owner` / `--due` per step. Manage with `proj item add DEB-xxxx "<step>"`,
+      `proj item check DEB-xxxx#n`, `proj item set DEB-xxxx#n skipped --note why`.
+      `proj debt repay` is refused while any descendant task is not finished
+      (Done/Failed) or any step is still todo. For L-sized debt create real
+      tasks instead (proj task new ... --parent DEB-xxxx) and list their ids
+      here in the intro. If you decide to live with it (`proj debt waive`),
+      write why here.

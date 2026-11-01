@@ -1,13 +1,19 @@
-"""Typer CLI for proj (v3: SQLite core, YAML templates, md input channel).
+"""Typer CLI for proj (SQLite core, YAML templates, md input channel).
 
 Command surface:
     proj                          # bare = project status (or the only-`init` hint)
     proj <lifecycle>              # init / sync / adopt / update / render / check /
                                   # info / docs / changelog … / hooks …
+    proj item ls|add|set|check|… # record checklists (the `items:` block of a type)
     proj <record_type> new …      # dynamic, generated per record_type at runtime
     proj <record_type> list …
     proj <record_type> show <ID>
     proj <record_type> <verb> <ID>   # verbs come from the record_type's template
+
+IDs are `{code}-{digits}` (7 chars, e.g. DEC-0001, T-000001); the suffix is
+DIGITS ONLY — there is no letter overflow (once the all-digit space is used up,
+new ids raise). Any zero-shortened form resolves: "1", "0001", "T-1" and
+"DEC-0001" all hit the same record.
 
 Record_types are discovered from the template registry (only known once a project
 exists), so `proj <record_type>` subcommands are built on demand by
@@ -29,6 +35,7 @@ from proj.check import check as run_checks
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
 from proj.core.db import show_date
 from proj.core.templates import resolve_record_type
+from proj.engine import items as items_mod
 from proj.engine import store as rec
 from proj.engine.record import record_for
 from proj.hooks import install as hooks_install
@@ -81,6 +88,7 @@ class _DynamicGroup(TyperGroup):
 # non-record_type sub-apps (changelog + hooks are not record_type verbs)
 cl_app = typer.Typer(help="CHANGELOG.md maintenance.")
 hooks_app = typer.Typer(help="Git hooks.")
+item_app = typer.Typer(help="Record items (checklists): ls / add / set / check / …")
 
 # no no_args_is_help: a bare `proj` shows project status (handled in the callback).
 # token_normalize_func: command names (record_types AND subcommands/verbs) are
@@ -93,7 +101,7 @@ app = typer.Typer(
          "+ lifecycle commands (init/sync/…).")
 app.add_typer(cl_app, name="changelog")
 app.add_typer(hooks_app, name="hooks")
-
+app.add_typer(item_app, name="item")
 
 @app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context,
@@ -214,6 +222,12 @@ def _dyn_show(name: str, id_: str, history: bool) -> None:
         parent = db.parent_of(row["id"])
         if parent:
             typer.echo(f"parent: {parent['source']}")
+    if spec.items is not None:
+        rendered = items_mod.section_text(db, spec, row)
+        if rendered:
+            typer.echo("")
+            typer.echo(f"{spec.items.section}:")
+            typer.echo(rendered)
     logs = db.logs(row["id"])
     db.close()
     if history:
@@ -223,28 +237,28 @@ def _dyn_show(name: str, id_: str, history: bool) -> None:
 
 
 def _dyn_verb(name: str, verb: str, id_: str, title: str | None, summary: str | None,
-              comment: str | None) -> None:
-    """Run a template verb (a state-machine step); -t/-s/-c also update it after."""
+              message: str | None) -> None:
+    """Run a template verb (a state-machine step); -t/-s/-m also update it after."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
     try:
         row = record_for(name, reg).transition(cfg, verb, id_)
-        if title is not None or summary is not None or comment:
+        if title is not None or summary is not None or message:
             row = rec.update_record(cfg, name, row["id"],
-                                    title=title, summary=summary, comment=comment)
+                                    title=title, summary=summary, message=message)
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"{name} {row['id']}: status → {row['status']}")
 
 
 def _dyn_update(name: str, id_: str, title: str | None, summary: str | None,
-                comment: str | None) -> None:
-    """Update a record's title / summary (-c also appends a changelog entry)."""
-    if title is None and summary is None and not comment:
-        _fail("nothing to update — pass -t TITLE / -s SUMMARY / -c COMMENT")
+                message: str | None) -> None:
+    """Update a record's title / summary (-m also appends a changelog entry)."""
+    if title is None and summary is None and not message:
+        _fail("nothing to update — pass -t TITLE / -s SUMMARY / -m MESSAGE")
     cfg = _cfg()
     try:
-        row = rec.update_record(cfg, name, id_, title=title, summary=summary, comment=comment)
+        row = rec.update_record(cfg, name, id_, title=title, summary=summary, message=message)
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"{name} {row['id']}: title → {row['title']}")
@@ -284,15 +298,34 @@ def _build_record_group(name: str):
                title: str | None = typer.Option(None, "--title", "-t", help="new title"),
                summary: str | None = typer.Option(
                    None, "--summary", "-s", help="new one-line summary"),
-               comment: str | None = typer.Option(None, "--comment", "-c",
-                                                  help="append a changelog entry")):
+               message: str | None = typer.Option(
+                   None, "--message", "-m",
+                   help="append a changelog entry ('Category: text')")):
         """Update a record's title / summary (+ optional changelog entry)."""
-        _dyn_update(name, id_, title, summary, comment)
+        _dyn_update(name, id_, title, summary, message)
 
     @sub.command()
-    def render(id: str | None = typer.Argument(None, help="record id (bare number or full); omitted = all of this type")):
+    def render(id: str | None = typer.Argument(
+            None, help="record id (bare number or full); omitted = all of this type")):
         """DB → md for this type (no md input)."""
         _render_type(_cfg(), name, id)
+
+    if name == "task":
+        @sub.command()
+        def move(id_: str = typer.Argument(..., help="task id to re-home"),
+                 parent: str | None = typer.Option(
+                     None, "--parent", help="new parent record id (any type)"),
+                 detach: bool = typer.Option(
+                     False, "--detach", help="remove the parent edge (→ Unparented)")):
+            """Move an existing task under a new parent (or detach it)."""
+            if bool(parent) == detach:
+                _fail("pass exactly one of --parent <ID> / --detach")
+            try:
+                row = record_for("task", rec.load_registry(_cfg().root)).move(
+                    _cfg(), id_, parent)
+            except ValueError as e:
+                _fail(str(e))
+            typer.echo(f"{row['id']}: parent → {parent or 'none (Unparented)'}")
 
     if spec is not None:
         for verb in spec.verbs:
@@ -303,10 +336,11 @@ def _build_record_group(name: str):
                                                         help="also set the title"),
                         summary: str | None = typer.Option(None, "--summary", "-s",
                                                            help="also set the summary"),
-                        comment: str | None = typer.Option(None, "--comment", "-c",
-                                                           help="also append a changelog entry")):
+                        message: str | None = typer.Option(
+                            None, "--message", "-m",
+                            help="also append a changelog entry ('Category: text')")):
                     """State-machine step (from the template verbs)."""
-                    _dyn_verb(name, v, id_, title, summary, comment)
+                    _dyn_verb(name, v, id_, title, summary, message)
             _make()
     return _to_click_command(sub)
 
@@ -485,6 +519,125 @@ def cl_list():
     cfg = _cfg()
     for version, d in cl.show_versions(cfg):
         typer.echo(f"{version}  {d}")
+
+
+# ---- items (record checklists) ----------------------------------------------------------
+#
+# ITEM is the per-record item ref `ID#nnn` (e.g. T-000001#002, zero-padded to 3 digits);
+# `#` needs no quoting in zsh. The engine (engine/items.py) validates every ref, the
+# item's type/number, unsynced md edits, closed-record re-open and the due date; on
+# success it re-renders and returns the record's fresh item list, which we echo verbatim.
+
+@item_app.command("ls")
+def item_ls(ref: str | None = typer.Argument(None, help="one record id (omit = every record)"),
+            open_only: bool = typer.Option(False, "--open", help="only unclosed items"),
+            type_: str | None = typer.Option(None, "--type", help="limit to one record_type"),
+            owner: str | None = typer.Option(None, "--owner", help="only items with this owner"),
+            overdue: bool = typer.Option(False, "--overdue",
+                                        help="only past-due unclosed items")):
+    """List items as `ID#n  state  text  [owner]  [due]` (one record, or across all)."""
+    cfg = _cfg()
+    try:
+        lines = items_mod.ls(cfg, ref, open_only=open_only, record_type=type_,
+                             owner=owner, overdue=overdue)
+    except ValueError as e:
+        _fail(str(e))
+    if not lines:
+        typer.echo("(no items)")
+        return
+    typer.echo("\n".join(lines))
+
+
+@item_app.command("add")
+def item_add(ref: str, text: str,
+             under: int | None = typer.Option(
+                 None, "--under", help="add as a sub-item of #N (N must be top-level)"),
+             after: int | None = typer.Option(None, "--after", help="insert right after #N"),
+             state: str | None = typer.Option(
+                 None, "--state", help="state to start in (default: the first)"),
+             note: str = typer.Option("", "--note", help="free text after ' — '"),
+             owner: str = typer.Option("", "--owner", help="the owner field (if enabled)"),
+             due: str = typer.Option("", "--due", help="a YYYY-MM-DD date (if enabled)")):
+    """Add an item to a record's list (auto-numbered; appended at the end)."""
+    cfg = _cfg()
+    try:
+        typer.echo(items_mod.add(cfg, ref, text, under=under, after=after, state=state,
+                                 note=note, owner=owner, due=due).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_app.command("set")
+def item_set(item: str, state: str,
+             note: str | None = typer.Option(None, "--note", help="also set the note"),
+             commit: str = typer.Option("", "--commit", help="a git commit hash")):
+    """Set an item's state (e.g. met / missed / done / skipped); optional note/commit."""
+    cfg = _cfg()
+    try:
+        typer.echo(items_mod.set_state(cfg, item, state, note=note, commit=commit).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_app.command("check")
+def item_check(item: str,
+               note: str | None = typer.Option(None, "--note", help="also set the note"),
+               commit: str = typer.Option("", "--commit", help="a git commit hash")):
+    """Mark an item closed (the first closed state of its checklist)."""
+    cfg = _cfg()
+    try:
+        typer.echo(items_mod.check(cfg, item, note=note, commit=commit).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_app.command("uncheck")
+def item_uncheck(item: str):
+    """Re-open an item (back to the first, unclosed state)."""
+    cfg = _cfg()
+    try:
+        typer.echo(items_mod.uncheck(cfg, item).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_app.command("edit")
+def item_edit(item: str,
+              text: str | None = typer.Option(None, "--text", help="new item text (empty clears)"),
+              note: str | None = typer.Option(None, "--note", help="new note (empty clears)"),
+              owner: str | None = typer.Option(None, "--owner", help="new owner (empty clears)"),
+              due: str | None = typer.Option(None, "--due", help="new due date (empty clears)")):
+    """Edit an item's text / note / owner / due (pass an empty string to clear a field)."""
+    cfg = _cfg()
+    try:
+        typer.echo(items_mod.edit(cfg, item, text=text, note=note, owner=owner, due=due).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_app.command("mv")
+def item_mv(item: str,
+            after: int | None = typer.Option(None, "--after", help="move right after #N"),
+            first: bool = typer.Option(False, "--first", help="move to the top"),
+            under: int | None = typer.Option(None, "--under", help="re-parent as a sub-item of #N"),
+            top: bool = typer.Option(False, "--top", help="promote to the top level")):
+    """Move an item (its sub-items move with it): exactly one of --after/--first/--under/--top."""
+    cfg = _cfg()
+    try:
+        typer.echo(items_mod.move(
+            cfg, item, after=after, first=first, under=under, top=top).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_app.command("rm")
+def item_rm(item: str):
+    """Remove an item (and any sub-items under it)."""
+    cfg = _cfg()
+    try:
+        typer.echo(items_mod.remove(cfg, item).rstrip())
+    except ValueError as e:
+        _fail(str(e))
 
 
 # ---- hooks ------------------------------------------------------------------------------

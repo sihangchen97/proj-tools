@@ -1,4 +1,4 @@
-"""`proj changelog` — global CHANGELOG.md, rendered from the DB (v3).
+"""`proj changelog` — global CHANGELOG.md, rendered from the DB.
 
 Config (categories, unreleased placeholder, output file) comes from
 profiles/changelog.yaml, not hard-coded here.
@@ -48,7 +48,7 @@ def release_notes(cfg: ProjConfig, version: str) -> str:
             lines = [f"# {candidate}", ""]
             by_cat: dict[str, list[str]] = {}
             for e in rows:
-                by_cat.setdefault(e["category"], []).append(e["text"])
+                by_cat.setdefault(e["category"], []).append(e["message"])
             for cat in cl.categories:
                 if cat in by_cat:
                     lines += [f"### {cat}", ""]

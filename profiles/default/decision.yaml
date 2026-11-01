@@ -15,7 +15,16 @@ verbs:
   deprecate: {from: Any, to: Deprecated}
 # status 按时间顺序排列：Draft → Proposed → Accepted | Rejected → Deprecated（被替代时置 Deprecated）
 # done: true 的状态 = 进入过即算 done（done 行记首次到达日期）
-# 注意：进入任一 done 状态时，正文里所有 `- [ ]` 必须已勾选（引擎通用门禁）
+# 无 gates: 门禁——决策不挂任务树，状态机纯靠 verbs（Confirmation 清单不设门禁）
+# items: Confirmation 节的结构化核查清单（engine/items.py 管理）；无门禁，
+# 仅作"采纳后是否仍成立"的跟踪
+items:
+  section: Confirmation
+  noun: check
+  states:
+    - {name: pending}
+    - {name: confirmed, emoji: ✅, closed: true}
+    - {name: violated, emoji: ❌, closed: true}
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Proposed, emoji: 🌱}        # 提案中，等待讨论/评审
@@ -35,15 +44,13 @@ sections:
     hint: >-
       The criteria used to judge options, most important first, as plain bullets
       (e.g. "- p99 latency < 100ms", "- no new paid service", "- team already knows
-      Python"). Every option below is weighed against this list. Plain bullets
-      only — an unchecked `- [ ]` here blocks accept/reject.
+      Python"). Every option below is weighed against this list.
   - name: Considered Options
     hint: >-
       At least two real options (including "do nothing / keep current" when
       relevant). For each: a `### Option name` sub-heading, one-line description,
       then `Pros:` / `Cons:` bullets scored against the Decision Drivers. Note
-      rough cost/effort and any spike or benchmark evidence (link it). No
-      checkboxes.
+      rough cost/effort and any spike or benchmark evidence (link it).
   - name: Decision
     hint: >-
       The chosen option in one active-voice sentence ("We will use X for Y."),
@@ -57,10 +64,15 @@ sections:
       follow-up work (create tasks: proj task new ... --related DEC-xxxx), any
       tech debt it introduces (proj debt new ... --related DEC-xxxx), and
       migration or rollback notes. `proj decision link` appends "See also:"
-      refs here. No checkboxes (they block accept) — track work as tasks.
+      refs here. Track follow-up work as tasks.
   - name: Confirmation
     hint: >-
-      How we will know the decision was right and is being followed: the
-      metric, review, test or lint rule that verifies it, and the trigger to
-      revisit it (a date, a scale threshold, a dependency change). If the
-      trigger fires, write a new decision with -s to supersede this one.
+      How we will know the decision was right and is being followed, one check
+      per line as an item: "- [ ] /health stays 200 in staging", "- [ ] no
+      rollback within 2 weeks of launch" (the number is added by the tool).
+      States: `[ ]` pending, `[x] ✅` confirmed (the check held), `[x] ❌`
+      violated (a check failed — consider superseding this decision). Manage
+      with `proj item add DEC-xxxx "<check>"`, `proj item set DEC-xxxx#n
+      confirmed|violated --note …`. Also name the trigger to revisit it (a
+      date, a scale threshold, a dependency change); if it fires, write a new
+      decision with -s to supersede this one.

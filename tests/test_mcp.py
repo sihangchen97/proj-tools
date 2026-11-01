@@ -37,7 +37,7 @@ def test_mcp_update_record(proj):
     root = str(proj.root)
     out = mcp.proj_update_record("decision", "DEC-0001",
                                 title="Renamed", summary="one line",
-                                comment="Changed: refined", root=root)
+                                message="Changed: refined", root=root)
     assert "title → Renamed" in out and "error" not in out
     assert "error" in mcp.proj_update_record("decision", "DEC-0001", root=root)  # nothing
     assert "error" in mcp.proj_update_record("decision", "DEC-9999", title="x", root=root)
@@ -45,7 +45,7 @@ def test_mcp_update_record(proj):
     out = mcp.proj_new("decision", "Fresh", root=root)
     did = out.rsplit("/", 1)[1].rsplit("-", 1)[0]  # DEC-0002
     assert did.startswith("DEC-")
-    out = mcp.proj_verb("decision", "accept", did, comment="Added: ok", root=root)
+    out = mcp.proj_verb("decision", "accept", did, message="Added: ok", root=root)
     assert "Accepted" in out and "error" not in out
     # a comment renders as the status-at-that-moment emoji + the comment text
     assert "[Added] ✅ ok" in mcp.proj_show("decision", did, history=True, root=root)

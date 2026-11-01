@@ -1,5 +1,6 @@
 """D6: the project .env supplies config defaults (OS env wins, no override)."""
 import os
+
 import pytest
 
 from proj.core.config import load_project_env

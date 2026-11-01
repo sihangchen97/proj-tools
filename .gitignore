@@ -1,5 +1,5 @@
 # 功能测试沙盒（pixi run e2e 每次重建）
-.testproj/
+.testproj*/
 
 # Python
 __pycache__/

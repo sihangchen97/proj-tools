@@ -17,9 +17,10 @@
    environment; commit only `.env.example`.
 7. **Commits**: one commit per feature or bugfix. No unrequested reformatting.
 8. **Check**: run `proj check` (also runs in pre-commit) before pushing.
-9. **MD files**: the record title (`# <ID>. <Title>`) and `##` section content
-   are yours — edit them, then `proj sync` (a changed title renames the file to
-   the new slug). Never hand-edit the tool-owned head
+9. **MD files**: the record title line (`# <Title>`; the numeric id lives in the
+   filename and the first-line marker) and `##` section content are yours — edit
+   them, then `proj sync` (a changed title renames the file to the new slug, the
+   id is stable). Never hand-edit the tool-owned head
    (the `<!-- proj:head:start … -->` fence: the `> **key:**` blockquote and the
    italic summary line) or the changelog block — change them via `proj`
    (e.g. `proj <rt> update`).

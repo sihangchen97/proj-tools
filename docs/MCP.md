@@ -47,12 +47,12 @@ Show one record (from DB); history: append its full changelog.
 Run a template verb (a state-machine step) on a record, e.g.
 `('decision','accept','DEC-0002')`, `('plan','activate','PLN-0001')`,
 `('task','done','T-000001')`. verb must be one the record_type's template
-declares; title/summary/comment optionally also update it after the step.
+declares; title/summary/message optionally also update it after the step.
 
 ### `proj_update_record`
 
 Update a record's title / summary (a title change renames its md file);
-comment: optionally append a changelog entry ('Category: text').
+message: optionally append a changelog entry ('Category: text').
 
 ### `proj_update`
 
@@ -66,4 +66,50 @@ What this project manages (record_types, counts, statuses) + verb cheatsheet.
 
 Add a CHANGELOG.md entry: 'Category: text' (Added/Changed/Fixed/…; plain
 text ok). version: default the Unreleased placeholder.
+
+### `proj_task_move`
+
+Move an existing task under a (possibly new) parent record, or detach it.
+parent: new parent id (any record type); detach: True to unparent. Exactly
+one of the two. Refused for itself / its own descendants / closed records.
+
+### `proj_item_ls`
+
+List items as 'ID#n  state  text  [owner]  [due]'. ref: one record id
+(omit = every record); open_only / record_type / owner / overdue filter.
+
+### `proj_item_add`
+
+Add an item to a record's checklist (auto-numbered). under: sub-item of
+#N; after: after #N; state/note/owner/due optional. Returns the fresh item
+list.
+
+### `proj_item_set`
+
+Set an item's state (item = 'ID#n'). note / commit optional. Returns the
+fresh item list.
+
+### `proj_item_check`
+
+Mark an item ('ID#n') closed (first closed state). Returns the fresh item
+list.
+
+### `proj_item_uncheck`
+
+Re-open an item ('ID#n') (first unclosed state). Returns the fresh item
+list.
+
+### `proj_item_edit`
+
+Edit an item's ('ID#n') text / note / owner / due (empty string clears).
+Returns the fresh item list.
+
+### `proj_item_mv`
+
+Move an item ('ID#n'): exactly one of after #N / first / under #N / top.
+Sub-items move with it. Returns the fresh item list.
+
+### `proj_item_rm`
+
+Remove an item ('ID#n') and its sub-items. Returns the fresh item list.
 

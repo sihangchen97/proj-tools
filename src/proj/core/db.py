@@ -1,15 +1,18 @@
-"""SQLite core (.proj.sqlite) — the single source of truth (v3).
+"""SQLite core (.proj.sqlite) — the single source of truth.
 
-Unified tables (schema v3, no migration — dev phase, rebuild .proj.sqlite):
+Unified tables (schema v4):
 
     records(id PK, type, title, status, one_sentence, commit, created, sections JSON)
-    record_changelog(id PK, record_id, date, category, comment, status)
+    record_changelog(id PK, record_id, date, category, message, status)
+    relations(source, target, kind) — PK (source, target, kind); one-parent unique index
 
 record_changelog: every row stores the record's status AFTER that event
 (`status` = the new state on a status change, the unchanged state on any
-other event), so a changelog line renders as `- `date - emoji status``.
+other event), so a changelog line renders as `- `date - emoji status``;
+`message` is the optional free text (--message, git-style).
 
-Plus the global changelog: changelog_entries(id, version, category, text, date).
+Plus the global changelog:
+    changelog_entries(id PK, version, category, message, date)
 
 The lock file (.proj.lock) pins which templates built the DB so a fresh
 clone without the DB can rebuild the same schema.
@@ -28,9 +31,9 @@ if TYPE_CHECKING:
 
 import yaml
 
-from proj.core.templates import RecordTypeSpec
+from proj.core.templates import ItemsSpec, ItemState, RecordTypeSpec
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 LOCK_FILE = ".proj.lock"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
@@ -58,20 +61,26 @@ class Db:
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS changelog_entries "
-            "(id INTEGER PRIMARY KEY, version TEXT, category TEXT, text TEXT, date TEXT)")
-        # inter-record relations: one row per edge. kind "supersede": same-type,
-        # ordered (pos); "related": any type, unordered; "parent": source=parent,
-        # target=child task (any parent type), single parent enforced in the app.
+            "(id INTEGER PRIMARY KEY, version TEXT, category TEXT, message TEXT, date TEXT)")
+        # inter-record relations: one row per edge, no id column; PK
+        # (source, target, kind) — the same record pair may hold several edge
+        # kinds (e.g. parent + related) at once.
+        # kind "supersede": same-type; "related": any type, unordered; "parent":
+        # source=parent, target=child task; a task has at most ONE parent edge
+        # (the unique index below).
         # D8: no type columns — the record type resolves from the id prefix
         # (registry code→type); FK CASCADE deletes edges with their record.
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS relations "
-            "(id INTEGER PRIMARY KEY, source TEXT NOT NULL "
+            "(source TEXT NOT NULL "
             "REFERENCES records(id) ON DELETE CASCADE, "
             "target TEXT NOT NULL "
             "REFERENCES records(id) ON DELETE CASCADE, "
             "kind TEXT NOT NULL, "
-            "pos INTEGER NOT NULL DEFAULT 0, UNIQUE(source, target, kind))")
+            "PRIMARY KEY (source, target, kind))")
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS relations_one_parent "
+            "ON relations(target) WHERE kind='parent'")
         # unified record storage: one table per type was replaced by a type column
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS records "
@@ -80,13 +89,29 @@ class Db:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS record_changelog "
             "(id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, date TEXT, "
-            "category TEXT, comment TEXT, status TEXT)")
-
+            "category TEXT, message TEXT, status TEXT)")
+        # item checklists (items.py): rows of a record's structured items;
+        # seq = the per-record, monotonic, non-reused number (#n in the md);
+        # pos = display order; depth 0|1 (a sub-item under a depth-0 item).
+        # FK CASCADE deletes items with their record (no manual cleanup).
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS items "
+            "(record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE, "
+            "seq INTEGER NOT NULL, pos INTEGER NOT NULL, depth INTEGER NOT NULL DEFAULT 0, "
+            "text TEXT NOT NULL, state TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', "
+            "owner TEXT NOT NULL DEFAULT '', due TEXT NOT NULL DEFAULT '', "
+            "created TEXT NOT NULL, closed_at TEXT NOT NULL DEFAULT '', "
+            "\"commit\" TEXT NOT NULL DEFAULT '', "
+            "PRIMARY KEY (record_id, seq))")
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS item_counters "
+            "(record_id TEXT PRIMARY KEY REFERENCES records(id) ON DELETE CASCADE, "
+            "last INTEGER NOT NULL)")
     # ---- template-driven schema -------------------------------------------
 
     def ensure_kind(self, spec: RecordTypeSpec) -> None:
-        """No-op in schema v2: records/record_changelog are single shared tables
-        (created in __init__); the spec only names the `type` value it stores."""
+        """No-op: records/record_changelog are single shared tables (created in
+        __init__); the spec only names the `type` value it stores."""
 
     def table_columns(self, record_type: str) -> set[str]:
         return {r[1] for r in self.conn.execute(f"PRAGMA table_info({record_type})")}
@@ -132,21 +157,20 @@ class Db:
                           (spec.record_type, id_))
         self.conn.commit()
 
-    def max_int_id(self, spec: RecordTypeSpec) -> int:
-        row = self.conn.execute(
+    def max_seq(self, spec: RecordTypeSpec) -> int:
+        """The largest record number carried by this type's ids (digits only)."""
+        rows = self.conn.execute(
             "SELECT id FROM records WHERE type=?", (spec.record_type,)).fetchall()
         best = 0
-        for r in row:
-            s = r[0]
-            tail = (s[len(spec.code) + 1:] if spec.code
-                    and s.startswith(spec.code + "-") else s)
+        for (s,) in rows:
+            tail = s[len(spec.code) + 1:] if spec.code and s.startswith(spec.code + "-") else s
             if tail.isdigit():
                 best = max(best, int(tail))
         return best
 
     # ---- record changelog (single table; one status column per row) ----
 
-    def add_log(self, record_id: str, comment: str = "",
+    def add_log(self, record_id: str, message: str = "",
                 category: str = "Changed", when: str | None = None) -> None:
         # the row stores the record's status AFTER this event: callers set the
         # status first (a change) or leave it untouched (any other event)
@@ -154,13 +178,13 @@ class Db:
                                 (record_id,)).fetchone()
         status = row[0] if row else ""
         self.conn.execute(
-            "INSERT INTO record_changelog (record_id, date, category, comment, "
+            "INSERT INTO record_changelog (record_id, date, category, message, "
             "status) VALUES (?,?,?,?,?)",
-            (record_id, when or utc_now(), category, comment, status))
+            (record_id, when or utc_now(), category, message, status))
         self.conn.commit()
 
     def logs(self, record_id: str, limit: int | None = None) -> list[dict]:
-        q = ("SELECT date, category, comment, status "
+        q = ("SELECT date, category, message, status "
              "FROM record_changelog WHERE record_id=? ORDER BY date DESC, id DESC")
         if limit:
             q += f" LIMIT {int(limit)}"
@@ -174,12 +198,12 @@ class Db:
 
     # ---- global changelog ----------------------------------------------------
 
-    def add_cl_entry(self, version: str, category: str, text: str,
+    def add_cl_entry(self, version: str, category: str, message: str,
                      when: str | None = None) -> None:
         self.conn.execute(
-            "INSERT INTO changelog_entries (version, category, text, date) "
+            "INSERT INTO changelog_entries (version, category, message, date) "
             "VALUES (?, ?, ?, ?)",
-            (version, category, text, when or utc_now()))
+            (version, category, message, when or utc_now()))
         self.conn.commit()
 
     def cl_entries(self, version: str | None = None) -> list[dict]:
@@ -192,17 +216,19 @@ class Db:
                 "SELECT * FROM changelog_entries ORDER BY id").fetchall()
         return [dict(r) for r in rows]
 
-    # ---- relations (supersede + related) -----------------------------------
+    # ---- relations (supersede + related + parent) --------------------------
 
-    def add_relation(self, source: str, target: str, kind: str, pos: int = 0) -> None:
-        """One edge. kind "supersede": same-type, ordered by pos, source supersedes target.
-        kind "related": any type, unordered (pos ignored). kind "parent":
-        source=parent, target=child task. FK: both ids must be existing records
-        (D8) — write-side guards keep dangling refs out at the CLI/MCP surface."""
+    def add_relation(self, source: str, target: str, kind: str) -> None:
+        """One edge, idempotent per (source, target, kind): INSERT OR IGNORE —
+        re-adding an existing edge is a no-op, other kinds are never clobbered.
+        kind "supersede": same-type, source supersedes target; "related": any
+        type, unordered; "parent": source=parent, target=child task (at most
+        one parent per task: the relations_one_parent unique index). FK: both
+        ids must be existing records (D8) — write-side guards keep dangling
+        refs out at the CLI/MCP surface."""
         self.conn.execute(
-            "INSERT OR REPLACE INTO relations (source, target, kind, pos) "
-            "VALUES (?,?,?,?)",
-            (source, target, kind, pos))
+            "INSERT OR IGNORE INTO relations (source, target, kind) VALUES (?,?,?)",
+            (source, target, kind))
         self.conn.commit()
 
     def remove_relation(self, source: str, target: str, kind: str) -> None:
@@ -211,17 +237,29 @@ class Db:
             (source, target, kind))
         self.conn.commit()
 
+    def set_parent(self, child_id: str, parent_id: str | None) -> None:
+        """Re-home a task: drop its old parent edge (if any), write the new one
+        (None = unparented). One transaction; the unique index forbids a
+        second parent edge in between."""
+        self.conn.execute(
+            "DELETE FROM relations WHERE target=? AND kind='parent'", (child_id,))
+        if parent_id is not None:
+            self.conn.execute(
+                "INSERT INTO relations (source, target, kind) VALUES (?,?,?)",
+                (parent_id, child_id, "parent"))
+        self.conn.commit()
+
     def supersede_of(self, source_id: str) -> list[dict]:
-        """Targets this record supersedes (kind=supersede, source=row), in pos order."""
+        """Targets this record supersedes (kind=supersede, source=row), id order."""
         return [dict(r) for r in self.conn.execute(
-            "SELECT target, pos FROM relations "
-            "WHERE source=? AND kind='supersede' ORDER BY pos, id", (source_id,))]
+            "SELECT target FROM relations "
+            "WHERE source=? AND kind='supersede' ORDER BY rowid", (source_id,))]
 
     def superseded_by_of(self, target_id: str) -> list[dict]:
-        """Records that supersede this one (kind=supersede, target=row), in pos order."""
+        """Records that supersede this one (kind=supersede, target=row), id order."""
         return [dict(r) for r in self.conn.execute(
-            "SELECT source, pos FROM relations "
-            "WHERE target=? AND kind='supersede' ORDER BY pos, id", (target_id,))]
+            "SELECT source FROM relations "
+            "WHERE target=? AND kind='supersede' ORDER BY rowid", (target_id,))]
 
     def related_of(self, record_id: str) -> list[str]:
         """Other records sharing a related edge (either direction). Unordered."""
@@ -250,15 +288,102 @@ class Db:
             "WHERE target=? AND kind='parent' LIMIT 1", (child_id,)).fetchone()
         return dict(row) if row else None
 
+    def descendants_of(self, record_id: str) -> set[str]:
+        """Every record id hanging below record_id via parent edges (any depth),
+        cycle-safe: a record already on the walk is never re-queued.
+        (views.task_ids_of is the task-rows variant — it keeps the same walk.)"""
+        out: set[str] = set()
+        seen: set[str] = {record_id}
+        stack = [record_id]
+        while stack:
+            cur = stack.pop()
+            for c in self.children_of(cur):
+                cid = c["target"]
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                out.add(cid)
+                stack.append(cid)
+        return out
+
+    # ---- item checklists (items.py) -----------------------------------------
+
+    def items_of(self, record_id: str) -> list[dict]:
+        """This record's items in display order (pos)."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM items WHERE record_id=? ORDER BY pos", (record_id,))]
+
+    def item_get(self, record_id: str, seq: int) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM items WHERE record_id=? AND seq=?", (record_id, seq)).fetchone()
+        return dict(row) if row else None
+
+    def item_last(self, record_id: str) -> int:
+        """The record's current item counter (last seq issued) without bumping —
+        a read-only peek so the next n seqs can be predicted (items.validate)."""
+        row = self.conn.execute(
+            "SELECT last FROM item_counters WHERE record_id=?", (record_id,)).fetchone()
+        return row["last"] if row else 0
+
+    def item_next_seq(self, record_id: str) -> int:
+        """Bump the record's counter and return the new (never-reused) seq."""
+        row = self.conn.execute(
+            "SELECT last FROM item_counters WHERE record_id=?", (record_id,)).fetchone()
+        last = row["last"] if row else 0
+        seq = last + 1
+        self.conn.execute(
+            "INSERT OR REPLACE INTO item_counters (record_id, last) VALUES (?, ?)",
+            (record_id, seq))
+        return seq
+
+    def item_insert(self, record_id: str, *, seq: int, pos: int, depth: int, text: str,
+                    state: str, note: str = "", owner: str = "", due: str = "",
+                    created: str | None = None, closed_at: str = "", commit: str = "") -> None:
+        self.conn.execute(
+            "INSERT INTO items (record_id, seq, pos, depth, text, state, note, owner, due, "
+            "created, closed_at, \"commit\") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (record_id, seq, pos, depth, text, state, note, owner, due,
+             created or utc_now(), closed_at, commit))
+        self.conn.commit()
+
+    def item_update(self, record_id: str, seq: int, **cols: str | int) -> None:
+        if not cols:
+            return
+        sets = ", ".join(f"{k}=?" for k in cols)
+        self.conn.execute(
+            f"UPDATE items SET {sets} WHERE record_id=? AND seq=?",
+            (*cols.values(), record_id, seq))
+        self.conn.commit()
+
+    def item_delete(self, record_id: str, seq: int) -> None:
+        self.conn.execute("DELETE FROM items WHERE record_id=? AND seq=?", (record_id, seq))
+        self.conn.commit()
+
+    def item_reorder(self, record_id: str, ordered_seqs: list[int]) -> None:
+        """pos = position in the given seq order (children keep their relative order)."""
+        for pos, seq in enumerate(ordered_seqs):
+            self.conn.execute(
+                "UPDATE items SET pos=? WHERE record_id=? AND seq=?",
+                (pos, record_id, seq))
+        self.conn.commit()
+
     def close(self) -> None:
         self.conn.close()
 
 
 def next_id(spec: RecordTypeSpec, db: Db) -> str:
-    """D9: numbered is always an int > 0 (validated in parse_template), so every
-    record id is {code}-{n:0w} and the prefix always resolves back to a type."""
-    n = db.max_int_id(spec) + 1
-    return f"{spec.code}-{n:0{int(spec.numbered)}d}"
+    """The next record id: {code}-{digits}, fixed width `spec.numbered` (W=4 →
+    DEC-0001 … DEC-9999, task W=6 → T-000001 … T-999999). The record id has
+    NO letter overflow: once the all-digit space is used up, new ids raise —
+    a single project will not run out (9,999 / 999,999 records)."""
+    n = db.max_seq(spec) + 1
+    w = int(spec.numbered)
+    if n > 10 ** w:
+        raise ValueError(
+            f"record ids of type {spec.code!r} are exhausted "
+            f"(all-digit {w}-digit suffix space used up; max "
+            f"{spec.code}-{10 ** w - 1:0{w}d})")
+    return f"{spec.code}-{n:0{w}d}"
 
 
 def parse_summary(arg: str, spec: ChangelogSpec | None = None) -> tuple[str, str]:
@@ -295,8 +420,10 @@ def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]
             "sections": [asdict(x) for x in s.sections],
             "code": s.code,
             "status_done": list(s.status_done),
-            "contain_task": s.contain_task,
+            "status_terminal": list(s.status_terminal),
+            "gates": {"tasks": list(s.gates_tasks), "items": list(s.gates_items)},
             "render": {"toc": s.apply_toc},
+            "items": (asdict(s.items) if s.items is not None else None),
         } for s in specs.values()},
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
@@ -308,7 +435,8 @@ def read_lock(root: Path) -> dict | None:
     path = root / LOCK_FILE
     if not path.is_file():
         return None
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    from proj.core.templates import _yaml_load
+    return _yaml_load(path.read_text(encoding="utf-8"))
 
 
 def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
@@ -326,7 +454,26 @@ def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
             sections=[TemplateSection(**s) for s in d.get("sections", [])],
             code=str(d.get("code", "")),
             status_done=list(d.get("status_done", [])),
-            contain_task=bool(d.get("contain_task", False)),
+            # terminal/gates: the lock may predate them (old projects) — the
+            # terminal set falls back to the done set (the pre-gate behavior)
+            status_terminal=list(d.get("status_terminal", [])) or list(d.get("status_done", [])),
+            gates_tasks=list(d.get("gates", {}).get("tasks", [])),
+            gates_items=list(d.get("gates", {}).get("items", [])),
             apply_toc=bool(d.get("render", {}).get("toc", False)),
+            items=_items_from_lock(d.get("items")),
         )
     return out
+
+
+def _items_from_lock(d) -> ItemsSpec | None:
+    """The `items:` block back from the lock (None when the lock predates it)."""
+    if not d:
+        return None
+    return ItemsSpec(
+        section=d["section"],
+        noun=d.get("noun", "item"),
+        states=[ItemState(**s) for s in d.get("states", [])],
+        fields=list(d.get("fields", [])),
+        promote_from=list(d.get("promote_from", [])),
+        promote_to=d.get("promote_to", ""),
+    )

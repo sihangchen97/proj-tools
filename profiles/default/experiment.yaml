@@ -2,7 +2,9 @@ record_type: experiment
 code: EXP
 dir: docs/experiments
 numbered: 4
-contain_task: true        # tasks attach (parent -> this): head task tree, subtask row
+# 无 contain_task：任务挂接靠 relations 的 parent 边（proj task new --parent），
+# 有子任务就在 head 下渲染任务树；全局 TASKLIST.md 的成员自动推导（实验离开
+# Draft 且名下有未结束的后代任务时出现），无需注册
 # 无 features:（supersede 是纯 relation，所有类型通用）
 # 无 fields:（commit 是 records 表的通用列，所有类型可用 --commit）
 verbs:
@@ -11,8 +13,24 @@ verbs:
   run: {from: Any, to: Running}
   close: {from: Any, to: Closed}
   abandon: {from: Any, to: Abandoned}
+# 门禁（由 Record.validate_transition 统一实现）：
+# gates.tasks — 进入 Closed 前，名下所有后代任务必须已终止（Done/Failed）
+# gates.items — 进入 Closed 前，Success Criteria 每条都必须已评估（met/missed/
+# inconclusive）；Abandoned（未出结论即放弃）故意不设门禁——放弃不要求清单处理完
+gates:
+  tasks: [Closed]
+  items: [Closed]
+# items: Success Criteria 节的结构化清单；关实验时逐条 set met/missed/inconclusive
+items:
+  section: Success Criteria
+  noun: criterion
+  states:
+    - {name: pending}
+    - {name: met, emoji: ✅, closed: true}
+    - {name: missed, emoji: ❌, closed: true}
+    - {name: inconclusive, emoji: ❔, closed: true}
 # status 按时间顺序排列：Draft → Proposed → Running → Closed | Abandoned
-# 注意：Closed/Abandoned 是 done 状态，进入时正文所有 `- [ ]` 必须已勾
+# Closed/Abandoned 是 done 状态（done 即终止）
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Proposed, emoji: 🌱}        # 已写假设与成功标准，未开跑
@@ -29,12 +47,14 @@ sections:
       add notes in Analysis instead.
   - name: Success Criteria
     hint: >-
-      Decided before running, as plain bullets: the baseline compared against
-      (previous EXP-xxxx, commit, model/config name, or production), the
-      primary metric and the threshold that confirms the hypothesis (e.g.
-      "- val mAP +1.0 over baseline"), guardrail metrics that must not regress
-      (latency, memory, cost), and the minimum sample size / seeds / duration
-      for a valid result. Plain bullets — unticked checkboxes block close.
+      Decided before running, one per line as an item: "- [ ] val mAP +1.0 over
+      baseline", "- [ ] p95 latency does not regress" (the number is added by
+      the tool). Also state the baseline compared against (previous EXP-xxxx,
+      commit, model/config name, or production) and the minimum sample size /
+      seeds / duration for a valid result. States: `[ ]` pending, `[x] ✅` met,
+      `[x] ❌` missed, `[x] ❔` inconclusive. At close, evaluate each one with
+      `proj item set EXP-xxxx#n met|missed|inconclusive --note <evidence>`;
+      `proj experiment close` is refused while any is still pending.
   - name: Setup
     hint: >-
       Everything needed to reproduce the run: the code version (create the

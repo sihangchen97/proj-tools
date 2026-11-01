@@ -10,9 +10,25 @@ verbs:
   mitigate: {from: Any, to: Mitigated}
   close: {from: Any, to: Closed}
   reopen: {from: Any, to: Open}
+# 门禁（由 Record.validate_transition 统一实现）：
+# gates.tasks — 进入 Closed 前，名下所有后代任务必须已终止（Done/Failed）
+# gates.items — 进入 Closed 前，Action Items 里每条都必须已处理（done/dropped）
+# Mitigated（已止血）故意不设门禁——恢复不要求复盘和清单完成
+gates:
+  tasks: [Closed]
+  items: [Closed]
+# items: Action Items 节的结构化清单；owner/due 用字段表示（· owner: x · due: d）
+items:
+  section: Action Items
+  noun: action
+  states:
+    - {name: open}
+    - {name: done, emoji: ✅, closed: true}
+    - {name: dropped, emoji: 🚫, closed: true}
+  fields: [owner, due]
 # status 按时间顺序排列：Draft → Open → Mitigated → Closed
 # （Mitigated = 已止血/服务恢复，复盘与 Action Items 未完成；Closed = 复盘完成）
-# 注意：Closed 是 done 状态，进入时正文所有 `- [ ]` 必须已勾（Action Items 全部完成）
+# Closed 是 done 状态（done 即终止）
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Open, emoji: 🚨}            # 故障未恢复，处理中
@@ -61,11 +77,15 @@ sections:
       (things that limited damage by chance — these are hidden risks).
   - name: Action Items
     hint: >-
-      Follow-ups that stop recurrence or reduce impact, as checkboxes:
-      `- [ ] <action> — owner — due` (e.g. add alert, add test, fix root cause,
-      write runbook). Prefer prevent > detect > mitigate. Larger items become
-      tasks (proj task new ... --related INC-xxxx) referenced by id. `proj
-      incident close` is refused while any box is unticked.
+      Follow-ups that stop recurrence or reduce impact, one per line as an item:
+      "- [ ] add the alert · owner: sara · due: 2026-11-20", "- [ ] add a
+      regression test" (the number is added by the tool). States: `[ ]` open,
+      `[x] ✅` done, `[x] 🚫` dropped (a dropped item must say why in a note).
+      The owner and due date are item fields (`proj item add INC-xxxx "<action>"
+      --owner sara --due 2026-11-20`), not free text. Manage with `proj item
+      add/check/set INC-xxxx#n …`; `proj incident close` is refused while any
+      item is still open. Prefer prevent > detect > mitigate; larger items
+      become tasks (proj task new ... --related INC-xxxx) referenced by id.
   - name: Prevention rule
     hint: >-
       The durable, actionable rule distilled from this incident that is added

@@ -59,7 +59,7 @@ class Record:
             return row, p
         db = rec.open_db(cfg)
         try:
-            for i, old_id in enumerate(supersede):
+            for old_id in supersede:
                 # supersede is a pure relation on every record_type (D1): the
                 # target must exist and be the SAME type; no status side effect
                 spec, old = rec.ref_record(cfg, db, old_id)
@@ -71,7 +71,7 @@ class Record:
                                      f"not a {self.record_type} — same type required")
                 if old["id"] == row["id"]:
                     raise ValueError(f"{self.record_type} cannot supersede itself")
-                db.add_relation(row["id"], old["id"], "supersede", pos=i)
+                db.add_relation(row["id"], old["id"], "supersede")
                 db.add_log(old["id"], f"superseded by {row['id']}", "Changed")
             if supersede:
                 db.add_log(row["id"], "supersedes " + ", ".join(supersede), "Added")
@@ -211,17 +211,34 @@ class Record:
 
     # ---- extension points (subclasses override) ------------------------------
     def validate_transition(self, cfg: ProjConfig, row: dict, verb: str, db) -> None:
-        """Generic gate: entering a done status requires every checkbox checked."""
+        """Template-declared gates (profile `gates:`): entering a `gates.tasks`
+        status requires every DESCENDANT task (any depth) to sit in a terminal
+        task status (task's `status_terminal`: Done, Failed, ...); entering a
+        `gates.items` status requires every item of this record to be closed."""
         to_s = self.verbs[verb][1]
-        if to_s not in self.spec.status_done:
+        if self.spec.items is not None and to_s in self.spec.gates_items:
+            from proj.engine import items as items_mod  # lazy: record↔items cycle
+            un = items_mod.open_items(db, self.spec, row)
+            if un:
+                raise ValueError(
+                    f"{self.record_type} {row['id']}: {len(un)} unclosed {self.spec.items.noun}(s) "
+                    f"block {verb} (need a closed state: "
+                    f"{', '.join(s.name for s in self.spec.items.states if s.closed)}):\n  "
+                    + "\n  ".join(un))
+        if to_s not in self.spec.gates_tasks:
             return
-        sections = json.loads(row.get("sections") or "{}")
-        unchecked = [txt for text in sections.values()
-                     for _, c, txt in rec.checkboxes(text) if not c]
-        if unchecked:
+        reg = rec.load_registry(cfg.root)
+        task_spec = reg.get("task")
+        if task_spec is None:
+            return
+        desc = db.descendants_of(row["id"])
+        bad = [f"{r['id']} ({r['status']})" for r in db.all(task_spec)
+               if r["id"] in desc and r["status"] not in task_spec.status_terminal]
+        if bad:
             raise ValueError(
-                f"{self.record_type} {row['id']}: {len(unchecked)} unchecked step(s) "
-                f"block {verb}:\n  " + "\n  ".join(unchecked))
+                f"{self.record_type} {row['id']}: {len(bad)} task(s) not finished block "
+                f"{verb} (need a terminal task status: "
+                f"{', '.join(task_spec.status_terminal)}):\n  " + "\n  ".join(bad))
 
     def on_ingest(self, db, row: dict, sections: dict, notes: list[str],
                   source_name: str) -> None:

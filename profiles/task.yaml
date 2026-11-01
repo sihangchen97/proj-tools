@@ -2,23 +2,39 @@ record_type: task
 code: T
 dir: docs/tasks
 numbered: 6
-contain_task: true        # tasks attach (parent -> this): head task tree, subtask row
+# 无 contain_task：任务挂接靠 relations 的 parent 边（proj task new --parent），
+# 任何记录有子任务就在 head 下渲染任务树（任意深度、全展开）；全局 TASKLIST.md
+# 的成员自动推导（无 parent 边且未结束的任务 → Unparented；记录名下有未结束的
+# 后代任务 → 该记录一节），无需注册
 # 无 features: / 无 fields:（parent/related/supersede 全走 relations 表）
 # 无 render: 段（changelog 表行数走环境变量 PROJ_LOGS；toc 类型才写 render.toc）
 # task 单独管理（在外层 profiles/，不在 default/）
-# verbs: 每个状态一个 verb；done 的 checkbox 全勾 gate 由 Record.validate_transition 提供
-# （门禁覆盖所有 section 的 checkbox：Acceptance Criteria 与 Steps 都要全勾才能 done）
+# 门禁（由 Record.validate_transition 统一实现）：
+# gates.tasks — 进入 Done 前，整棵后代任务树必须处于终止状态（Done/Failed）；
+# gates.items — 进入 Done 前，Acceptance Criteria 里每条都必须已处理（closed）
+gates:
+  tasks: [Done]
+  items: [Done]
+# items: Acceptance Criteria 节的结构化清单（engine/items.py 管理，md 里写
+# - [ ] #001 text；编号零填充三位、状态由工具维护）；第一个 closed item 出现时
+# Draft 自动升到 In Progress（promote）
+items:
+  section: Acceptance Criteria
+  noun: criterion
+  states: [{name: todo}, {name: done, closed: true}]
+  fields: [owner, due]
+  promote: {from: [Draft], to: In Progress}
 verbs:
   start: {from: Any, to: In Progress}
   done:  {from: Any, to: Done}
   fail:  {from: Any, to: Failed}
-# status 按时间顺序排列：Draft → In Progress → Done/Failed（sync 按 checkbox 自动升档）
+# status 按时间顺序排列：Draft → In Progress → Done/Failed
+# terminal: true = 终止状态（任务结束，不再阻塞父任务门禁）；Failed 也是终止态
 status-allowed:
   - {name: Draft, emoji: ✏️}              # 起草中（new 默认）
-  - {name: In Progress, emoji: 🚧}        # 执行中，有未勾选的 step
-  - {name: Failed, emoji: ❌}             # 失败（无法完成/放弃），不算 done
-  - {name: Done, emoji: ✅, done: true}    # 完成，全部 checkbox 已勾选
-# 章节名 Steps / Open 被引擎引用（任务树渲染、自动升档），不可改名
+  - {name: In Progress, emoji: 🚧}        # 执行中
+  - {name: Failed, emoji: ❌, terminal: true}  # 失败（无法完成/放弃）：已结束
+  - {name: Done, emoji: ✅, done: true}   # 完成（done 同时是终止状态）
 sections:
   - name: Goal
     hint: >-
@@ -30,23 +46,23 @@ sections:
       task then covers only the integration of its sub-tasks.
   - name: Acceptance Criteria
     hint: >-
-      The definition of done as verifiable checkboxes, one per observable
-      result, e.g. "- [ ] `pixi run test` passes", "- [ ] /health returns 200 in
-      staging", "- [ ] docs updated". Each must be checkable by someone else
-      without asking you. Tick a box only after verifying it; `proj task done`
-      is refused while any box (here or in Steps) is unticked.
+      The definition of done as item lines, one per observable result:
+      "- [ ] `pixi run test` passes", "- [ ] /health returns 200 in staging",
+      "- [ ] docs updated" — the number (#001, #002, …, zero-padded to 3 digits) is
+      added by the tool.
+      States: `[ ]` todo, `[x]` done (one closed state, no emoji). Manage with
+      `proj item add T-xxxxxx "<text>"`, `proj item check T-xxxxxx#001 --note …`,
+      `proj item set T-xxxxxx#001 done`; sub-criteria via `--under 1`, optional
+      `--owner` / `--due`. Each must be checkable by someone else without
+      asking you; tick (check) only after verifying it — `proj task done` is
+      refused while any criterion is still todo.
   - name: Steps
     hint: >-
-      How THIS task gets done, as an ordered checkbox list (write order =
-      execution order). Step vs sub-task: a step has no id or status of its
-      own, is done by this task's executor in one sitting, and only matters
-      inside this task (e.g. "- [ ] add migration", "- [ ] write unit test").
-      Make it a sub-task instead (proj task new ... --parent T-xxxxxx) when it
-      needs its own status, owner or acceptance criteria, can be blocked
-      independently, or takes more than about half a day. At most 2 levels:
-      `- [ ] step` with indented `  - [ ] sub-step`; a 3rd level fails
-      `proj check`. Tick `[x]` only after the step is done and verified
-      locally; the first tick auto-moves the task Draft → In Progress on sync.
+      A loose description of how this task gets done — rough approach, key
+      actions, gotchas. Free text, no checkboxes: the verifiable definition of
+      done lives in Acceptance Criteria. Work that needs its own status, owner
+      or a line in the task list belongs in a sub-task instead
+      (proj task new ... --parent T-xxxxxx).
   - name: Open
     hint: >-
       Unresolved questions, blockers and decisions needed — one per line,

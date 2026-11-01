@@ -36,7 +36,7 @@ def test_seed_decision_content(proj):
     text = (proj.root / "docs/decisions/DEC-0001-record-architecture-decisions.md").read_text()
     assert "<!-- proj:decision " in text
     assert "> **status:** `✅ Accepted`" in text
-    assert "# DEC-0001. Record architecture decisions" in text
+    assert "# DEC-0001. Record architecture decisions" in text  # H1 = "# ID. title"
     # seed cites the ADR pattern (Nygard) and the tool's repo (ADR-tools-style 0001)
     assert "thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions" in text
     assert "github.com/sihangchen97/proj-tools" in text
@@ -45,7 +45,7 @@ def test_seed_decision_content(proj):
 def test_lock_written_and_consistent(proj):
     lock = dbmod.read_lock(proj.root)
     assert lock is not None
-    assert lock["schema_version"] == 3
+    assert lock["schema_version"] == 5
     assert "decision" in lock["record_types"]
     # lock spec round-trips to the same schema
     specs = dbmod.specs_from_lock(lock)
@@ -85,10 +85,10 @@ def test_task_kind_registered(proj):
     reg = rec.load_registry(proj.root)
     assert reg["task"].numbered == 6
     assert reg["incident"].numbered == 4
-    # no per-template fields: the records table only has generic columns
-    assert reg["plan"].contain_task is True
-    assert reg["task"].contain_task is True
-    assert reg["incident"].contain_task is False
+    # no per-template contain_task field anymore: task-tree membership comes from
+    # the kind=parent relation (any record type can parent tasks), not a template flag
+    assert not hasattr(reg["plan"], "contain_task")
+    assert not hasattr(reg["task"], "contain_task")
 
 
 def test_head_blockquote_shape(proj):
@@ -99,8 +99,8 @@ def test_head_blockquote_shape(proj):
     text = p.read_text()
     lines = text.splitlines()
     assert lines[0] == f"<!-- proj:task {row['id']} -->"
-    # title sits ABOVE the head fence (editable; synced back to the DB)
-    assert lines[1] == "# T-000001. F1"
+    # the H1 is "# ID. title" (above the head fence; title editable, synced back)
+    assert lines[1] == f"# {row['id']}. F1"
     assert lines[3].startswith("<!-- proj:head:start")  # fence below the title
     assert any(line.startswith("> **status:** `✏️ Draft`") for line in lines)
     # created/done merged into one row; not done yet → "… → in progress"
@@ -111,7 +111,7 @@ def test_head_blockquote_shape(proj):
     assert not any("summary" in line for line in lines if line.startswith("> **"))
     # summary is an italic line below the block, only when set
     assert "_s_" in lines
-    assert lines.index("_s_") > next(i for i, l in enumerate(lines) if l.startswith("> **"))
+    assert lines.index("_s_") > next(i for i, x in enumerate(lines) if x.startswith("> **"))
     # head fence end
     assert lines.index("<!-- proj:head:end -->") > lines.index("_s_")
     # no front matter anywhere
@@ -122,7 +122,7 @@ def test_head_blockquote_shape(proj):
     assert rec.md_status(text) == "Draft"
     assert rec.md_summary(text) == "s"
     # a record with no summary: no italic line, head end fence still present
-    row2, p2 = rec.new_record(proj, "task", "F2")
+    _row2, p2 = rec.new_record(proj, "task", "F2")
     text2 = p2.read_text()
     lines2 = text2.splitlines()
     assert "_s_" not in lines2  # no summary line
@@ -133,7 +133,6 @@ def test_head_blockquote_shape(proj):
 def test_numbered_must_be_positive_int(proj):
     """D9: numbered must be an int > 0 (the id prefix resolves a record's type);
     0 and non-int are rejected when the registry loads."""
-    import yaml as _yaml
     d = proj.root / "profiles" / "default"
     d.mkdir(parents=True)
     base = (bundled_dir() / "default" / "debt.yaml").read_text()

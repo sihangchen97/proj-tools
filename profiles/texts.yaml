@@ -23,3 +23,5 @@ scaffold:
       consequences: >-
         See Michael Nygard's article, linked above. Every significant decision
         gets a record before production code; views regenerate via `proj update`.
+        Follow-up checks live in the record's Confirmation list
+        (`proj item add DEC-xxxx "<check>"`).

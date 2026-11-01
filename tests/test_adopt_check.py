@@ -16,7 +16,7 @@ def test_adopt_existing_file(proj):
     assert text.startswith("<!-- proj:debt DEB-0001 -->")  # id marker comment on line 1
     assert "> **status:**" in text  # blockquote head
     assert "## Location" in text
-    assert "# DEB-0001. Old hack" in text
+    assert "# DEB-0001. Old hack" in text  # the re-rendered H1 carries the id
     spec = rec.load_registry(proj.root)["debt"]
     db = rec.open_db(proj)
     assert db.get(spec, "DEB-0001") is not None
@@ -125,15 +125,17 @@ def test_md_drift_detects_unsynced_edit(proj):
     assert rec.md_drift(proj) == []
 
 
-def test_check_detects_deep_steps(proj):
+def test_check_does_not_flag_deep_steps(proj):
+    """Steps is a loose description: nested checkboxes in it are not a check
+    violation (the task tree has no depth cap either)."""
     row, _ = rec.new_record(proj, "task", "T1")
     p = next((proj.root / "docs" / "tasks").glob(f"{row['id']}-*.md"))
     t = p.read_text().replace(
         "## Steps\n", "## Steps\n\n- [ ] a\n  - [ ] b\n    - [ ] deep\n")
     p.write_text(t)
-    rec.sync(proj)
-    problems = checkmod.check(proj)
-    assert any("deeper than 2 levels" in p for p in problems)
+    problems, _ = rec.sync(proj)
+    assert problems == []
+    assert checkmod.check(proj) == []
 
 
 def test_check_detects_schema_mismatch(proj):

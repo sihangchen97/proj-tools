@@ -1,11 +1,33 @@
-"""Task record_type: checkbox auto-promotion, done gate, plan parking."""
+"""Task record_type: parent edges (any depth), re-open restriction, `task move`."""
 from __future__ import annotations
-
-import json
 
 from proj.core.config import ProjConfig
 from proj.engine import store as rec
 from proj.engine.record import Record, register
+
+
+def _ancestor_gate_violation(cfg: ProjConfig, db, record_id: str,
+                             self_id: str = "") -> str | None:
+    """Error text when any ANCESTOR of record_id sits in a status that is one of
+    that ancestor's `gates.tasks` — i.e. the ancestor is already closed and its
+    task tree must not grow again (the re-open restriction).
+    self_id: the task being opened/moved (never counted as its own ancestor)."""
+    # walk the parent chain from the record upward (cycle-safe via the seen set)
+    cur: str | None = record_id
+    seen: set[str] = {self_id}
+    while cur is not None and cur not in seen:
+        parent = db.parent_of(cur)
+        cur = parent["source"] if parent else None
+        if cur is None or cur in seen:
+            break
+        seen.add(cur)
+        a_spec, a_row = rec.ref_record(cfg, db, cur)
+        if a_row is None:
+            continue  # dangling parent: flagged by `proj check`
+        if a_row["status"] in a_spec.gates_tasks:
+            return (f"ancestor {cur} is {a_row['status']!r} (a closed state) — "
+                    f"move it out of that state first, then attach the task")
+    return None
 
 
 @register
@@ -21,6 +43,13 @@ class Task(Record):
             canonical = rec.canonical_id(cfg, parent)
             db = rec.open_db(cfg)
             try:
+                # re-open restriction: never parent a fresh task under a closed
+                # ancestor (its state is in that ancestor's gates.tasks)
+                p_spec, p_row = rec.ref_record(cfg, db, canonical)
+                if p_row is not None and p_row["status"] in p_spec.gates_tasks:
+                    raise ValueError(
+                        f"parent {canonical} is {p_row['status']!r} (a closed state) "
+                        f"— move it out of that state first, or attach elsewhere")
                 # kind=parent: source=parent, target=this task (single parent);
                 # the edge's FK requires both ids to exist (D8)
                 db.add_relation(canonical, row["id"], "parent")
@@ -32,18 +61,55 @@ class Task(Record):
             row = self.add_related(cfg, row["id"], related)
         return row, p
 
-    # done goes through the base-class verb (task.yaml declares `done`); the
-    # checkbox gate lives in Record.validate_transition
+    # done/fail go through the base-class verbs (task.yaml declares them); the
+    # descendant-task gate lives in Record.validate_transition (gates.tasks)
+
+    # ---- re-open restriction -------------------------------------------------
+    def validate_transition(self, cfg: ProjConfig, row: dict, verb: str, db) -> None:
+        super().validate_transition(cfg, row, verb, db)
+        to_s = self.verbs[verb][1]
+        # opening a finished task (terminal → non-terminal) while an ancestor is
+        # closed: refuse, with a hint to un-close the ancestor first
+        if row["status"] in self.spec.status_terminal and to_s not in self.spec.status_terminal:
+            blocked = _ancestor_gate_violation(cfg, db, row["id"])
+            if blocked:
+                raise ValueError(f"{self.record_type} {row['id']}: {verb} refused — {blocked}")
+
+    def move(self, cfg: ProjConfig, id_: str, parent: str | None) -> dict:
+        """Re-home an existing task (parent=None = detach to Unparented).
+        Guards: target exists (any type), is not the task itself, is not one of
+        its own descendants (cycle), and is not in a closed (gates.tasks) state."""
+        db = rec.open_db(cfg)
+        try:
+            row = rec.by_id(cfg, self.spec, db, id_)
+            if row is None:
+                raise ValueError(f"{self.record_type} {id_} not found")
+            if parent is not None:
+                self._check_parent_ref(cfg, parent)
+                canonical = rec.canonical_id(cfg, parent)
+                if canonical == row["id"]:
+                    raise ValueError(f"cannot move {row['id']} under itself")
+                if canonical in db.descendants_of(row["id"]):
+                    raise ValueError(
+                        f"cannot move {row['id']} under its own descendant {canonical} "
+                        "(cycle)")
+                p_spec, p_row = rec.ref_record(cfg, db, canonical)
+                if p_row is not None and p_row["status"] in p_spec.gates_tasks:
+                    raise ValueError(
+                        f"parent {canonical} is {p_row['status']!r} (a closed state) "
+                        f"— move it out of that state first, or attach elsewhere")
+            old = db.parent_of(row["id"])
+            db.set_parent(row["id"], rec.canonical_id(cfg, parent) if parent else None)
+            old_s = old["source"] if old else None
+            new_s = rec.canonical_id(cfg, parent) if parent else None
+            db.add_log(row["id"], f"parent: {old_s} → {new_s or 'none'}", "Changed")
+            fresh = rec.by_id(cfg, self.spec, db, row["id"])
+        finally:
+            db.close()
+        rec.render_all(cfg)
+        return fresh
 
     # ---- engine hooks ---------------------------------------------------------
-    def on_ingest(self, db, row: dict, sections: dict, notes: list[str],
-                   source_name: str) -> None:
-        # first checkbox tick auto-promotes Draft → In Progress
-        if row["status"] == "Draft" and rec.has_checked(sections.get("steps", "")):
-            db.set(self.spec, row["id"], status="In Progress")
-            db.add_log(row["id"], category="Changed")  # row stores the new status
-            notes.append(f"{source_name}: auto status Draft → In Progress")
-
     def check_rows(self, rows: list[dict], db, reg: dict) -> list[str]:
         problems: list[str] = []
         all_ids: dict[str, str] = {}  # id -> record_type, every type
@@ -51,17 +117,12 @@ class Task(Record):
             for r in db.all(reg[record_type]):
                 all_ids[r["id"]] = record_type
         for r in rows:
-            steps = json.loads(r["sections"] or "{}").get("steps", "")
-            if any(i >= 2 for i, _, _ in rec.checkboxes(steps)):
-                problems.append(f"task {r['id']}: Steps deeper than 2 levels "
-                                f"— flatten sub-tasks")
             # related refs are checked by the base check_rows (relations table)
             parent = db.parent_of(r["id"])
             if parent and parent["source"] not in all_ids:
                 problems.append(f"task {r['id']}: parent {parent['source']} does not exist "
                                 f"— create it or clear the task's parent")
         # parent cycles: follow the parent chain, no task may reach itself
-        # (only follow parents that are tasks; a plan/experiment root ends the chain)
         by_id = {r["id"]: r for r in rows}
         for r in rows:
             seen, cur = set(), by_id.get(r["id"])
@@ -93,7 +154,6 @@ class Task(Record):
             f"({', '.join(reg)}) — create it first or drop --parent")
 
 
-
 # ---- module-level delegations (stable call shape for cli/tests) --------------
 
 def _obj(cfg: ProjConfig) -> Task:
@@ -106,8 +166,16 @@ def new(cfg: ProjConfig, title: str, parent: str | None = None,
     return _obj(cfg).new(cfg, title, parent, summary, commit, related)
 
 
+def move(cfg: ProjConfig, id_: str, parent: str | None) -> dict:
+    return _obj(cfg).move(cfg, id_, parent)
+
+
 def done(cfg: ProjConfig, id_: str) -> dict:
     return _obj(cfg).transition(cfg, "done", id_)
+
+
+def fail(cfg: ProjConfig, id_: str) -> dict:
+    return _obj(cfg).transition(cfg, "fail", id_)
 
 
 def list_tasks(cfg: ProjConfig, status: str | None = None) -> list[dict]:

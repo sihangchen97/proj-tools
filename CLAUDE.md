@@ -53,15 +53,20 @@ Layers (`src/proj/`):
 - `engine/record.py` — `Record` base class (new, transition via template verbs,
   `validate_transition`, `on_ingest`, `check_rows`, supersede/related links) plus the
   `@register` / `record_for` registry. Types without a subclass use the base class.
-- `record_types/` — behavior subclasses only where YAML isn't enough: `task` (first `[x]`
-  auto-promotes Draft → In Progress, done requires all checkboxes, max 2 checkbox levels,
-  parent refs/cycles), `plan` (review gate: all direct child tasks Done), `changelog`.
-  Importing the package registers them.
+- `record_types/` — behavior subclasses only where YAML isn't enough: `task` (parent refs /
+  `task move` / re-open restriction under a closed ancestor), `changelog`. The checklists
+  and the `gates.tasks`/`gates.items` promotion live in `profiles/*.yaml` + `engine/items.py`,
+  not in these subclasses. Importing the package registers them.
+- `engine/items.py` — the structured checklists (a record's `items:` section): parse/render
+  one item line (`- [ ] #NN text`), merge the md list on sync, the `item` ops (add/set/
+  check/uncheck/edit/mv/rm/ls), the `gates.items` block, the closed-state re-open
+  restriction, and the `n/m` progress suffix on task lines.
 - `engine/views.py` — generated views (`TASKLIST.md`, `_TOC.md`, plan task trees, `CHANGELOG.md`).
 - `cli.py` — Typer app; per-record_type subcommands (`new/list/show/update/<verb>`) are built
-  dynamically from the registry, so a new record_type needs only a YAML file.
+  dynamically from the registry, so a new record_type needs only a YAML file; plus the
+  static `item` group (`proj item ls/add/set/check/uncheck/edit/mv/rm`).
 - `mcp.py` — `proj-mcp` stdio server exposing the same engine functions (one tool per CLI verb,
-  optional `root`, falls back to `$PROJ_HOME`).
+  optional `root`, falls back to `$PROJ_HOME`); includes the `proj_item_*` tools.
 - `check.py` (invariants: md↔DB, filename↔id, schema↔template, nesting, relation consistency),
   `scaffold.py` (`init`), `hooks.py` (pre-commit → `proj check`), `docs.py`.
 

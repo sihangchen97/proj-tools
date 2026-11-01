@@ -16,10 +16,9 @@ def test_new_creates_record(proj):
     text = p.read_text()
     lines = text.splitlines()
     assert lines[0] == f"<!-- proj:decision {row['id']} -->"  # marker comment, line 1
-    assert lines[1] == "# DEC-0002. Use Rust"  # title above the head fence
+    assert lines[1] == f"# {row['id']}. Use Rust"  # H1 = "# ID. title" (title editable; DB wins)
     assert lines[3].startswith("<!-- proj:head:start")  # fence below the title
-    assert any(l.startswith("> **status:** `✏️ Draft`") for l in lines)
-    assert "# DEC-0002. Use Rust" in text
+    assert any(x.startswith("> **status:** `✏️ Draft`") for x in lines)
     assert "## Context" in text
     # changelog shows the created entry (comment → the status emoji + "created")
     assert "- ✏️ created`" in text
@@ -56,14 +55,14 @@ def test_status_change_stored_in_status_columns(proj):
     # each row stores the record's status AFTER the event (the `status` column)
     assert any(e["status"] == "Proposed" for e in logs)
     assert any(e["status"] == "Accepted" for e in logs)
-    assert not any("status " in (e["comment"] or "") for e in logs)
+    assert not any("status " in (e["message"] or "") for e in logs)
     # the rendered md shows backticked changelog lines + the status legend inside
     p = next((proj.root / "docs/decisions").glob(f"{r['id']}-*.md"))
     text = p.read_text()
     assert "- " in text and "`" in text and "<details>" in text
     assert " · ".join(spec.status_display(s) for s in spec.status_allowed) in text
-    # created: the row's status is the initial one, comment "created"
-    assert any(e["status"] == "Draft" and e["comment"] == "created" for e in logs)
+    # created: the row's status is the initial one, message "created"
+    assert any(e["status"] == "Draft" and e["message"] == "created" for e in logs)
 
 
 def test_supersede_multi_and_append(proj):

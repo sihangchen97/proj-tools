@@ -27,10 +27,11 @@ md file shape (rendered by the engine):
                                              <-   above it (block + summary + changelog)
                                              <-   is owned by `proj`, never hand-edit
 
-    ## Task List                           <- the editable task tree (kind: task
-    <details><summary>Task list</summary>   <-   section), right below the head fence
-    - [x] T-000001 Title                  <-   and BEFORE the user-owned sections;
-    </details>                            <-   collapsed by default
+    <details><summary>Task list</summary>  <- the attached-task tree, right below the
+    - [x] T-000001 Title                  <-   head fence and BEFORE the user-owned
+    </details>                            <-   sections; rendered for ANY record that
+                                         <-   parents tasks (kind=parent edges),
+                                         <-   collapsed by default
 
     ## Context                             <- user-owned content (the only
     ...                                    <- part humans/LLMs edit)
@@ -39,13 +40,14 @@ The metadata block is a blockquote of `> **key:** value` lines — NOT a front
 matter, so md frontmatter validators leave it alone. Every line but the last
 ends with two spaces (markdown hard wrap — a hard wrap on the last line would
 pull the following content into the blockquote). Record id refs (supersedes /
-superseded_by / related / a task's parent / subtask) render as `[filename](path)`
-links: the text is the target's full filename, the path relative to this
-record's own file (same dir → bare filename, across dirs → ../dir/filename);
-one ref = one line, several = a bare key line + `> - item` list. The
-`kind: task` section renders the editable task tree (children via the
-kind=parent relation), outside the head fence. The id marker comment sits on
-line 1, above the block.
+superseded_by / related / a task's parent) render as `[filename](path)` links:
+the text is the target's full filename, the path relative to this record's own
+file (same dir → bare filename, across dirs → ../dir/filename); one ref = one
+line, several = a bare key line + `> - item` list. The attached-task tree
+(children via the kind=parent relation, any depth, fully expanded) renders
+right below the head fence for ANY record that parents tasks. The id marker
+comment sits
+on line 1, above the block.
 
 sync: md → DB (sections win) → render all md (tool-owned parts win).
 """
@@ -61,9 +63,11 @@ from proj.core.config import ProjConfig
 from proj.core.templates import RecordTypeSpec, load_registry, slugify
 
 # tool-owned id marker (an html-comment line, on line 1 above the blockquote head)
-# id shape: 1-3 letters + '-' + digits, letters+digits == 7 (8 chars total),
-# e.g. DEC-0001, T-000001. Case-insensitive, not glued to other alnums,
-# uppercased on use. MARK_RE wraps this shape in the line-1 head comment.
+# id shape: 1-3 letters + '-' + a fixed-width DIGIT suffix, letters+digits == 7
+# (8 chars total), e.g. DEC-0001, T-000001. The suffix is digits ONLY — there is
+# no letter overflow (see db.next_id; a record id is {code}-{digits} until the
+# all-digit space is used up, then new ids raise). Case-insensitive, not glued to
+# other alnums, uppercased on use. MARK_RE wraps this shape in the line-1 comment.
 _ID_SHAPE = (
     r"(?<![0-9A-Za-z])([A-Za-z]-[0-9]{6}|[A-Za-z]{2}-[0-9]{5}"
     r"|[A-Za-z]{3}-[0-9]{4})(?![0-9A-Za-z])"
@@ -71,7 +75,6 @@ _ID_SHAPE = (
 MARK_RE = re.compile(rf"^<!-- proj:([\w-]+) {_ID_SHAPE} -->[ \t]*$", re.MULTILINE)
 TITLE_RE = re.compile(r"^# (.+)$", re.MULTILINE)
 SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
-CHECKBOX_RE = re.compile(r"^\s*[-*] \[([ xX])\]")
 # one head line: `> **key:** value` (+ trailing two spaces = markdown hard wrap)
 HEAD_LINE_RE = re.compile(r"^> \*\*(\w+):\*\*\s*(.*)$")
 # head fence: an invisible comment pair marks the tool-owned head region
@@ -96,18 +99,38 @@ def spec_and_db(cfg: ProjConfig, record_type: str):
     return reg[record_type], open_db(cfg)
 
 
+# a bare "sequence" ref: pure digits, optionally zero-shortened ("1"/"0001").
+_BARE_SEQ_RE = re.compile(r"0*\d+")
+
+
+def _canonical_ref(spec: RecordTypeSpec, ref: str) -> str | None:
+    """The canonical id for a ref of this type (None if the type isn't numbered
+    or the ref doesn't match). Accepts the full id (any width), a code-prefixed
+    shortened suffix ("T-1"/"T-0001" → "T-000001", "DEC-1" → "DEC-0001"), or a
+    bare suffix ("1", "0001" → the type's own code, e.g. DEC-0001)."""
+    if not isinstance(spec.numbered, int) or not ref:
+        return None
+    seq = ref
+    if "-" in ref:
+        head, _, tail = ref.partition("-")
+        if head.upper() != spec.code:
+            return None
+        seq = tail
+    if not _BARE_SEQ_RE.fullmatch(seq):
+        return None
+    n = int(seq)
+    if n > 10 ** int(spec.numbered):  # out of the all-digit id space
+        return None
+    return f"{spec.code}-{n:0{spec.numbered}d}"
+
+
 def by_id(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, id_: str) -> dict | None:
     row = db.get(spec, id_)
     if row is not None:
         return row
-    # tolerant: a bare number ("1"/"0001") resolves to the canonical {code}-{n:0w}
-    if isinstance(spec.numbered, int) and re.fullmatch(r"0*\d+", id_ or ""):
-        return db.get(spec, f"{spec.code}-{int(id_):0{spec.numbered}d}")
-    return None
-
-
-def _display_id(spec: RecordTypeSpec, id_: str) -> str:
-    return id_  # stored canonical ({code}{n:0w}); shown as-is
+    # tolerant: a bare number ("1"/"0001") → the canonical {code}-{n:0w}
+    cand = _canonical_ref(spec, id_)
+    return db.get(spec, cand) if cand else None
 
 
 def canonical_id(cfg: ProjConfig, ref: str) -> str:
@@ -123,12 +146,10 @@ def canonical_id(cfg: ProjConfig, ref: str) -> str:
         for spec in reg.values():
             if db.get(spec, ref) is not None:
                 return ref
-        if re.fullmatch(r"0*\d+", ref):
-            for spec in reg.values():
-                if isinstance(spec.numbered, int):
-                    cand = f"{spec.code}-{int(ref):0{spec.numbered}d}"
-                    if db.get(spec, cand) is not None:
-                        matches.append(cand)
+        for spec in reg.values():
+            cand = _canonical_ref(spec, ref)
+            if cand and cand != ref.upper() and db.get(spec, cand) is not None:
+                matches.append(cand)
         if len(matches) == 1:
             return matches[0]
     finally:
@@ -150,19 +171,21 @@ def ref_record(cfg: ProjConfig, db: dbmod.Db, ref: str):
         r = db.get(spec, ref)
         if r is not None:
             return spec, r
-    if re.fullmatch(r"0*\d+", ref):
-        matches: list[tuple] = []
-        for spec in reg.values():
-            if isinstance(spec.numbered, int):
-                r = db.get(spec, f"{spec.code}-{int(ref):0{spec.numbered}d}")
-                if r is not None:
-                    matches.append((spec, r))
-        if len(matches) > 1:
-            raise ValueError(f"{ref!r} matches several records "
-                             f"({', '.join(s.record_type + ' ' + r['id'] for s, r in matches)}) "
-                             "\u2014 use the canonical id (e.g. DEC-0001)")
-        if matches:
-            return matches[0]
+    # a shortened/bare ref may fit SEVERAL types — collect every match first;
+    # an ambiguous one raises (use the canonical id), never "first type wins"
+    matches: list[tuple] = []
+    for spec in reg.values():
+        cand = _canonical_ref(spec, ref)
+        if cand and cand != ref.upper():
+            r = db.get(spec, cand)
+            if r is not None:
+                matches.append((spec, r))
+    if len(matches) > 1:
+        raise ValueError(f"{ref!r} matches several records "
+                         f"({', '.join(s.record_type + ' ' + r['id'] for s, r in matches)}) "
+                         "\u2014 use the canonical id (e.g. DEC-0001)")
+    if matches:
+        return matches[0]
     return None, None
 
 
@@ -172,7 +195,7 @@ def _id_prefix_re(spec: RecordTypeSpec) -> re.Pattern:
     if isinstance(spec.numbered, int) and spec.code:
         pre, n = re.escape(spec.code) + "-", f"[0-9]{{{spec.numbered}}}"
     else:
-        pre, n = r"[A-Za-z]{1,3}-", r"[0-9]{4,6}"
+        pre, n = r"[A-Za-z]{1,3}-", r"[0-9A-Za-z]{4,6}"
     return re.compile(
         rf"^((?<![0-9A-Za-z]){pre}{n}(?![0-9A-Za-z]))-", re.IGNORECASE)
 
@@ -198,8 +221,8 @@ def _link_value(value: str, db: dbmod.Db, registry: dict,
     (id-slug) and the path is relative to this record's own file (same dir
     → bare filename, across dirs → ../target-dir/filename). Dangling ids
     fall back to plain text.
-    One id → a single string; several → a list (the head renders it as a
-    blockquote item list). Resolves across any record_type (parent→plan)."""
+    One id → a single string; several → a list (the head inlines it on the
+    key line). Resolves across any record_type (parent→plan)."""
     root = Path(db.path).parent
     src_file = file_path(ProjConfig(root), spec, row)
     ids = [x for x in value.replace(",", " ").split() if x]
@@ -242,12 +265,12 @@ def _logs_limit() -> int | None:
 
 
 def _log_body(e: dict, spec: RecordTypeSpec) -> str:
-    """The text of a changelog entry: the comment when one is set (the record's
+    """The text of a changelog entry: the message when one is set (the record's
     status at that moment only as its emoji prefix), else the status AFTER the
     event (emoji + name, i.e. `status_display`)."""
     s = e["status"] or ""
-    if e["comment"]:
-        return f"{spec.emojify(s)} {e['comment']}"
+    if e["message"]:
+        return f"{spec.emojify(s)} {e['message']}"
     return spec.status_display(s)
 
 
@@ -259,13 +282,13 @@ def _log_entry(e: dict, spec: RecordTypeSpec) -> str:
 
 def _head_lines(fm: dict) -> list[str]:
     """Tool-owned head lines: a blockquote of `> **key:** value` (a gray
-    sidebar). A value is either a plain string (one line) or a list of
-    strings (a bare key line + `> - item` lines, one per value)."""
+    sidebar), every line ending in a markdown hard break (two trailing
+    spaces). A list value renders INLINED on the key line (`,`-separated —
+    no per-item rows), e.g. `> **subtask:** [T-…](…md), [T-…](…md)`."""
     lines: list[str] = []
     for k, v in fm.items():
         if isinstance(v, list):
-            lines.append(f"> **{k}:**")
-            lines += [f"> - {_head_value(x)}" for x in v]
+            lines.append(f"> **{k}:** " + ", ".join(_head_value(x) for x in v))
         else:
             lines.append(f"> **{k}:** {_head_value(v)}")
     return lines
@@ -277,8 +300,9 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     # (status/created/done rows + relation rows, id refs as links to the
     # target's full filename); the one-sentence summary is an italic line
     # below the block (shown only when set — never a "Summary:" label).
-    # contain_task records get a subtask row (direct children via relations);
-    # the task TREE itself stays in their kind: task section (editable block).
+    # The attached-task tree (direct children via relations, at most 2
+    # levels) renders for ANY record that parents tasks, right below the
+    # head fence (replaces the old contain_task gate + subtask head row).
     reg = registry if registry is not None else load_registry(Path(db.path).parent)
     fm = {
         "status": f"`{spec.status_display(row['status'])}`",
@@ -303,10 +327,6 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         par = db.parent_of(row["id"])
         if par:
             fm["parent"] = _link_value(par["source"], db, reg, spec, row)
-    if spec.contain_task:
-        kids = [c["target"] for c in db.children_of(row["id"])]
-        if kids:
-            fm["subtask"] = _link_value(", ".join(kids), db, reg, spec, row)
     # marker comment (line 1, invisible) → title (editable; synced back to the
     # DB) → the head fence: the TOOL-OWNED region is blockquote + summary +
     # the changelog — everything between start and end is maintained by `proj`
@@ -315,8 +335,9 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     lines = [f"<!-- proj:{spec.record_type} {row['id']} -->",
              f"# {row['id']}. {row['title']}", "",
              HEAD_START,
-             "\n".join(l + ("  " if i < len(head) - 1 else "")
-                       for i, l in enumerate(head)) if head else "",
+             # every blockquote line ends with a markdown hard break (two
+             # trailing spaces) so each row stays on its own line in any renderer
+             "\n".join(line + "  " for line in head) if head else "",
              ""]
     if row.get("one_sentence"):
         lines.append(f"_{row['one_sentence']}_")  # one-sentence summary, inside
@@ -333,24 +354,33 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
             lines += ["", legend, "</details>"]
     lines += ["", HEAD_END]
     sections = json.loads(row["sections"] or "{}")
-    # the editable task tree (kind: task section) sits right BELOW the head
-    # fence, before the user-owned sections; collapsed by default
+    # the Tasks block sits right BELOW the head fence, before the user-owned
+    # sections, for ANY record that parents tasks (kind=parent edges) or has
+    # hand-written lines stored in the `_tasks_block` section. Content = stored
+    # lines (hand-written ones verbatim; task-link lines re-emitted with the
+    # task's current status) + any parented task missing a stored line.
+    from proj.engine.views import render_tasks_block, task_ids_of  # lazy: cycle
+    task_spec = reg.get("task")
+    block = render_tasks_block(
+        (sections.get(TASKS_BLOCK_KEY) or "").splitlines(),
+        db.all(task_spec) if task_spec else [],
+        task_ids_of(db, db.all(task_spec) if task_spec else [], row["id"]),
+        db, task_spec, reg,
+        Path(db.path).parent / spec.dir,
+        Path(db.path).parent / task_spec.dir)
+    if block:
+        lines += ["", "<details open>", "<summary>Tasks</summary>", ""]
+        lines += [*block, "</details>", ""]
+    from proj.engine import items as items_mod  # lazy: store↔items cycle
     for sec in spec.sections:
-        if sec.kind != "task":
-            continue
         lines += [f"## {sec.name}", ""]
-        from proj.engine.views import task_tree_lines  # lazy: views↔store cycle
-        task_spec = reg.get("task")
-        tree = (task_tree_lines(
-            db.all(task_spec) if task_spec else [], row["id"], db)
-            or ["(no tasks attached)"])
-        lines += ["<details>", "<summary>Task list</summary>", ""]
-        lines += tree + ["</details>", ""]
-    for sec in spec.sections:
-        if sec.kind == "task":
-            continue
-        lines += [f"## {sec.name}", ""]
-        lines.append(sections.get(sec.name.lower(), "").strip())
+        if spec.items is not None and sec.name == spec.items.section:
+            # the items section = stored intro + the DB-owned item list; the item
+            # lines carry trailing hard-break spaces — do not strip (they keep
+            # the re-parsed md byte-compatible with the DB render, no drift)
+            lines.append(items_mod.section_text(db, spec, row))
+        else:
+            lines.append(sections.get(sec.name.lower(), "").strip())
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -374,6 +404,12 @@ def md_drift(cfg: ProjConfig) -> list[str]:
             if row is None:
                 continue
             stored = json.loads(row["sections"] or "{}")
+            if spec.items is not None:
+                # the items section = stored intro + the DB item list (items.merge)
+                from proj.engine import items as items_mod  # lazy: store↔items cycle
+                if items_mod.md_drift_one(cfg, spec, row):
+                    out.append(p.name)
+                    continue
             for s in spec.sections:
                 if s.kind != "text":
                     continue
@@ -485,14 +521,72 @@ def md_status(text: str) -> str:
 # start fence may carry an instruction message after `start`
 HEAD_START_RE = re.compile(r"^<!-- proj:head:start.*?-->[ \t]*$", re.MULTILINE)
 HEAD_END_RE = re.compile(r"^<!-- proj:head:end -->[ \t]*$", re.MULTILINE)
+# the per-record Tasks block (rendered right below the head fence): everything
+# between `<details open><summary>Tasks</summary>` and the first `</details>`
+# is user-editable (hand lines + task links with trailing text) and is stored,
+# verbatim, under this sections key so a re-render keeps it. It is a VIEW of
+# the task tree a record delegates to — a task-link line must point at a
+# DESCENDANT task of this record (D11: sync refuses anything else, the block
+# never shows a "fake structure"); task-line checkboxes are re-emitted from the
+# DB (terminal statuses render [x], non-done finals get their status emoji).
+TASKS_BLOCK_KEY = "_tasks_block"
+_TASKS_BLOCK_RE = re.compile(
+    r"<details open>\s*<summary>Tasks</summary>\s*\n(.*?)</details>",
+    re.DOTALL)
+
+
+def md_tasks_block(text: str) -> str:
+    """The user-editable Tasks block of a record md ("" when absent)."""
+    m = _TASKS_BLOCK_RE.search(text)
+    if not m:
+        return ""
+    lines = m.group(1).rstrip("\n").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def tasks_block_problems(db: dbmod.Db, record_id: str, block: str) -> list[str]:
+    """D11: every task-link line in a record's Tasks block must point at a
+    DESCENDANT task of that record — a link anywhere else means the block
+    shows a "fake structure" and the sync is refused (fix: `proj task move`).
+    Hand-written lines and trailing description text are not affected; dangling
+    ids are `proj check`'s job, not this gate's."""
+    from proj.core.templates import load_registry
+    from proj.engine.views import _TASK_LINE_RE
+    reg = load_registry(Path(db.path).parent)
+    task_spec = reg.get("task")
+    if task_spec is None:
+        return []
+    own_tree = db.descendants_of(record_id)
+    problems: list[str] = []
+    for line in block.splitlines():
+        m = _TASK_LINE_RE.match(line)
+        if not m:
+            continue  # hand-written line: kept, not checked
+        idm = re.match(r"[A-Z]+-[0-9A-Za-z]+", m.group(2))
+        if not idm:
+            continue  # not a real task id: `proj check` reports the dangling ref
+        task_id = idm.group(0)
+        if db.get(task_spec, task_id) is None:
+            continue
+        if task_id not in own_tree:
+            problems.append(
+                f"Tasks block links {task_id}, which is not a task of {record_id} "
+                f"— use `proj task move` to re-home it (or drop the line)")
+    return problems
+
+
 # one-sentence summary: a single italic line just below the metadata block
 SUMMARY_LINE_RE = re.compile(r"^_([^-_].*|[^_])_$")
 
 
 def md_summary(text: str) -> str:
-    """The one-sentence summary: the italic line inside the head fence (new
-    layout); falls back to the old `> **summary:**` head row for files
-    rendered before the fence existed (md wins either way)."""
+    """The one-sentence summary: the italic line inside the head fence; falls
+    back to the `> **summary:**` head row for files without a fence (md
+    wins either way)."""
     m_start, m_end = HEAD_START_RE.search(text), HEAD_END_RE.search(text)
     if m_start and m_end:
         for line in text[m_start.end():m_end.start()].splitlines():
@@ -572,7 +666,7 @@ def add_log(cfg: ProjConfig, record_type: str, id_: str, summary: str,
 
 
 def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None = None,
-                  summary: str | None = None, comment: str | None = None) -> dict:
+                  summary: str | None = None, message: str | None = None) -> dict:
     """Update a record's title / summary (and optionally append a changelog entry)."""
     spec, db = spec_and_db(cfg, record_type)
     row = by_id(cfg, spec, db, id_)
@@ -589,9 +683,9 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
     if summary is not None:
         db.set(spec, row["id"], one_sentence=summary.strip())
         db.add_log(row["id"], "summary updated", "Changed")
-    if comment:
+    if message:
         from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
-        cat, text = dbmod.parse_summary(comment, load_changelog_spec(cfg.root))
+        cat, text = dbmod.parse_summary(message, load_changelog_spec(cfg.root))
         db.add_log(row["id"], text, cat)
     fresh = db.get(spec, row["id"])
     p = file_path(cfg, spec, fresh)
@@ -601,25 +695,6 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
     db.close()
     render_all(cfg)
     return fresh
-
-
-# ---- task checkboxes ----------------------------------------------------------
-
-def checkboxes(section_text: str) -> list[tuple[int, bool, str]]:
-    """[(indent_level, checked, text)] for every checkbox line (any level)."""
-    out = []
-    for line in section_text.splitlines():
-        m = CHECKBOX_RE.match(line)
-        if m:
-            indent = len(line) - len(line.lstrip())
-            out.append ((indent // 2, m.group(1).lower() == "x", line.strip()))
-    return out
-
-
-def has_checked(section_text: str) -> bool:
-    return any(c for _, c, _ in checkboxes(section_text))
-
-
 
 
 # ---- sync / adopt --------------------------------------------------------------
@@ -641,6 +716,11 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         if not p.name.startswith(row["id"] + "-"):
             return [f"{p.name}: filename id does not match {row['id']} (renamed? "
                     f"edit the marker or move the file)"], []
+        # D11: validate the Tasks block BEFORE any write (its task links must
+        # all point at this record's own task tree)
+        block_problems = tasks_block_problems(db, u, md_tasks_block(text))
+        if block_problems:
+            return block_problems, []
         notes = []
         # the title is user-owned (md wins): a changed title goes back to the
         # DB and the file is renamed to the new slug (the id never changes)
@@ -657,10 +737,25 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
             notes.append(f"{p.name}: status drift in md (DB wins: {row['status']!r})")
         sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))
                     for s in spec.sections if s.kind == "text"}
+        # the Tasks block (hand lines + task links w/ trailing text) is
+        # user-editable md: keep it across re-renders, stored verbatim
+        if md_tasks_block(text):
+            sections[TASKS_BLOCK_KEY] = md_tasks_block(text)
+        # item checklists (items.py): the items section's LIST is owned by the DB —
+        # only its intro (text before the list) is stored in the section. Validate
+        # fully before any write; the items write + changelog + promote follow.
+        if spec.items is not None:
+            from proj.engine import items as items_mod  # lazy: store↔items cycle
+            raw_items = raw_sections.get(spec.items.section.lower(), "")
+            problems, intro = items_mod.validate(db, spec, row, raw_items, p.name)
+            if problems:
+                return problems, []
+            sections[spec.items.section.lower()] = intro
+            items_mod.ingest(db, spec, row, raw_items, notes, p.name)
         db.set(spec, u, sections=json.dumps(sections, ensure_ascii=False))
         # one_sentence: md wins (hand-written result/progress), DB otherwise
         db.set(spec, u, one_sentence=md_summary(text) or (row.get("one_sentence") or ""))
-        # record_type-specific ingest side effects (task: checkbox auto-promotion)
+        # record_type-specific ingest side effects (base: no-op)
         from proj.engine.record import record_for  # lazy: record↔store cycle
         record_for(spec).on_ingest(db, row, sections, notes, p.name)
         return [], notes
@@ -684,6 +779,19 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
     db.add_log(id_, "adopted into proj", category="Added", when=created)
     sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))
                 for s in spec.sections if s.kind == "text"}
+    if md_tasks_block(text):
+        sections[TASKS_BLOCK_KEY] = md_tasks_block(text)
+    # adopted md: the items section is parsed the same way — every line becomes
+    # a NEW item (items.adopt); the intro stays in the stored section
+    if spec.items is not None:
+        from proj.engine import items as items_mod  # lazy: store↔items cycle
+        raw_items = raw_sections.get(spec.items.section.lower(), "")
+        problems, intro = items_mod.validate(db, spec, db.get(spec, id_), raw_items, p.name)
+        if problems:
+            return problems, []
+        sections[spec.items.section.lower()] = intro
+        notes: list[str] = []
+        items_mod.ingest(db, spec, db.get(spec, id_), raw_items, notes, p.name)
     db.set(spec, id_, sections=json.dumps(sections, ensure_ascii=False))
     # adopt: same record_type hook, fresh row; promotion notes are dropped
     from proj.engine.record import record_for  # lazy: record↔store cycle
@@ -748,9 +856,9 @@ def adopt(cfg: ProjConfig, files: list[Path] | None = None):
 CHEATSHEET = """\
 Ops cheatsheet (RT = a record_type — name or code, case-insensitive; VERB = one from its template):
   new:        proj RT new TITLE [--field name=value] [--parent N] [-s N]
-  change:     proj RT <VERB> ID [-t X] [-s X] [-c "…"]  (state machine + optional
-                                                         title/summary/comment update)
-  edit:       proj RT update ID [-t X] [-s X] [-c "…"]  (update title / summary /
+  change:     proj RT <VERB> ID [-t X] [-s X] [-m "…"]  (state machine + optional
+                                                         title/summary/message update)
+  edit:       proj RT update ID [-t X] [-s X] [-m "…"]  (update title / summary /
                                                          append a changelog entry)
   md edited:  proj sync | proj adopt (first time, unmanaged files)
   query:      proj RT list | proj RT show ID [--history]

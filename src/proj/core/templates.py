@@ -4,16 +4,21 @@ A profile file declares a record_type's table schema and behavior:
 
     record_type: decision
     dir: docs/decisions
-    numbered: 4          # 4 = NNNN (digits width); must be an int > 0 (D9:
-    # the id prefix {code}-{digits} is how relations rows resolve a record's type)
+    numbered: 4          # 4 = id-suffix width (digits only: 10**W values, e.g. 0001…9999).
+    # int > 0 (D9). No letter overflow: when the digit space is used up, new ids raise.
+    # The {code}- prefix is how relations rows resolve a record's type.
     code: DEC            # 3-letter record code; used in refs (DEC-0001) and the graph
     verbs:               # one verb per status: name -> {from, to}; from: Any = any state
       accept: {from: Any, to: Accepted}
       deprecate: {from: Any, to: Deprecated}
-    status-allowed:      # each entry: {name, emoji, done} (emoji/done optional)
+    status-allowed:      # each entry: {name, emoji, done, terminal} (emoji/done/terminal optional)
       - {name: Proposed, emoji: 🌱}
       - {name: Accepted, emoji: ✅, done: true}   # done: true => counts as the "done" state
-    contain_task: true     # tasks attach (parent -> this): head task tree, subtask row
+      - {name: Failed, emoji: ❌, terminal: true} # terminal: true => counts as "finished" for gates
+    gates:               # optional; statuses that require the check to pass
+      tasks: [Done]      # entering these statuses: every descendant task must be in a
+                         #   terminal task status (the task's own gates/tasks list decides)
+      items: [Done]      # entering these statuses: every item must be closed (phase 2)
     sections:            # body headings, in render order
       - {name: Context, hint: ...}
       - {name: Task List, type: task}   # view section: engine-rendered task tree
@@ -33,6 +38,21 @@ from pathlib import Path
 
 import yaml
 
+# libyaml's C loader when available (~12x faster than pure-Python SafeLoader),
+# else the pure-Python fallback
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def _yaml_load(text: str):
+    return yaml.load(text, Loader=_YAML_LOADER)
+
+
+# in-process cache for load_registry: profiles are parsed ~65x per test session;
+# the key covers every yaml file scanned + the lock (mtime/size), so edits to
+# a profile invalidate the entry automatically. spec objects are shared and
+# treated read-only by every caller (only the returned dict may be mutated).
+_REGISTRY_CACHE: dict[tuple, dict[str, RecordTypeSpec]] = {}
+
 
 @dataclass
 class ChangelogSpec:
@@ -42,6 +62,34 @@ class ChangelogSpec:
     default_category: str = "Changed"
     categories: list[str] = field(default_factory=lambda: [
         "Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"])
+
+
+@dataclass
+class ItemState:
+    """One state of a record's item checklist: `name` (required), optional
+    `emoji` (shown before the text when its group holds more than one state),
+    `closed` (group: todo=False, done=True)."""
+
+    name: str
+    emoji: str = ""
+    closed: bool = False
+
+
+@dataclass
+class ItemsSpec:
+    """The `items:` block: a record's structured checklist (one `##` section)."""
+
+    section: str
+    noun: str = "item"
+    states: list[ItemState] = field(default_factory=list)
+    fields: list[str] = field(default_factory=list)   # subset of {owner, due}
+    promote_from: list[str] = field(default_factory=list)
+    promote_to: str = ""
+
+    @property
+    def closed_states(self) -> list[str]:
+        """The names of the closed states (the 'done' half of the checklist)."""
+        return [s.name for s in self.states if s.closed]
 
 
 @dataclass
@@ -56,14 +104,21 @@ class TemplateSection:
 class RecordTypeSpec:
     record_type: str
     dir: str
-    numbered: int = 4   # int (NNNN width), must be > 0 (D9)
+    numbered: int = 4   # int (id-suffix width: digits only, no letter overflow), must be > 0 (D9)
     status_allowed: list[str] = field(default_factory=list)
     status_emoji: dict[str, str] = field(default_factory=dict)  # status name -> emoji
     verbs: dict[str, tuple[object, str]] = field(default_factory=dict)  # verb -> (from, to)
-    contain_task: bool = False  # tasks attach (parent -> this): head task tree, subtask row
     sections: list[TemplateSection] = field(default_factory=list)
     code: str = ""  # 3-letter record code (e.g. DEC); used in refs (DEC-0001) and the graph
     status_done: list[str] = field(default_factory=list)  # statuses declared done: true
+    # "finished" statuses: done: true + terminal: true (e.g. Failed) — a task in
+    # one of these never blocks its ancestors' gates
+    status_terminal: list[str] = field(default_factory=list)
+    # entering gates_tasks: all descendant tasks must be terminal; entering
+    # gates_items: all items must be closed (items come in phase 2)
+    gates_tasks: list[str] = field(default_factory=list)
+    gates_items: list[str] = field(default_factory=list)
+    items: ItemsSpec | None = None
     # render toggles (which generated views this record_type has)
     apply_toc: bool = False        # <dir>/_TOC.md (id/status/title table)
 
@@ -89,19 +144,20 @@ class RecordTypeSpec:
 
 
 def parse_template(text: str) -> RecordTypeSpec:
-    data = yaml.safe_load(text)
+    data = _yaml_load(text)
     if not isinstance(data, dict) or "record_type" not in data:
         raise ValueError(f"template missing 'record_type' key: {data!r:.80}")
     numbered = data.get("numbered", 4)
     if not isinstance(numbered, int):
         raise ValueError(
-            f"record_type {data['record_type']!r}: numbered must be an int (id width)")
+            f"record_type {data['record_type']!r}: numbered must be an int (id-suffix width)")
     # status entries: plain string, or {name: X, emoji: "🟢"} (emoji optional);
     # {name: X, emoji: ""} explicitly means "no emoji"; per-status remarks belong
     # in YAML comments, not in the data
     status_allowed: list[str] = []
     status_emoji: dict[str, str] = {}
     status_done: list[str] = []
+    status_terminal: list[str] = []
     for s in data.get("status-allowed", []):
         if isinstance(s, dict):
             status_allowed.append(str(s["name"]))
@@ -109,6 +165,8 @@ def parse_template(text: str) -> RecordTypeSpec:
                 status_emoji[str(s["name"])] = str(s["emoji"])
             if s.get("done"):
                 status_done.append(str(s["name"]))
+            if s.get("terminal"):
+                status_terminal.append(str(s["name"]))
         else:
             status_allowed.append(str(s))
     # verbs: {verb: {from: X, to: Y}} — state machine steps as template data;
@@ -123,6 +181,8 @@ def parse_template(text: str) -> RecordTypeSpec:
         else:
             frm = str(frm)
         verbs[str(verb)] = (frm, str(v["to"]))
+    gates = data.get("gates") or {}
+    items = _parse_items(data["record_type"], data.get("items"))
     spec = RecordTypeSpec(
         record_type=data["record_type"],
         dir=data.get("dir", f"docs/{data['record_type']}s").rstrip("/"),
@@ -130,20 +190,37 @@ def parse_template(text: str) -> RecordTypeSpec:
         status_allowed=status_allowed,
         status_emoji=status_emoji,
         verbs=verbs,
-        contain_task=bool(data.get("contain_task", False)),
         sections=[TemplateSection(s["name"], s.get("hint", ""), str(s.get("type", "text")))
                   for s in data.get("sections", [])],
         code=str(data.get("code", "")),
         status_done=status_done,
+        # done implies terminal (a done status always counts as finished);
+        # terminal adds non-done finals (e.g. Failed)
+        status_terminal=sorted(set(status_done) | set(status_terminal)),
+        gates_tasks=[str(s) for s in gates.get("tasks", [])],
+        gates_items=[str(s) for s in gates.get("items", [])],
         apply_toc=bool(data.get("render", {}).get("toc", False)),
+        items=items,
     )
-    unknown = [s for s in spec.status_done if s not in spec.status_allowed]
+    unknown = [s for s in spec.status_done + spec.status_terminal if s not in spec.status_allowed]
     if unknown:
-        msg = f"template {spec.record_type!r}: status done {unknown} not in status-allowed"
+        msg = (f"template {spec.record_type!r}: status done/terminal {unknown} "
+               f"not in status-allowed")
         raise ValueError(msg)
-    # id layout: {code}-{N digits} = 7 chars total (DEC-0001, DEB-0001, T-000001)
+    for kind, listed in (("gates.tasks", spec.gates_tasks), ("gates.items", spec.gates_items)):
+        bad = [s for s in listed if s not in spec.status_allowed]
+        if bad:
+            raise ValueError(
+                f"template {spec.record_type!r}: {kind} {bad} not in status-allowed")
+        if spec.items is not None:
+            _validate_items(spec)
+        if spec.gates_items and spec.items is None:
+            raise ValueError(
+                f"template {spec.record_type!r}: gates.items declared but no items: block")
+        # id layout: {code}-{N-char suffix} = 7 chars total (DEC-0001, T-000001, DEC-A000)
     # D9: numbered must be an int > 0 — every record id then carries a
-    # resolvable {code}-{digits} prefix (relations FK rows resolve type from it)
+    # resolvable {code}- prefix (relations FK rows resolve the type from the code,
+    # the suffix after it is digits only — no letter overflow, see db.next_id)
     if not (isinstance(spec.numbered, int) and spec.numbered > 0):
         raise ValueError(
             f"template {spec.record_type!r}: numbered must be an int > 0 (id width)")
@@ -156,6 +233,66 @@ def parse_template(text: str) -> RecordTypeSpec:
             f"template {spec.record_type!r}: code + numbered must total 7 "
             f"(got {len(spec.code)}+{spec.numbered})")
     return spec
+
+
+def _parse_items(record_type: str, data) -> ItemsSpec | None:
+    if data is None:
+        return None
+    if not isinstance(data, dict) or not data.get("section"):
+        raise ValueError(f"template {record_type!r}: items: needs a section: key")
+    states = [ItemState(str(s["name"]), str(s.get("emoji", "")), bool(s.get("closed", False)))
+              if isinstance(s, dict) else ItemState(str(s))
+              for s in data.get("states", [])]
+    fields = [str(f) for f in data.get("fields", [])]
+    promote = data.get("promote") or {}
+    return ItemsSpec(
+        section=str(data["section"]),
+        noun=str(data.get("noun", "item")),
+        states=states,
+        fields=fields,
+        promote_from=[str(s) for s in promote.get("from", [])],
+        promote_to=str(promote.get("to", "")),
+    )
+
+
+def _validate_items(spec: RecordTypeSpec) -> None:
+    """The items: rules (plan §2.1): known section, ≥2 states, first not closed,
+    ≥1 closed, unique names, per-group emoji rule, known fields, promote statuses."""
+    rt = spec.record_type
+    it = spec.items
+    if it is None:
+        return
+    if it.section not in [s.name for s in spec.sections]:
+        raise ValueError(f"template {rt!r}: items.section {it.section!r} is not a section")
+    if len(it.states) < 2:
+        raise ValueError(f"template {rt!r}: items.states needs at least 2 states")
+    if it.states[0].closed:
+        raise ValueError(f"template {rt!r}: items.states first state must not be closed")
+    if not any(s.closed for s in it.states):
+        raise ValueError(f"template {rt!r}: items.states needs at least one closed state")
+    names = [s.name for s in it.states]
+    dup = [n for n in set(names) if names.count(n) > 1]
+    if dup:
+        raise ValueError(f"template {rt!r}: items.states names not unique: {dup}")
+    for closed in (False, True):
+        group = [s for s in it.states if s.closed is closed]
+        if len(group) > 1:
+            missing = [s.name for s in group if not s.emoji]
+            if missing:
+                raise ValueError(
+                    f"template {rt!r}: items.states group needs unique emoji "
+                    f"when it holds several states — missing for {missing}")
+            emojis = [s.emoji for s in group if s.emoji]
+            dup_e = [e for e in set(emojis) if emojis.count(e) > 1]
+            if dup_e:
+                raise ValueError(f"template {rt!r}: items.states emoji not unique: {dup_e}")
+    bad_fields = [f for f in it.fields if f not in ("owner", "due")]
+    if bad_fields:
+        raise ValueError(f"template {rt!r}: items.fields only owner/due allowed (got {bad_fields})")
+    bad = [s for s in it.promote_from + ([it.promote_to] if it.promote_to else [])
+           if s not in spec.status_allowed]
+    if bad:
+        raise ValueError(f"template {rt!r}: items.promote {bad} not in status-allowed")
 
 
 def bundled_dir() -> Path:
@@ -174,7 +311,7 @@ def default_profile_dirs(project_root: Path | None) -> list[str]:
     if project_root is not None:
         path = project_root / ".proj.lock"
         if path.is_file():
-            lock = yaml.safe_load(path.read_text(encoding="utf-8"))
+            lock = _yaml_load(path.read_text(encoding="utf-8"))
     pinned = list(lock.get("profiles", []) if isinstance(lock, dict) else [])
     if "default" not in pinned:
         pinned.insert(0, "default")
@@ -203,12 +340,40 @@ def _scan(base: Path, profile_dirs: list[str] | None = None) -> dict[str, Record
               for f in sorted(d.glob("*.yaml"))]
     for f in files:
         text = f.read_text(encoding="utf-8")
-        data = yaml.safe_load(text)
+        data = _yaml_load(text)
         if not (isinstance(data, dict) and "record_type" in data):
             continue
         spec = parse_template(text)
         out[spec.record_type] = spec
     return out
+
+
+def _registry_key(project_root: Path | None, profiles: list[str] | None) -> tuple:
+    """Cache key: the scan result depends only on (selected dirs, yaml files'
+    mtime/size, the lock's mtime/size) — a profile edit invalidates the entry."""
+    dirs = normalize_profiles(profiles) if profiles else default_profile_dirs(project_root)
+    lock_stat: tuple = ()
+    if project_root is not None:
+        lock = project_root / ".proj.lock"
+        if lock.is_file():
+            st = lock.stat()
+            lock_stat = (st.st_mtime_ns, st.st_size)
+    key_files: list[tuple] = []
+    for base in (bundled_dir(),
+                 (project_root / "profiles" if project_root else None)):
+        if base is None or not base.is_dir():
+            continue
+        for f in sorted(base.glob("*.yaml")):
+            st = f.stat()
+            key_files.append((str(f), st.st_mtime_ns, st.st_size))
+        for p in dirs:
+            d = base / p
+            if not d.is_dir():
+                continue
+            for f in sorted(d.glob("*.yaml")):
+                st = f.stat()
+                key_files.append((str(f), st.st_mtime_ns, st.st_size))
+    return (tuple(dirs), lock_stat, tuple(key_files))
 
 
 def load_registry(project_root: Path | None = None,
@@ -217,13 +382,22 @@ def load_registry(project_root: Path | None = None,
     profiles/ overrides them per record_type. Only the *selected* profile
     subdirectories are scanned (the lock-pinned list, 'default' first, or the
     explicit `profiles` when given — init passes it before the lock exists) —
-    unselected profile dirs are inert."""
-    dirs = normalize_profiles(profiles) if profiles else default_profile_dirs(project_root)
-    registry = _scan(bundled_dir(), dirs)
-    project = project_root / "profiles" if project_root else None
-    if project is not None and project.is_dir():
-        registry.update(_scan(project, dirs))
-    return registry
+    unselected profile dirs are inert.
+
+    In-process cache (see _REGISTRY_CACHE): the returned dict is a fresh shallow
+    copy per call; the spec objects inside are shared and must be treated
+    read-only (every caller is)."""
+    key = _registry_key(project_root, profiles)
+    cached = _REGISTRY_CACHE.get(key)
+    if cached is None:
+        dirs = normalize_profiles(profiles) if profiles else default_profile_dirs(project_root)
+        cached = _scan(bundled_dir(), dirs)
+        project = project_root / "profiles" if project_root else None
+        if project is not None and project.is_dir():
+            cached.update(_scan(project, dirs))
+        _REGISTRY_CACHE.clear()   # bounded: keep only the most recent project
+        _REGISTRY_CACHE[key] = cached
+    return dict(cached)
 
 
 def resolve_record_type(name: str, registry: dict[str, RecordTypeSpec] | None = None) -> str:
@@ -253,7 +427,7 @@ def changelog_path(root: Path | None) -> Path:
 
 
 def load_changelog_spec(root: Path | None = None) -> ChangelogSpec:
-    data = yaml.safe_load(changelog_path(root).read_text(encoding="utf-8"))
+    data = _yaml_load(changelog_path(root).read_text(encoding="utf-8"))
     cl = data.get("changelog", {})
     return ChangelogSpec(
         file=cl.get("file", "CHANGELOG.md"),
@@ -268,9 +442,9 @@ def load_texts(root: Path | None = None) -> dict:
     files. A project's own copy wins (wholesale), else the bundled one."""
     texts = (root / "profiles" / "texts.yaml") if root is not None else None
     if texts is not None and texts.is_file():
-        data = yaml.safe_load(texts.read_text(encoding="utf-8"))
+        data = _yaml_load(texts.read_text(encoding="utf-8"))
     else:
-        data = yaml.safe_load((bundled_dir() / "texts.yaml").read_text(encoding="utf-8"))
+        data = _yaml_load((bundled_dir() / "texts.yaml").read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("texts.yaml: expected a mapping at the top level")
     return data

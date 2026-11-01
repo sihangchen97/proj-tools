@@ -34,8 +34,9 @@ def check(cfg: ProjConfig) -> list[str]:
     else:
         for record_type, spec in reg.items():
             if not db.template_matches_table(spec):
-                problems.append(f"record_type {record_type!r}: table schema does not match template "
-                                f"(run `proj init` after template changes)")
+                problems.append(
+                    f"record_type {record_type!r}: table schema does not match template "
+                    "(run `proj init` after template changes)")
 
             d = cfg.root / spec.dir
             seen: set[str] = set()
@@ -66,10 +67,25 @@ def check(cfg: ProjConfig) -> list[str]:
                 for s in spec.sections:
                     if s.kind != "text":
                         continue
+                    if spec.items is not None and s.name == spec.items.section:
+                        # the items section = stored intro + the DB item list
+                        from proj.engine import items as items_mod  # lazy
+                        if items_mod.md_drift_one(cfg, spec, row):
+                            problems.append(f"{p.name}: section '{s.name}' (items) differs "
+                                            f"from DB — run `proj sync`")
+                        continue
                     stored = db_sections.get(s.name.lower(), "")
                     if rec.normalize(raw_sections.get(s.name.lower(), "")) != stored:
                         problems.append(f"{p.name}: section '{s.name}' differs from DB "
                                         f"— run `proj sync`")
+                if spec.items is not None and row["status"] in spec.gates_items:
+                    from proj.engine import items as items_mod  # lazy
+                    un = items_mod.open_items(db, spec, row)
+                    if un:
+                        problems.append(
+                            f"{p.name}: {spec.record_type} {row['id']} is {row['status']!r} "
+                            f"(a closed state) but has unclosed {spec.items.noun}(s): "
+                            f"{', '.join(un)}")
             for row in db.all(spec):
                 if row["id"] not in seen:
                     problems.append(f"{record_type} {row['id']}: record in DB has no md file")
