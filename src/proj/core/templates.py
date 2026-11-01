@@ -482,4 +482,14 @@ def load_texts(root: Path | None = None) -> dict:
 
 
 def slugify(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    """A10: keep Unicode letters/digits (CJK etc.), lower ASCII, collapse
+    every whitespace/punctuation run to a single "-", cap at 50 chars, no
+    leading/trailing "-". A title with no alnum chars yields "" (callers
+    fall back to the id alone, e.g. T-000001.md)."""
+    parts: list[str] = []
+    for ch in title.lower():
+        if ch.isalnum():
+            parts.append(ch)
+        elif parts and parts[-1] != "-":
+            parts.append("-")
+    return "".join(parts).strip("-")[:50].rstrip("-")

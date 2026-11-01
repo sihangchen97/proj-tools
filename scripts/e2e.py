@@ -359,11 +359,11 @@ def ch3() -> None:
     # move: the eval script re-homes under the training pipeline
     expect_ok("评估脚本改挂到训练管线", f"parent → {T_PIPE}",
               "task", "move", T_EVAL, "--parent", T_PIPE)
-    # rename: -t renames the md file (id stable); the new title carries distinct
-    # ASCII so the slug (and therefore the filename) actually changes
+    # rename: -t renames the md file (id stable); the new title mixes CJK + ASCII,
+    # so the slug (and therefore the filename) changes (A10: CJK kept in the slug)
     expect_ok("-t 改名（id 不变）", "title →",
               "task", "update", T_ONNX, "-t", "ONNX 导出 + TensorRT 部署 (edge)")
-    assert md_of(T_ONNX).endswith("onnx-tensorrt-edge.md"), md_of(T_ONNX)
+    assert md_of(T_ONNX).endswith("onnx-导出-tensorrt-部署-edge.md"), md_of(T_ONNX)
     REP.ok("改名后 md 文件重命名到新 slug（id 稳定）")
     # WIP.md replaces TASKLIST.md (W1): it is always rendered (empty shows
     # the placeholder). The WIP membership story (wip add / auto-enter / sync
