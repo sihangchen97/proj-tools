@@ -15,12 +15,9 @@ vanilla `Record`. New record_type = one YAML file, still — a class is optional
 """
 from __future__ import annotations
 
-import json
-
 from proj.core.config import ProjConfig
 from proj.core.templates import RecordTypeSpec
 from proj.engine import store as rec
-from proj.engine import views
 
 
 def _split_ids(v: str) -> list[str]:
@@ -116,50 +113,6 @@ class Record:
         fresh = rec.by_id(cfg, spec, db, id_)
         db.close()
         return fresh
-
-    def toc(self, cfg: ProjConfig) -> str:
-        """ID/status/title table + status legend (render.toc record_types)."""
-        title = "# " + self.record_type.title() + "s"
-        header = [title, "", "| ID | Status | Title |", "|---|---|---|"]
-        lines = header
-        for r in self.list(cfg):
-            lines.append(f"| {r['id']} | {self.spec.emojify(r['status'])} | {r['title']} |")
-        lines.append("")
-        lines += views.status_legend(self.spec)
-        return "\n".join(lines) + "\n"
-
-    def graph(self, cfg: ProjConfig) -> str:
-        """Mermaid graph of supersedes edges (supersede is a relation on every
-        record_type — the edges render when they exist)."""
-        lines = ["graph LR"]
-        for r in self.list(cfg):
-            lines.append(f'  {r["id"]}["{r["id"]} {r["title"][:24]}"]')
-        spec, db = rec.spec_and_db(cfg, self.record_type)
-        for r in db.all(spec):
-            for edge in db.supersede_of(r["id"]):
-                lines.append(f"  {edge['target']} --> {r['id']}")
-        db.close()
-        return "\n".join(lines) + "\n"
-
-    def link(self, cfg: ProjConfig, target: str, links: list[str],
-             section: str = "consequences") -> dict:
-        """Append cross-references to a record's `section` body (user text wins)."""
-        spec, db = rec.spec_and_db(cfg, self.record_type)
-        row = rec.by_id(cfg, spec, db, target)
-        if row is None:
-            db.close()
-            raise ValueError(f"{self.record_type} {target} not found")
-        sections = json.loads(row["sections"] or "{}")
-        body = sections.get(section, "").rstrip()
-        refs = list(links)  # ids are stored canonical ({code}{n:0w})
-        ref_line = "See also: " + ", ".join([x for x in refs if x not in body] or [refs[0]])
-        sections[section] = (body + "\n\n" + ref_line) if body else ref_line
-        db.set(spec, row["id"], sections=json.dumps(sections, ensure_ascii=False))
-        fresh = rec.by_id(cfg, spec, db, target)
-        p = rec.file_path(cfg, spec, fresh)
-        p.write_text(rec.render_record(spec, fresh, db), encoding="utf-8")
-        db.close()
-        return row
 
     def list(self, cfg: ProjConfig, status: str | None = None) -> list[dict]:
         spec, db = rec.spec_and_db(cfg, self.record_type)

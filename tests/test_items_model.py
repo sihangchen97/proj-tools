@@ -115,8 +115,8 @@ def test_roundtrip_plain():
 
 
 def test_numbered_line_on_empty_state_is_problem():
-    st, notes = it.apply_md(_state(),
-                            it.parse_section("- [ ] a\n", TASK), TASK)
+    st, _ = it.apply_md(_state(),
+                        it.parse_section("- [ ] a\n", TASK), TASK)
     with pytest.raises(it.ItemsError, match="unknown item number"):
         it.apply_md(st, it.parse_section(MD_PLAIN, TASK), TASK)
 
@@ -176,9 +176,9 @@ def test_problems(md, frag):
 
 def test_add_group_after_first():
     st = _state([it.Item("001", text="a"), it.Item("002", text="b")])
-    new, notes = it.add(st, PLAN, "c", after="1")
+    new, _ = it.add(st, PLAN, "c", after="1")
     assert [r.no for r in new.live()] == ["001", "003", "002"]
-    new, notes = it.add(st, PLAN, "c", after="2")
+    new, _ = it.add(st, PLAN, "c", after="2")
     assert [r.no for r in new.live()] == ["001", "002", "003"]
     with pytest.raises(it.ItemsError, match="share the target group"):
         it.add(_state([it.Item("001", text="x"), it.Item("A00", text="G"),

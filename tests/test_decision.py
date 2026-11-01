@@ -104,31 +104,10 @@ def test_check_flags_supersede_cycle(proj):
     assert any("cycle" in p for p in problems)
 
 
-def test_toc_and_graph(proj):
-    dec_obj(proj).new(proj, "Second", supersede=["1"])
-    g = dec_obj(proj).graph(proj)
-    assert "graph LR" in g
-    assert "DEC-0001 --> DEC-0002" in g
-    t = dec_obj(proj).toc(proj)
-    # table format; Status column shows emoji only (emojify); supersede is a field
-    assert "| ID | Status | Title |" in t
-    assert "| DEC-0002 | ✏️ | Second |" in t  # new records start Draft
-    assert "Superseded" not in t and "Supersedes" not in t
-    # one-line legend below the record table (table views only): emoji + name
-    assert "✏️ Draft" in t and "✅ Accepted" in t and "📛 Deprecated" in t
-    # emojify compares slug + lowercase: case/space variants still map
+# toc/graph/link were removed (A5, Q6, 2026-11-02); emojify stays —
+# the status column is emoji-only, so the emoji mapping must be case-insensitive.
+def test_emojify_is_case_insensitive(proj):
     from proj.core.templates import load_registry
     spec = load_registry(proj.root)["decision"]
     assert spec.emojify("accepted") == spec.emojify("Accepted") == "✅"
     assert spec.emojify("proposed") == "🌱"
-
-
-def test_link_appends_to_consequences(proj):
-    dec_obj(proj).new(proj, "Third")
-    dec_obj(proj).link(proj, "DEC-0001", ["DEC-0003"])
-    spec = rec.load_registry(proj.root)["decision"]
-    db = rec.open_db(proj)
-    row = db.get(spec, "DEC-0001")
-    db.close()
-    import json
-    assert "See also: DEC-0003" in json.loads(row["sections"])["consequences"]

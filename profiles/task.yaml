@@ -7,7 +7,7 @@ numbered: 6
 # 的成员自动推导（无 parent 边且未结束的任务 → Unparented；记录名下有未结束的
 # 后代任务 → 该记录一节），无需注册
 # 无 features: / 无 fields:（parent/related/supersede 全走 relations 表）
-# 无 render: 段（changelog 表行数走环境变量 PROJ_LOGS；toc 类型才写 render.toc）
+# 无 render: 段（toc 已删，A5/Q6；changelog 表行数走环境变量 PROJ_LOGS）
 # task 单独管理（在外层 profiles/，不在 default/）
 # 门禁（由 Record.validate_transition 统一实现）：
 # gates.tasks — 进入 Done 前，整棵后代任务树必须处于终止状态（Done/Failed）；

@@ -336,7 +336,7 @@ class Db:
                  1 if it.get("deleted") else 0))
         self.conn.commit()
 
-    def __enter__(self) -> "Db":
+    def __enter__(self) -> Db:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -405,7 +405,6 @@ def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]
             "status_done": list(s.status_done),
             "status_terminal": list(s.status_terminal),
             "gates": {"tasks": list(s.gates_tasks), "items": list(s.gates_items)},
-            "render": {"toc": s.apply_toc},
             "items": (asdict(s.items) if s.items is not None else None),
         } for s in specs.values()},
     }
@@ -442,7 +441,6 @@ def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
             status_terminal=list(d.get("status_terminal", [])) or list(d.get("status_done", [])),
             gates_tasks=list(d.get("gates", {}).get("tasks", [])),
             gates_items=list(d.get("gates", {}).get("items", [])),
-            apply_toc=bool(d.get("render", {}).get("toc", False)),
             items=_items_from_lock(d.get("items")),
         )
     return out

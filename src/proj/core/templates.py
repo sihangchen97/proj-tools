@@ -25,7 +25,6 @@ A profile file declares a record_type's table schema and behavior:
     # render toggles — which generated views this record_type has
     # (the per-record changelog table's row count is the PROJ_LOGS env var)
     render:
-      toc: false            # <dir>/_TOC.md (id/status/title table)
 
 Placeholders in rendered managed lines: none — the engine fills values
 directly from the DB row.
@@ -119,8 +118,7 @@ class RecordTypeSpec:
     gates_tasks: list[str] = field(default_factory=list)
     gates_items: list[str] = field(default_factory=list)
     items: ItemsSpec | None = None
-    # render toggles (which generated views this record_type has)
-    apply_toc: bool = False        # <dir>/_TOC.md (id/status/title table)
+    # (generated views are derived; no per-type render toggles)
 
     def emojify(self, status: str) -> str:
         """Emoji only (table display): the emoji from this record_type's emoji
@@ -199,7 +197,6 @@ def parse_template(text: str) -> RecordTypeSpec:
         status_terminal=sorted(set(status_done) | set(status_terminal)),
         gates_tasks=[str(s) for s in gates.get("tasks", [])],
         gates_items=[str(s) for s in gates.get("items", [])],
-        apply_toc=bool(data.get("render", {}).get("toc", False)),
         items=items,
     )
     unknown = [s for s in spec.status_done + spec.status_terminal if s not in spec.status_allowed]

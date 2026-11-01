@@ -219,7 +219,7 @@ def test_sync_delete_removed_and_noted(proj):
     _write_section(p, "Acceptance Criteria", "- [ ] keep\n- [ ] gone")
     rec.sync(proj)
     _write_section(p, "Acceptance Criteria", "- [x] #001 keep")
-    problems, notes = rec.sync(proj)
+    problems, _ = rec.sync(proj)
     assert problems == []
     assert db_item(proj, row["id"], "002")["deleted"]  # tombstone, not reused
     db = rec.open_db(proj)
@@ -248,7 +248,7 @@ def test_sync_checked_without_emoji_defaults_and_notes(proj):
     _write_section(p, "Success Criteria", "- [ ] c1")
     rec.sync(proj)
     _write_section(p, "Success Criteria", "- [x] #001 c1")
-    problems, notes = rec.sync(proj)
+    problems, _ = rec.sync(proj)
     assert problems == []
     assert db_item(proj, row, "001")["state"] == "met"
     assert db_item(proj, row, "001")["note"] == it.NOTE_ASSIGNED
@@ -269,7 +269,8 @@ def test_sync_cross_group_move_renumbers(proj):
     assert problems == []
     assert any("#002 → #A01" in n for n in notes)
     assert db_item(proj, row["id"], "002")["deleted"]
-    assert db_item(proj, row["id"], "001") is not None and not db_item(proj, row["id"], "001")["deleted"]
+    i1 = db_item(proj, row["id"], "001")
+    assert i1 is not None and not i1["deleted"]
     assert db_item(proj, row["id"], "A01") is not None \
         and db_item(proj, row["id"], "A01")["text"] == "b"
 
@@ -471,7 +472,8 @@ def test_remove_item(proj):
     ops.add(proj, row["id"], "b")
     out = ops.remove(proj, f"{row['id']}#002")
     assert "#002" not in _nums(out)
-    assert db_item(proj, row["id"], "002")["deleted"] and not db_item(proj, row["id"], "001")["deleted"]
+    assert db_item(proj, row["id"], "002")["deleted"]
+    assert not db_item(proj, row["id"], "001")["deleted"]
 
 
 def test_group_ops(proj):

@@ -4,8 +4,7 @@ dir: docs/decisions
 numbered: 4
 contain_task: false
 # 无 features:（supersede 是纯 relation，所有类型通用，写时校验同类型）
-render:
-  toc: true         # 渲染 <dir>/_TOC.md（id/status/title 表）
+# 无 render: 段（toc 已删，A5/Q6：2026-11-02）
 # 每个状态都有对应的 verb（from 用 Any = 任意当前状态可直达该状态）
 verbs:
   draft: {from: Any, to: Draft}
