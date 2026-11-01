@@ -640,7 +640,7 @@ def test_lock_roundtrip_items_gates_terminal(proj):
 # ---- adopt channel -----------------------------------------------------------------
 
 def test_adopt_parses_items_as_new(proj):
-    d = proj.root / "docs/tech-debt"
+    d = proj.root / "docs/debts"
     (d / "DEB-0001-old-hack.md").write_text(
         "# Old hack\n\n## Location\nsrc/x.py\n\n## Reason\nlegacy\n"
         "## Repayment Plan\n\n- [ ] step one\n- [x] step two ✅\n",

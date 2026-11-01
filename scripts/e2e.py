@@ -85,7 +85,7 @@ def teardown() -> None:
 SUBPROCESS = os.environ.get("PROJ_E2E_SUBPROCESS") == "1"
 RECORDS_DIR = {
     "task": "docs/tasks", "decision": "docs/decisions", "plan": "docs/plans",
-    "debt": "docs/tech-debt", "incident": "docs/incidents",
+    "debt": "docs/debts", "incident": "docs/incidents",
     "experiment": "docs/experiments",
 }
 

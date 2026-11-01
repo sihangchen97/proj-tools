@@ -74,7 +74,7 @@ proj check                          # invariants; also runs in pre-commit hook
 | `decision` | `docs/decisions/` | NNNN | Proposed, Accepted, Deprecated (supersede = fields, see below) |
 | `task` | `tasks/` | A, B, … AA | Not started, In progress, Done |
 | `plan` | `docs/plans/` | NNNN | Draft, Active, Pending review, Shelved, Archived |
-| `debt` | `docs/tech-debt/` | NNNN | Open, In progress, Repaid |
+| `debt` | `docs/debts/` | NNNN | Open, In progress, Repaid |
 | `incident` | `docs/incidents/` | YYYY-MM-DD | Open, Closed |
 | `experiment` | `docs/experiments/` | NNNN | Proposed, Running, Closed |
 

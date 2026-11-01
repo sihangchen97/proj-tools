@@ -5,7 +5,7 @@ from proj.engine import store as rec
 
 
 def test_adopt_existing_file(proj):
-    d = proj.root / "docs/tech-debt"
+    d = proj.root / "docs/debts"
     (d / "DEB-0001-old-hack.md").write_text(
         "# Old hack\n\n## Location\nsrc/x.py\n\n## Reason\nlegacy\n",
         encoding="utf-8")

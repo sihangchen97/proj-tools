@@ -13,7 +13,7 @@ PROFILE_DIRS = {
     "default": [],
     "cv": ["docs/experiments"],
     "infra": ["docs/specs", "docs/dev"],
-    "quality": ["docs/tech-debt", "docs/incidents"],
+    "quality": ["docs/debts", "docs/incidents"],
 }
 
 # scaffold templates are real files in the repo's templates/ (bundled with the

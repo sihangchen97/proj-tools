@@ -122,57 +122,27 @@ closed, text, note, owner, due).
 ### `proj_item_add`
 
 Add an item to a record's checklist (auto-numbered, appended to its
-group). group: the group letter L (default the ungrouped list); after:
-insert right after ITEM; state/note/owner/due optional. Returns the fresh
-item list.
+group), or a whole new group. new_group=true: `text` is the GROUP name —
+the next free letter (A-Z, never reused) is assigned. group: the group
+letter L (default the ungrouped list); after: insert right after ITEM;
+state/note/owner/due optional. Returns the fresh item list.
 
-### `proj_item_set`
+### `proj_item_update`
 
-Set an item's state (item = 'ID#n'). note / commit optional. Returns the
-fresh item list. Refused when it would un-close an item on a record in a
-closed (gates.items) status.
-
-### `proj_item_check`
-
-Mark an item ('ID#n') closed (first closed state). Returns the fresh item
-list.
-
-### `proj_item_uncheck`
-
-Re-open an item ('ID#n') (first unclosed state). Returns the fresh item
-list.
-
-### `proj_item_edit`
-
-Edit an item's ('ID#n') text / note / owner / due (empty string clears).
-Returns the fresh item list.
-
-### `proj_item_mv`
-
-Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
-ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
-first (top of its group). Cross-group moves get a fresh number. Returns the
-fresh item list.
+Change an item or a group of a record's checklist (item = 'ID#nn'; a
+group = 'ID#L00', its X00 row — `text` on a group renames it). Pass only
+the fields to change. state: one of the checklist's states, or 'closed'
+(the first closed state) / 'open' (the first unclosed state); text/note/
+owner/due on an item (an empty string clears a field); commit: a git
+commit hash. Move: exactly one of group (into L, fresh number) / ungroup
+(to the ungrouped list) / after (right after ITEM) / first (top of its
+group) — for a group, after/first moves the group. Returns the fresh item
+list. Refused when it would un-close an item on a record in a closed
+(gates) status.
 
 ### `proj_item_rm`
 
-Remove an item ('ID#A01'); its number is never reused. Returns the fresh
-item list.
-
-### `proj_item_group_add`
-
-Add a group; the tool assigns the next free letter (A-Z, never reused).
-Returns the fresh item list.
-
-### `proj_item_group_rename`
-
-Rename a group. Returns the fresh item list.
-
-### `proj_item_group_rm`
-
-Delete a group; `items` = 'ungroup' or 'delete' when it holds items.
-
-### `proj_item_group_mv`
-
-Move a group: exactly one of after / first. Returns the fresh item list.
+Remove an item ('ID#nn'; its number is never reused) or a whole group
+('ID#L00' — when the group still holds items, `items` must be 'ungroup' or
+'delete'). Returns the fresh item list.
 
