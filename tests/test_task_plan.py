@@ -202,33 +202,6 @@ def test_failed_task_rendered_checked_with_emoji(proj):
     assert done_line.strip().startswith("- [x] [")  # [x] + link, no emoji
 
 
-def test_tasks_block_link_must_be_descendant(proj):
-    """D11: a Tasks-block line linking a task that is not a descendant of the
-    record is a sync problem and leaves the DB untouched."""
-    _plan(proj).new(proj, "P1")
-    row, _ = taskmod.new(proj, "Attached", parent="PLN-0001")
-    foreign, _ = taskmod.new(proj, "Not yours")
-    plan_file = next((proj.root / "docs/plans").glob("PLN-0001-*.md"))
-    t = plan_file.read_text()
-    block_start = t.index("<details open>")
-    block_end = t.index("</details>", block_start) + len("</details>")
-    foreign_line = (f"- [ ] [{foreign['id']}-not-yours](../tasks/"
-                    f"{foreign['id']}-not-yours.md) borrowed")
-    t = t[:block_start] + (
-        t[block_start:block_end].replace("</details>", f"{foreign_line}\n</details>", 1)
-    ) + t[block_end:]
-    plan_file.write_text(t)
-    problems, _ = rec.sync(proj)
-    assert any("not a task of PLN-0001" in p for p in problems)
-    db = rec.open_db(proj)
-    assert db.parent_of(row["id"])["source"] == "PLN-0001"  # DB untouched
-    db.close()
-    # the legitimate line still passes
-    plan_file.write_text(t.replace(foreign_line + "\n", ""))
-    problems, _ = rec.sync(proj)
-    assert problems == []
-
-
 def test_fk_rejects_dangling_parent(proj):
     """A parent edge to a nonexistent record is refused by the FK (the
     write-side guard rejects it before ever reaching the DB)."""

@@ -170,37 +170,39 @@ expect_fail "bad item ref"             -- $PROJ item check "${ITASK2}#99"
 expect_fail "unknown item state"       -- $PROJ item set "${ITASK2}#001" nosuch
 $PROJ check >/dev/null && ok "check with items" || fail "check with items"
 
-# 3a0. Tasks block coexistence: hand-written lines + task links with trailing
-# description coexist; a task line's checkbox is driven by the DB (a hand-ticked
-# box is corrected on sync, `task done` flips it, the trailing text stays);
-# the block never blocks the review gate (it lists delegated tasks, not steps)
+# 3a0. The Tasks block is generated ENTIRELY from the DB (A2/Q5): hand lines in
+# it are dropped on the next render, task lines carry the DB status + the task's
+# one-line summary, sub-tasks are indented under their parent; the block never
+# blocks the review gate (it lists delegated tasks, not steps)
 PLAN2_FILE=$($PROJ plan new "Coexist plan" -y | grep -oE 'docs/plans/[A-Z]+-[0-9]{4,6}-[^ ]+\.md')
-CT1=$($PROJ task new "Coexist A" -y --parent PLN-0002 | grep -oE '[A-Z]+-[0-9]{6}')
+CT1=$($PROJ task new "Coexist A" -y --parent PLN-0002 --summary "first half" | grep -oE '[A-Z]+-[0-9]{6}')
 CT2=$($PROJ task new "Coexist B" -y --parent PLN-0002 | grep -oE '[A-Z]+-[0-9]{6}')
-python3 - "$PLAN2_FILE" "$CT1" <<'PY'
+CT2SUB=$($PROJ task new "Coexist B1" -y --parent "$CT2" | grep -oE '[A-Z]+-[0-9]{6}')
+python3 - "$PLAN2_FILE" <<'PY'
 import sys
-p, t1 = sys.argv[1], sys.argv[2]
+p = sys.argv[1]
 t = open(p).read()
 i, j = t.find("<details open>"), t.find("</details>", t.find("<details open>")) + len("</details>")
 open(p, "w").write(t[:i] + (
     "<details open>\n<summary>Tasks</summary>\n\n"
-    f"- [x] [{t1}-coexist-a](../tasks/{t1}-coexist-a.md)  shipped already\n"
     "- [ ] a plain hand-written line, not a task\n"
     "</details>") + t[j:])
 PY
 $PROJ sync >/dev/null
-grep -qF "a plain hand-written line, not a task" "$PLAN2_FILE" && ok "hand line kept in Tasks block" \
-  || fail "hand line lost after sync"
-grep -qF "shipped already" "$PLAN2_FILE" && ok "trailing text kept on the task line" \
-  || fail "trailing text lost after sync"
-grep -qF -- "- [ ] [$CT1-" "$PLAN2_FILE" && ok "task checkbox follows DB (hand tick corrected)" \
-  || fail "task checkbox not corrected to [ ] after sync"
-expect_ok "task done flips the line" "→ Done" -- $PROJ task done "$CT1"
-grep -qF -- "- [x] [$CT1-" "$PLAN2_FILE" && grep -qF "shipped already" "$PLAN2_FILE" && \
-  ok "done flips the line, text intact" || fail "done line / text mangled"
 grep -qF "a plain hand-written line, not a task" "$PLAN2_FILE" \
-  && ok "hand line still there" || fail "hand line lost after task done"
-# the block's [ ] boxes must not block the plan gate: with CT2 done, review passes
+  && fail "hand line must be dropped (block is DB-generated)" \
+  || ok "hand line dropped on render (A2)"
+grep -qF -- "- [ ] [$CT1-" "$PLAN2_FILE" && ok "task checkbox follows the DB ([ ])" \
+  || fail "open task line missing or wrong box in the rendered block"
+grep -qF -- "_first half_" "$PLAN2_FILE" && ok "task summary trails its line (Q5)" \
+  || fail "task summary missing on the block line"
+grep -qE -- "  - \[ \] \[$CT2SUB-" "$PLAN2_FILE" \
+  && ok "sub-task indented under its parent" || fail "sub-task not indented in the block"
+expect_ok "task done flips the line to [x]" "→ Done" -- $PROJ task done "$CT1"
+grep -qF -- "- [x] [$CT1-" "$PLAN2_FILE" && ok "done task renders as [x]" \
+  || fail "done task not rendered as [x] in the block"
+# the block must not block the plan gate: finish the tree, review passes
+$PROJ task done "$CT2SUB" >/dev/null
 $PROJ task done "$CT2" >/dev/null
 $PROJ plan activate 2 >/dev/null
 expect_ok "review not blocked by Tasks-block boxes" "status → Pending Review" -- $PROJ plan review 2

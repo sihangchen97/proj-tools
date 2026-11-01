@@ -356,19 +356,19 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     lines += ["", HEAD_END]
     sections = json.loads(row["sections"] or "{}")
     # the Tasks block sits right BELOW the head fence, before the user-owned
-    # sections, for ANY record that parents tasks (kind=parent edges) or has
-    # hand-written lines stored in the `_tasks_block` section. Content = stored
-    # lines (hand-written ones verbatim; task-link lines re-emitted with the
-    # task's current status) + any parented task missing a stored line.
-    from proj.engine.views import render_tasks_block, task_ids_of  # lazy: cycle
+    # sections, for ANY record that parents tasks (kind=parent edges). Content
+    # = the record's task tree from the DB (A2: generated, never stored).
+    # A2/Q5: the block is generated ENTIRELY from the DB (the relations table) —
+    # the record's task tree, indented by depth, each line with the task's
+    # one-line summary. Nothing task-related is stored in the md; the task table
+    # is fetched ONCE per render_all.
+    from proj.engine.views import render_tasks_block  # lazy: cycle
     task_spec = reg.get("task")
+    task_rows = db.all(task_spec) if task_spec else []
     block = render_tasks_block(
-        (sections.get(TASKS_BLOCK_KEY) or "").splitlines(),
-        db.all(task_spec) if task_spec else [],
-        task_ids_of(db, db.all(task_spec) if task_spec else [], row["id"]),
-        db, task_spec, reg,
+        task_rows, db, task_spec, reg,
         Path(db.path).parent / spec.dir,
-        Path(db.path).parent / task_spec.dir)
+        Path(db.path).parent / task_spec.dir, row["id"])
     if block:
         lines += ["", "<details open>", "<summary>Tasks</summary>", ""]
         lines += [*block, "</details>", ""]
@@ -557,64 +557,6 @@ def md_status(text: str) -> str:
 # start fence may carry an instruction message after `start`
 HEAD_START_RE = re.compile(r"^<!-- proj:head:start.*?-->[ \t]*$", re.MULTILINE)
 HEAD_END_RE = re.compile(r"^<!-- proj:head:end -->[ \t]*$", re.MULTILINE)
-# the per-record Tasks block (rendered right below the head fence): everything
-# between `<details open><summary>Tasks</summary>` and the first `</details>`
-# is user-editable (hand lines + task links with trailing text) and is stored,
-# verbatim, under this sections key so a re-render keeps it. It is a VIEW of
-# the task tree a record delegates to — a task-link line must point at a
-# DESCENDANT task of this record (D11: sync refuses anything else, the block
-# never shows a "fake structure"); task-line checkboxes are re-emitted from the
-# DB (terminal statuses render [x], non-done finals get their status emoji).
-TASKS_BLOCK_KEY = "_tasks_block"
-_TASKS_BLOCK_RE = re.compile(
-    r"<details open>\s*<summary>Tasks</summary>\s*\n(.*?)</details>",
-    re.DOTALL)
-
-
-def md_tasks_block(text: str) -> str:
-    """The user-editable Tasks block of a record md ("" when absent)."""
-    m = _TASKS_BLOCK_RE.search(text)
-    if not m:
-        return ""
-    lines = m.group(1).rstrip("\n").splitlines()
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    return "\n".join(lines)
-
-
-def tasks_block_problems(db: dbmod.Db, record_id: str, block: str) -> list[str]:
-    """D11: every task-link line in a record's Tasks block must point at a
-    DESCENDANT task of that record — a link anywhere else means the block
-    shows a "fake structure" and the sync is refused (fix: `proj task move`).
-    Hand-written lines and trailing description text are not affected; dangling
-    ids are `proj check`'s job, not this gate's."""
-    from proj.core.templates import load_registry
-    from proj.engine.views import _TASK_LINE_RE
-    reg = load_registry(Path(db.path).parent)
-    task_spec = reg.get("task")
-    if task_spec is None:
-        return []
-    own_tree = db.descendants_of(record_id)
-    problems: list[str] = []
-    for line in block.splitlines():
-        m = _TASK_LINE_RE.match(line)
-        if not m:
-            continue  # hand-written line: kept, not checked
-        idm = re.match(r"[A-Z]+-[0-9A-Za-z]+", m.group(2))
-        if not idm:
-            continue  # not a real task id: `proj check` reports the dangling ref
-        task_id = idm.group(0)
-        if db.get(task_spec, task_id) is None:
-            continue
-        if task_id not in own_tree:
-            problems.append(
-                f"Tasks block links {task_id}, which is not a task of {record_id} "
-                f"— use `proj task move` to re-home it (or drop the line)")
-    return problems
-
-
 # one-sentence summary: a single italic line just below the metadata block
 SUMMARY_LINE_RE = re.compile(r"^_([^-_].*|[^_])_$")
 
@@ -755,11 +697,6 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         if not p.name.startswith(row["id"] + "-"):
             return [f"{p.name}: filename id does not match {row['id']} (renamed? "
                     f"edit the marker or move the file)"], []
-        # D11: validate the Tasks block BEFORE any write (its task links must
-        # all point at this record's own task tree)
-        block_problems = tasks_block_problems(db, u, md_tasks_block(text))
-        if block_problems:
-            return block_problems, []
         notes = []
         # the title is user-owned (md wins): a changed title goes back to the
         # DB and the file is renamed to the new slug (the id never changes)
@@ -776,10 +713,9 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
             notes.append(f"{p.name}: status drift in md (DB wins: {row['status']!r})")
         sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))
                     for s in spec.sections if s.kind == "text"}
-        # the Tasks block (hand lines + task links w/ trailing text) is
-        # user-editable md: keep it across re-renders, stored verbatim
-        if md_tasks_block(text):
-            sections[TASKS_BLOCK_KEY] = md_tasks_block(text)
+        # the Tasks block is tool-owned (A2): generated from the DB, never
+        # stored — hand lines in it are dropped on the next re-render (the
+        # D11 gate still refuses foreign task links during the sync itself)
         # item checklists (items.py): the items section's LIST is owned by the DB —
         # only its intro (text before the list) is stored in the section. Validate
         # fully before any write; the items write + changelog + promote follow.
@@ -823,8 +759,6 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
     db.add_log(id_, "adopted into proj", category="Added", when=created)
     sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))
                 for s in spec.sections if s.kind == "text"}
-    if md_tasks_block(text):
-        sections[TASKS_BLOCK_KEY] = md_tasks_block(text)
     # adopted md: the items section is parsed the same way — every line becomes
     # a NEW item (items.adopt); the intro stays in the stored section
     notes: list[str] = []

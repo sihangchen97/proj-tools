@@ -58,13 +58,14 @@ def _item_expansion(r: dict, registry: dict | None, db, depth: int) -> list[str]
 
 def _task_line(r: dict, depth: int, registry: dict | None,
                record_dir: Path | None, task_dir: Path | None,
-               db=None) -> str:
+               db=None, summary: str = "") -> str:
     """One task line: checkbox + hyperlink (id-slug filename, path relative to
     `record_dir` — the dir the containing view sits in); `[x]` when the task is
     in a TERMINAL status (Done or Failed — both are finished), else `[ ]`;
-    a non-done terminal status (Failed) gets its status emoji before the link.
-    The task's item checklist (if any) is expanded under the line by the caller
-    (`_item_expansion`). `task_dir` is the tasks' absolute dir (root/spec.dir)."""
+    a non-done terminal status (Failed) gets its status emoji before the link;
+    the task's one-line summary (if any) trails the link in *italic* (Q5). The
+    task's item checklist (if any) is expanded under the line by the caller
+    (`_item_expansion`, TASKLIST only). `task_dir` is the tasks' abs dir."""
     tspec = registry.get("task") if registry else None
     if tspec is not None and record_dir is not None and task_dir is not None:
         from proj.engine.store import slugify  # lazy: views↔store cycle
@@ -73,6 +74,9 @@ def _task_line(r: dict, depth: int, registry: dict | None,
         label = f"[{stem}]({rel})"
     else:
         label = f"**{r['id']}** {r['title']}"
+    summary = (summary or "").strip()
+    if summary:
+        label = f"{label} — _{summary}_"
     terminal = tspec is not None and r["status"] in tspec.status_terminal
     box = "x" if terminal else " "
     emoji = ""
@@ -120,60 +124,30 @@ def task_tree_lines(rows: list[dict], parent_key: str, db,
     return lines
 
 
-def task_ids_of(db, rows: list[dict], root_id: str) -> set[str]:
-    """Every task id parented at root_id (transitively, any depth, cycle-safe)."""
-    by_id = {r["id"]: r for r in rows}
-    out: set[str] = set()
-    seen: set[str] = set()
-    stack = [root_id]
-    while stack:
-        cur = stack.pop()
-        if cur in seen:
-            continue
-        seen.add(cur)
-        for c in db.children_of(cur):
-            if by_id.get(c["target"]) is not None and c["target"] not in out:
-                out.add(c["target"])
-                stack.append(c["target"])
-    return out
-
-
-# a stored Tasks-block line that is (or looks like) a task link:
-# `  - [x] [T-000001-slug](path)  trailing user text`
-_TASK_LINE_RE = re.compile(
-    r"^(\s*)- \[[ xX]\] \[([A-Z]+-[0-9A-Za-z]+[^\]]*)\]\(([^)]+)\)\s*(.*)$")
-
-
-def render_tasks_block(stored: list[str], rows: list[dict], tree_ids: set[str], db,
-                       task_spec: RecordTypeSpec | None, registry: dict | None,
-                       record_dir: Path | None, task_dir: Path | None) -> list[str]:
-    """The Tasks block content for one record md. Stored user lines (captured on
-    sync) come first, verbatim — a line that is a task link is re-emitted with the
-    task's CURRENT status so its checkbox tracks the DB, trailing text
-    (description / result) kept on the same line. Tasks the record parents but
-    that have no stored line are appended (flat, id order)."""
+def render_tasks_block(task_rows: list[dict], db, task_spec: RecordTypeSpec,
+                       registry: dict | None, record_dir: Path | None,
+                       task_dir: Path | None, root_id: str) -> list[str]:
+    """The Tasks block content for one record md (A2/Q5: generated ENTIRELY from
+    the DB — the record's task tree via kind=parent edges, indented by tree
+    depth, each line a checkbox + hyperlink + the task's one-line summary).
+    Nothing task-related is stored in the md, so a re-render can never fight a
+    hand copy and a Failed task line can no longer be misread as a hand line
+    (the old stored-line path, P0-4, is gone)."""
+    by_id = {r["id"]: r for r in task_rows}
     out: list[str] = []
-    seen: set[str] = set()
-    for line in stored:
-        m = _TASK_LINE_RE.match(line)
-        if not m:
-            out.append(line)            # hand-written line: kept verbatim
-            continue
-        pad, stem, path, desc = m.groups()
-        r = (db.get(task_spec, re.match(r"[A-Z]+-[0-9A-Za-z]+", stem).group(0))
-             if task_spec else None)
-        if r is None:                   # looks like a task link but is not one
-            out.append(line + "  ")
-            continue
-        seen.add(r["id"])
-        terminal = r["status"] in task_spec.status_terminal
-        box = "x" if terminal else " "
-        emoji = f"{task_spec.emojify(r['status'])} " if (
-            terminal and r["status"] not in task_spec.status_done) else ""
-        out.append(f"{pad}- [{box}] {emoji}[{stem}]({path})" + (f" {desc}" if desc else "") + "  ")
-    for r in rows:
-        if r["id"] in tree_ids and r["id"] not in seen:
-            out.append(_task_line(r, 0, registry, record_dir, task_dir, db))
+    seen: set[str] = {root_id}
+
+    def emit(parent_id: str, depth: int) -> None:
+        for c in db.children_of(parent_id):
+            r = by_id.get(c["target"])
+            if r is None or r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            out.append(_task_line(r, depth, registry, record_dir, task_dir, db,
+                                  summary=r.get("one_sentence") or ""))
+            emit(r["id"], depth + 1)
+
+    emit(root_id, 0)
     return out
 
 

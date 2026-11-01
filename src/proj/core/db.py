@@ -301,8 +301,7 @@ class Db:
 
     def descendants_of(self, record_id: str) -> set[str]:
         """Every record id hanging below record_id via parent edges (any depth),
-        cycle-safe: a record already on the walk is never re-queued.
-        (views.task_ids_of is the task-rows variant — it keeps the same walk.)"""
+        cycle-safe: a record already on the walk is never re-queued."""
         out: set[str] = set()
         seen: set[str] = {record_id}
         stack = [record_id]
