@@ -239,12 +239,6 @@ def proj_ls(status: str | None = None, record_type: str | None = None,
     rows = [r for n in names for r in record_for(n, reg).list(cfg, status)]
     return present.list_lines(rows, status)
 
-
-def proj_list(record_type: str, status: str | None = None, root: str | None = None) -> str:
-    """List records of one record_type (alias of proj_ls with the type given)."""
-    return proj_ls(status=status, record_type=record_type, root=root)
-
-
 def proj_show(id: str, record_type: str | None = None, history: bool = False,
               as_json: bool = False, root: str | None = None) -> str:
     """Show one record (from DB); the id carries its type so record_type is
@@ -257,17 +251,6 @@ def proj_show(id: str, record_type: str | None = None, history: bool = False,
     with rec.open_db(cfg) as db:  # R3: one read connection
         text, data = present.show(spec, row, db, history=history)
     return json.dumps(data, indent=2, ensure_ascii=False) if as_json else text
-
-
-def proj_open(id: str, root: str | None = None) -> str:
-    """Open a record's md file path for the agent to read/edit (no editor).
-    On the next write command (or proj_sync) the edit is ingested into the DB."""
-    try:
-        cfg, spec, row = _resolve(root, None, id)
-    except ValueError as e:
-        return f"error: {e}"
-    return str(rec.file_path(cfg, spec, row).relative_to(cfg.root))
-
 
 def proj_update(id: str, record_type: str | None = None, title: str | None = None,
                 summary: str | None = None, message: str | None = None,
@@ -486,7 +469,7 @@ def proj_item_rm(item: str, items: str | None = None, root: str | None = None) -
 # there is no separate async wrapper with a duplicated docstring) ---------------
 
 for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
-            proj_ls, proj_list, proj_show, proj_open, proj_update, proj_verb,
+            proj_ls, proj_show, proj_update, proj_verb,
             proj_info,
             proj_changelog_add, proj_changelog_version, proj_changelog_release_notes,
             proj_changelog_list,

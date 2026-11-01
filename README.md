@@ -162,7 +162,6 @@ engine functions as the CLI — one tool per CLI verb, each with an optional `ro
 | `proj_new` | `proj TYPE new TITLE [-s …] [--parent N] [--field k=v]` |
 | `proj_sync` | `proj sync [FILE…]` |
 | `proj_check` | `proj check` |
-| `proj_list` | `proj TYPE list [--status S]` |
 | `proj_show` | `proj TYPE show ID [--history]` |
 | `proj_verb` | `proj TYPE <verb> ID` (template verb: `decision accept`, `plan activate`, `task done`, …) |
 | `proj_update_record` | `proj TYPE update ID [-t …] [-s …] [-c "…"]` |

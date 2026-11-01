@@ -52,20 +52,11 @@ List records (from DB), one line each (id, status, title). record_type:
 restrict to one type (name or code); omitted = every record_type.
 status: filter (display name, e.g. 'In Progress').
 
-### `proj_list`
-
-List records of one record_type (alias of proj_ls with the type given).
-
 ### `proj_show`
 
 Show one record (from DB); the id carries its type so record_type is
 optional. history: append the full changelog. as_json: a JSON object
 (id/type/title/status/created/summary/parent/changelog) instead of text.
-
-### `proj_open`
-
-Open a record's md file path for the agent to read/edit (no editor).
-On the next write command (or proj_sync) the edit is ingested into the DB.
 
 ### `proj_update`
 

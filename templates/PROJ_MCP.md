@@ -34,9 +34,6 @@ paths (default: all managed dirs). FAIL lines mean the DB was not fully updated.
 
 Validate DB ↔ lock ↔ templates ↔ md invariants. 'OK' or FAIL lines.
 
-### `proj_list`
-
-List records of a record_type (from DB), optionally filtered by status.
 
 ### `proj_show`
 

@@ -37,7 +37,6 @@ def test_mcp_init_new_status_check_chain(proj):
     assert '"plan"' in out
 
     # D1: the formerly missing tools exist and work
-    assert "docs/plans" in mcp.proj_open(plan_id, root=root)
     assert "Rendered" in mcp.proj_render(plan_id, root=root)
     assert "OK" in mcp.proj_adopt(root=root)
     mcp.proj_changelog_add("Added: ship", root=root)
@@ -119,13 +118,15 @@ def test_tools_registered_once_sync(proj):
     import asyncio
 
     names = {t.name for t in asyncio.run(mcp.mcp.list_tools())}
-    for expected in ("proj_adopt", "proj_render", "proj_open", "proj_ls",
+    for expected in ("proj_adopt", "proj_render", "proj_ls",
                      "proj_update", "proj_changelog_version",
                      "proj_changelog_release_notes", "proj_changelog_list",
                      "proj_task_move", "proj_item_update"):  # R8: merged item tools
         assert expected in names
     # no leftover old names
     assert "proj_update_record" not in names
+    assert "proj_open" not in names
+    assert "proj_list" not in names
     # the bodies are the registered tools themselves (single definition, D3)
     from proj.mcp import proj_show as show_body
     assert show_body.__name__ == "proj_show"
@@ -146,7 +147,9 @@ def test_cli_command_coverage(proj):
     tools = {t.name for t in asyncio.run(mcp.mcp.list_tools())}
 
     # explicit exceptions: install/dev-only (no MCP tool by design)
-    EXCEPTIONS = {"docs", "hooks install", "init --zoo"}
+    # `open`: CLI-only (returns the md path for an editor/agent to read — an MCP
+    # client already has file access, so there is no MCP equivalent; A5/§9.2).
+    EXCEPTIONS = {"docs", "open", "hooks install", "init --zoo"}
 
     def is_group(c):
         return hasattr(c, "commands") and bool(c.commands)

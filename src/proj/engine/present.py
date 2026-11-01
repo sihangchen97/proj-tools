@@ -56,7 +56,7 @@ def show(spec, row: dict, db, history: bool = False) -> tuple[str, dict]:
 
 
 def list_lines(rows: list[dict], status: str | None = None) -> str:
-    """One line per record: id, status, title (shared by `ls` and `proj_list`)."""
+    """One line per record: id, status, title (shared by the CLI `ls` and MCP `proj_ls`)."""
     if not rows:
         return "(no records)" + (f" with status {status!r}" if status else "")
     return "\n".join(f"{r['id']:<8} {r['status']:<24} {r['title']}" for r in rows)
