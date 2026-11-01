@@ -21,7 +21,7 @@ from mcp.server import MCPServer
 from proj import scaffold
 from proj.check import check as run_checks
 from proj.core.config import load_config, load_project_env
-from proj.core.db import show_date
+from proj.core.db import ProjError, show_date
 from proj.core.templates import resolve_record_type
 from proj.engine import item_ops
 from proj.engine import items as items_mod
@@ -49,9 +49,10 @@ def _cfg(root: str | None, strict: bool = True):
 
 def _safe(fn, *args) -> str:
     """Run a pure tool body; config-discovery failures become clean 'error:' text."""
+    import sqlite3
     try:
         return fn(*args)
-    except ValueError as e:
+    except (ProjError, sqlite3.Error) as e:
         return f"error: {e}"
 
 
@@ -97,6 +98,9 @@ def proj_new(record_type: str, title: str, root: str | None = None,
                 "(run proj_info for registered record_types)")
     flat_sup = [x.strip() for x in (supersede or "").split(",") if x.strip()]
     flat_rel = [x.strip() for x in (related or "").split(",") if x.strip()]
+    # A3: same as the CLI — --parent only exists for task, error otherwise
+    if parent and record_type != "task":
+        return f"error: parent is only supported by task (got {record_type})"
     try:
         if record_type == "task":
             _, p = taskmod.new(cfg, title, parent, summary or "", commit or "",

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from proj.core import db as dbmod
+from proj.core.db import ProjError
 from proj.core.templates import ItemsSpec, ItemState, RecordTypeSpec
 
 UNGROUPED_CAP = 999               # '001'..'999'
@@ -36,7 +37,7 @@ NOTE_SEP = " — "                  # the separator before a note in an item lin
 NOTE_ASSIGNED = "state assigned from the checkbox (no emoji)"
 
 
-class ItemsError(ValueError):
+class ItemsError(ProjError):
     """An items problem (bad ref, unknown number, capacity, …)."""
 
 

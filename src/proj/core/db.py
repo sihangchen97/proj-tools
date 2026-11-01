@@ -39,6 +39,12 @@ LOCK_FILE = ".proj.lock"
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
 
 
+class ProjError(ValueError):
+    """Base for proj tool errors (A4/D4). MCP's _safe and the CLI catch it and
+    return a clean 'error:' string instead of a raw traceback. ItemsError
+    (engine/items.py) and friends subclass it."""
+
+
 def utc_now() -> str:
     """D10: timestamps are stored as UTC ISO8601 (second precision, sortable);
     the DATE part is what gets rendered (show_date)."""

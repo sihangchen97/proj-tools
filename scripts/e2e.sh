@@ -54,8 +54,8 @@ else fail "hook run failed: $out"; fi
 
 # 2. decisions (incl. supersede)
 expect_ok "new decision 0002"          "Created docs/decisions/DEC-0002-" -- $PROJ decision new "Use SQLite as core store" -y
-expect_ok "new decision 0003 (-s 2)"   "Created docs/decisions/DEC-0003-" -- $PROJ decision new "Adopt YAML templates" -y -s 2
-expect_ok "decision supersede (-s 3)"  "Created docs/decisions/DEC-0004-" -- $PROJ decision new "Supersede via verb" -y -s 3
+expect_ok "new decision 0003 (--supersede 2)" "Created docs/decisions/DEC-0003-" -- $PROJ decision new "Adopt YAML templates" -y --supersede 2
+expect_ok "decision supersede (--supersede 3)" "Created docs/decisions/DEC-0004-" -- $PROJ decision new "Supersede via verb" -y --supersede 3
 # supersede now renders as a blockquote line; the link text is the target's
 # full filename (relative to this record's own file, same dir → bare filename)
 expect_ok "supersede link rendered"    "> **supersedes:** [DEC-0002-" -- cat docs/decisions/DEC-0003-*.md

@@ -71,3 +71,27 @@ def test_docs_command_generates_both_files(tmp_path, monkeypatch):
     assert "proj decision accept" in cli_md  # template verb, generated
     assert "proj_verb" in mcp_md  # generated from the real MCP server
     assert "当前目录" in cli_md  # the --root default, in the generated intro
+
+def test_parent_rejected_for_non_task(proj, monkeypatch):
+    """A3: --parent only exists for task; `decision new --parent` is an error,
+    not a silent no-op (the option used to be registered on every type)."""
+    monkeypatch.chdir(proj.root)
+    r = runner.invoke(app, ["decision", "new", "X", "--parent", "T-000001", "-y"])
+    assert r.exit_code == 1, r.output
+    assert "only supported by task" in r.output
+    # a plain new still works (commit is a generic records column — kept)
+    r = runner.invoke(app, ["decision", "new", "Ok", "-y"])
+    assert r.exit_code == 0, r.output
+
+def test_s_is_summary_on_new(proj, monkeypatch):
+    """C1: -s means --summary on `new` (was --supersede); supersede is long-only.
+    `-s <id>` must NOT create a supersede edge — it becomes the summary."""
+    monkeypatch.chdir(proj.root)
+    r = runner.invoke(app, ["decision", "new", "S", "-s", "DEC-0001", "-y"])
+    assert r.exit_code == 0, r.output
+    # the "DEC-0001" text went to the summary, not the supersede relation
+    out = runner.invoke(app, ["decision", "show", "DEC-0002"]).output
+    assert "DEC-0001" in out and "supersedes" not in out
+    # --supersede long-only still creates the edge
+    r = runner.invoke(app, ["decision", "new", "S2", "--supersede", "DEC-0001", "-y"])
+    assert r.exit_code == 0, r.output

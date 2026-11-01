@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import typer
@@ -87,9 +88,10 @@ class _DynamicGroup(TyperGroup):
 
 
 # non-record_type sub-apps (changelog + hooks are not record_type verbs)
-cl_app = typer.Typer(help="CHANGELOG.md maintenance.")
-hooks_app = typer.Typer(help="Git hooks.")
-item_app = typer.Typer(help="Record items (checklists): ls / add / set / check / …")
+cl_app = typer.Typer(add_completion=False, help="CHANGELOG.md maintenance.")
+hooks_app = typer.Typer(add_completion=False, help="Git hooks.")
+item_app = typer.Typer(add_completion=False,
+                       help="Record items (checklists): ls / add / set / check / …")
 
 # no no_args_is_help: a bare `proj` shows project status (handled in the callback).
 # token_normalize_func: command names (record_types AND subcommands/verbs) are
@@ -168,6 +170,10 @@ def _dyn_new(name: str, title: str | None, supersede: list[str], parent: str | N
     reg = rec.load_registry(cfg.root)
     flat_sup = [x.strip() for s in supersede for x in s.split(",") if x.strip()]
     flat_rel = [x.strip() for s in related for x in s.split(",") if x.strip()]
+    # A3: --parent is only supported by task; passing it elsewhere is an error,
+    # not a silent no-op (the option used to be registered on every type).
+    if parent and name != "task":
+        _fail(f"--parent is only supported by task (got {name})")
     obj = record_for(name, reg)
     try:
         if name == "task":
@@ -179,7 +185,8 @@ def _dyn_new(name: str, title: str | None, supersede: list[str], parent: str | N
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"Created {p.relative_to(cfg.root)}")
-    if not yes:
+    # C11: agents (non-tty stdin) get no editor prompt; -y still always skips
+    if not yes and sys.stdin.isatty():
         _editor(p)
 
 
@@ -271,17 +278,18 @@ def _build_record_group(name: str):
     """Generate the `proj <name>` sub-group: new / list / show + template verbs."""
     root = find_root(_ROOT["root"], strict=False)
     spec = rec.load_registry(root).get(name)
-    sub = typer.Typer(help=f"{name} records: new / list / show + template verbs.")
+    sub = typer.Typer(add_completion=False,
+                        help=f"{name} records: new / list / show + template verbs.")
 
     @sub.command()
     def new(title: str | None = typer.Argument(None, help="record title"),
             supersede: list[str] = typer.Option(
-                [], "--supersede", "-s", help="replaced ids, same type (repeatable; comma ok)"),
+                [], "--supersede", help="replaced ids, same type (repeatable; comma ok)"),
             parent: str | None = typer.Option(None, "--parent", help="parent id (task only)"),
             related: list[str] = typer.Option(
                 [], "--related", "-r", help="related ids, any type (repeatable; comma ok)"),
             commit: str | None = typer.Option(None, "--commit", help="git commit hash"),
-            summary: str | None = typer.Option(None, "--summary", help="one-line summary"),
+            summary: str | None = typer.Option(None, "--summary", "-s", help="one-line summary"),
             yes: bool = typer.Option(False, "--yes", "-y", help="don't open the editor")):
         """Create a new record (DB insert + render md)."""
         _dyn_new(name, title, supersede, parent, related, commit, summary, yes)
@@ -649,7 +657,8 @@ def item_rm(item: str):
 
 # ---- item groups ----------------------------------------------------------------------
 
-item_group_app = typer.Typer(help="Manage a record's item groups (### L \u00b7 name).")
+item_group_app = typer.Typer(add_completion=False,
+                                  help="Manage a record's item groups (### L \u00b7 name).")
 item_app.add_typer(item_group_app, name="group")
 
 

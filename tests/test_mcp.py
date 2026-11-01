@@ -76,3 +76,24 @@ def test_mcp_error_paths(proj):
     # supersede: same-type required (decision cannot supersede a task)
     mcp.proj_new("task", "X", root=root)
     assert "same type required" in mcp.proj_new("decision", "X2", supersede="T-000001", root=root)
+
+def test_parent_rejected_for_non_task(proj):
+    """A3: proj_new(parent=...) on a non-task record_type errors (was silently
+    ignored before); task still accepts it."""
+    out = mcp.proj_new("decision", "X", parent="PLN-0001", root=str(proj.root))
+    assert "only supported by task" in out
+
+def test_safe_returns_clean_error_for_sqlite_and_projerror(proj):
+    """D4: _safe returns 'error:' text for sqlite/ProjError instead of a traceback."""
+    import sqlite3
+
+    from proj.mcp import ProjError, _safe
+
+    def boom_sqlite():
+        raise sqlite3.OperationalError("database is locked")
+
+    def boom_proj():
+        raise ProjError("gate failed")
+
+    assert _safe(boom_sqlite) == "error: database is locked"
+    assert _safe(boom_proj) == "error: gate failed"
