@@ -18,14 +18,70 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SANDBOX = REPO / os.environ.get("PROJ_E2E_SANDBOX", ".testproj")
+TMPDIR_TESTPROJ = REPO / ".testproj"
+# N4: the repo lives on NFS — the whole story runs in a LOCAL temp dir (tmpfs)
+# and is copied back to .testproj/ at the end (pass OR fail). ~60s -> ~5s.
+# PROJ_E2E_SANDBOX=<dir>: run directly there, no temp dir, no copy-back.
+# PROJ_E2E_KEEP_TMP=1: keep the temp dir (its path is printed).
+SANDBOX: Path = (Path(os.environ["PROJ_E2E_SANDBOX"]).resolve()
+                 if os.environ.get("PROJ_E2E_SANDBOX") else None)
+_TMP_SANDBOX: Path | None = None
+_KEEP_TMP = os.environ.get("PROJ_E2E_KEEP_TMP") == "1"
+
+
+def setup_sandbox() -> None:
+    global SANDBOX, _TMP_SANDBOX
+    if SANDBOX is not None:
+        return
+    _TMP_SANDBOX = Path(tempfile.mkdtemp(prefix="proj-e2e-"))
+    SANDBOX = _TMP_SANDBOX
+
+
+def _guard(dst: Path, label: str) -> None:
+    """e2e only ever manages <repo>/.testproj and its own temp dir (user
+    requirement) — refuse to delete/copy anything else."""
+    assert not dst.is_symlink(), f"{label} must not be a symlink: {dst}"
+    assert dst.resolve() == (REPO / label).resolve(), \
+        f"{label} must be {REPO / label}: got {dst}"
+
+
+def teardown() -> None:
+    """Close DB connections + WAL-checkpoint (no leftover -wal/-shm), then copy
+    the sandbox back to .testproj/ (pass OR fail) and remove the temp dir."""
+    global SANDBOX, _TMP_SANDBOX
+    if _TMP_SANDBOX is None:
+        return  # PROJ_E2E_SANDBOX: ran in place, nothing to copy back
+    import gc
+    gc.collect()  # drop any command connection still referenced in-process
+    if (SANDBOX / ".proj.sqlite").is_file():
+        con = sqlite3.connect(SANDBOX / ".proj.sqlite", timeout=5.0)
+        try:
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            con.close()
+    gc.collect()
+    _guard(TMPDIR_TESTPROJ, ".testproj")
+    if TMPDIR_TESTPROJ.exists():
+        shutil.rmtree(TMPDIR_TESTPROJ)
+    shutil.copytree(SANDBOX, TMPDIR_TESTPROJ)
+    if _KEEP_TMP:
+        print(f"\ne2e: temp dir kept (PROJ_E2E_KEEP_TMP=1): {SANDBOX}")
+    else:
+        # the temp dir must be the one this run created (inside the system tmp)
+        assert (not SANDBOX.is_symlink()
+                and SANDBOX.resolve().parent == Path(tempfile.gettempdir()).resolve()), \
+            f"refusing to remove a dir I did not create: {SANDBOX}"
+        shutil.rmtree(SANDBOX)
 SUBPROCESS = os.environ.get("PROJ_E2E_SUBPROCESS") == "1"
 RECORDS_DIR = {
     "task": "docs/tasks", "decision": "docs/decisions", "plan": "docs/plans",
@@ -189,9 +245,13 @@ def mcp_call(tool: str, *args: str, **kw) -> str:
 
 
 def reset_sandbox() -> None:
-    if SANDBOX.exists():
-        subprocess.run(["rm", "-rf", str(SANDBOX)], check=True)
-    SANDBOX.mkdir(parents=True)
+    # the temp dir already exists (mkdtemp created it); the explicit-sandbox
+    # path may hold a previous run — wipe it (guarded: it must be .testproj)
+    if SANDBOX.exists() and any(SANDBOX.iterdir()):
+        if SANDBOX is not None and SANDBOX.resolve() == TMPDIR_TESTPROJ.resolve():
+            _guard(SANDBOX, ".testproj")
+        shutil.rmtree(SANDBOX)
+    SANDBOX.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=SANDBOX, check=True)
     old = os.getcwd()
     os.chdir(SANDBOX)
@@ -516,19 +576,16 @@ def ch8() -> None:
 
 def main() -> int:
     t0 = time.time()
-    print("e2e: PCB 缺陷检测模型 v1"
-          f"  ({'子进程模式' if SUBPROCESS else '进程内模式'}，沙盒 {SANDBOX.name}/)")
-    reset_sandbox()
-    ch0()
-    ch1()
-    ch2()
-    ch3()
-    ch4()
-    ch5()
-    ch6()
-    ch7()
-    ch8()
-    return _summary()
+    setup_sandbox()
+    where = f"{SANDBOX}（本地临时目录，结束拷回 .testproj/）" if _TMP_SANDBOX else f"{SANDBOX}（PROJ_E2E_SANDBOX，就地）"
+    print(f"e2e: PCB 缺陷检测模型 v1  ({'子进程模式' if SUBPROCESS else '进程内模式'}，沙盒 {where})")
+    try:
+        reset_sandbox()
+        for ch in (ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8):
+            ch()
+        return _summary()
+    finally:
+        teardown()
 
 
 def _summary() -> int:
