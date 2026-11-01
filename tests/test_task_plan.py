@@ -364,7 +364,6 @@ def test_render_all_fetches_task_table_once(proj, monkeypatch):
     """R7: a bulk render reads the TASK table a constant number of times for ALL
     records — not once per rendered record (that was O(N^2): 300 records -> 326
     reads of the task table). The bound is independent of record count."""
-    reg = rec.load_registry(proj.root)
     for i in range(300):
         rec.new_record(proj, "task", f"Task {i}")
     task_reads = 0
