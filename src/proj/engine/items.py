@@ -964,9 +964,11 @@ def apply_md(state: ItemsState, parsed: Parsed, spec
                 else ""
         _validate_item(row, spec)
         live.append(row)
-    # 3. missing items → tombstones
+    # 3. missing items → tombstones. "Kept" is decided by identity, not by
+    # number: a cross-group move renumbered its row (md_nos holds the OLD one).
+    kept = {id(r) for r in live}
     for r in [r for r in new.rows if not r.deleted and not r.is_group
-              and r.no not in md_nos]:
+              and id(r) not in kept]:
         r.deleted = True  # the "deleted" note is added by sync_section
     # 4. display order: ungrouped, then each group block (X00 + its items),
     # tombstones last. Deduped by object identity (a row is referenced both by

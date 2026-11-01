@@ -275,8 +275,26 @@ def test_sync_cross_group_move_renumbers(proj):
     assert db_item(proj, row["id"], "002")["deleted"]
     i1 = db_item(proj, row["id"], "001")
     assert i1 is not None and not i1["deleted"]
-    assert db_item(proj, row["id"], "A01") is not None \
-        and db_item(proj, row["id"], "A01")["text"] == "b"
+    a1 = db_item(proj, row["id"], "A01")
+    assert a1 is not None and a1["text"] == "b" and not a1["deleted"]  # R1: stays live
+
+
+def test_sync_cross_group_move_into_group_followed_by_another(proj):
+    # R1: the target group is NOT the last one — this used to fail with
+    # "tombstones must come last" and then block every write (auto-sync)
+    row, _ = taskmod.new(proj, "T")
+    p = _file(proj, row["id"])
+    ops.add(proj, row["id"], "a")
+    ops.group_add(proj, row["id"], "G")   # A
+    ops.group_add(proj, row["id"], "H")   # B
+    _write_section(p, "Acceptance Criteria", "### A · G\n- [ ] #001 a\n\n### B · H\n")
+    problems, notes = rec.sync(proj)
+    assert problems == []
+    assert any("#001 → #A01" in n for n in notes)
+    a1 = db_item(proj, row["id"], "A01")
+    assert a1 is not None and a1["text"] == "a" and not a1["deleted"]
+    assert "#A01 a" in p.read_text(encoding="utf-8")
+    ops.add(proj, row["id"], "b")         # writes are not blocked afterwards
 
 
 def test_sync_unknown_group_letter_problem(proj):

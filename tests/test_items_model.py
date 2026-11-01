@@ -172,6 +172,43 @@ def test_problems(md, frag):
     assert any(frag in x for x in p.problems)
 
 
+# R1: moving a numbered line under another heading in the md renumbers it —
+# the moved row must stay LIVE under its fresh number (it was tombstoned
+# because the "missing" pass compared the OLD number), whether or not another
+# group follows the target and whether or not tombstones already exist.
+_MOVE_BASE = [it.Item("001", text="one"), it.Item("A00", text="G"),
+              it.Item("A01", text="g1"), it.Item("B00", text="H")]
+
+
+@pytest.mark.parametrize("rows, md, want", [
+    # target group A is followed by group B (was: "tombstones must come last")
+    (_MOVE_BASE,
+     "### A · G\n- [ ] #A01 g1\n- [ ] #001 one\n\n### B · H\n", "A02"),
+    # target group is the last one (was: the moved item silently tombstoned)
+    (_MOVE_BASE,
+     "### A · G\n- [ ] #A01 g1\n\n### B · H\n- [ ] #001 one\n", "B01"),
+    # with an existing tombstone
+    ([*_MOVE_BASE, it.Item("002", text="old", deleted=True)],
+     "### A · G\n- [ ] #A01 g1\n- [ ] #001 one\n\n### B · H\n", "A02"),
+    # into a group created by a new heading in the same edit
+    (_MOVE_BASE[:3],
+     "### A · G\n- [ ] #A01 g1\n\n### New\n- [ ] #001 one\n", "B01"),
+])
+def test_md_cross_group_move_keeps_item_live(rows, md, want):
+    st = _state([it.Item(r.no, text=r.text, deleted=r.deleted) for r in rows])
+    new, notes = it.apply_md(st, it.parse_section(md, PLAN), PLAN)
+    moved = new.by_no(want)
+    assert moved is not None and not moved.deleted and moved.text == "one"
+    assert new.by_no("001").deleted                       # old number: tombstone
+    assert [r.no for r in new.live() if not r.is_group].count(want) == 1
+    assert f"item #001 → #{want}" in notes
+    # the render shows it, and re-applying the render is a no-op
+    out = it.render_section(new, PLAN)
+    assert f"#{want} one" in out
+    again, _ = it.apply_md(new, it.parse_section(out, PLAN), PLAN)
+    assert [r.to_row() for r in again.rows] == [r.to_row() for r in new.rows]
+
+
 # ---- transforms ------------------------------------------------------------
 
 def test_add_group_after_first():

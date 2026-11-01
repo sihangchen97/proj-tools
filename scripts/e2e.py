@@ -424,6 +424,16 @@ def ch4() -> None:
     expect_ok("手改记录 md 后 sync（md 为准）", "OK", "sync")
     assert "（抽 3 板，一致率 96%）" in read(md_of(T_DS))
     REP.ok("手改的 item 行（含备注）被 sync 回收进 DB")
+    # hand-move a line to ANOTHER group in the md: B02 goes under "A · 采集",
+    # which is followed by groups B and C (R1: this used to block every write)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    b02 = next(ln for ln in lines if ln.startswith("- [x] #B02 "))
+    lines.remove(b02)
+    lines.insert(lines.index("### A · 采集") + 1, b02)
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    expect_ok("在 md 里跨组移动后 sync（B02 → A02，换号）", "#B02 → #A02", "sync")
+    assert "- [x] #A02 标注质检抽检" in read(md_of(T_DS))
+    expect_ok("跨组移动后的 item 仍在清单里", f"{T_DS}#A02", "item", "ls", T_DS)
     # hand-edit an open item's TEXT, then operate straight away: A1 auto-ingests
     # the edit first (the next write command is the sync)
     p.write_text(p.read_text(encoding="utf-8").replace(
