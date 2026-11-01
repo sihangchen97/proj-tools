@@ -148,6 +148,8 @@ def parse_template(text: str) -> RecordTypeSpec:
     data = _yaml_load(text)
     if not isinstance(data, dict) or "record_type" not in data:
         raise ValueError(f"template missing 'record_type' key: {data!r:.80}")
+    if "dir" not in data:
+        raise ValueError(f"template {data['record_type']!r}: dir is required")
     numbered = data.get("numbered", 4)
     if not isinstance(numbered, int):
         raise ValueError(
@@ -186,7 +188,7 @@ def parse_template(text: str) -> RecordTypeSpec:
     items = _parse_items(data["record_type"], data.get("items"))
     spec = RecordTypeSpec(
         record_type=data["record_type"],
-        dir=data.get("dir", f"docs/{data['record_type']}s"),
+        dir=str(data["dir"]),
         numbered=numbered,
         status_allowed=status_allowed,
         status_emoji=status_emoji,
@@ -223,12 +225,11 @@ def parse_template(text: str) -> RecordTypeSpec:
     if bad:
         raise ValueError(
             f"template {spec.record_type!r}: wip.enter {bad} must not be terminal")
-        if spec.items is not None:
-            _validate_items(spec)
-        if spec.gates_items and spec.items is None:
-            raise ValueError(
-                f"template {spec.record_type!r}: gates.items declared but no items: block")
-        # id layout: {code}-{N-char suffix} = 7 chars total (DEC-0001, T-000001, DEC-A000)
+    if spec.items is not None:
+        _validate_items(spec)
+    if spec.gates_items and spec.items is None:
+        raise ValueError(
+            f"template {spec.record_type!r}: gates.items declared but no items: block")
     # D9: numbered must be an int > 0 — every record id then carries a
     # resolvable {code}- prefix (relations FK rows resolve the type from the code,
     # the suffix after it is digits only — no letter overflow, see db.next_id)
@@ -243,13 +244,6 @@ def parse_template(text: str) -> RecordTypeSpec:
         raise ValueError(
             f"template {spec.record_type!r}: code + numbered must total 7 "
             f"(got {len(spec.code)}+{spec.numbered})")
-    # record dirs are always docs/<record_type>s (singular type name, plural dir);
-    # a hand-set dir is validated, not silently kept (PLAN §11: docs/tech-debt)
-    expected_dir = f"docs/{spec.record_type}s"
-    if spec.dir != expected_dir:
-        raise ValueError(
-            f"template {spec.record_type!r}: dir must be '{expected_dir}' "
-            f"(got {spec.dir!r})")
     return spec
 
 
