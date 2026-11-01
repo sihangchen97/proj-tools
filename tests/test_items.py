@@ -520,6 +520,27 @@ def test_group_ops(proj):
     assert any(it.group_of(r["no"]) == "" and r["text"] == "b"
                for r in db_items(proj, row["id"]) if not r["deleted"])
     assert db_item(proj, row["id"], "B00")["deleted"]  # the letter is a tombstone
+    assert db_item(proj, row["id"], "B01")["deleted"]  # the old number too (G4)
+
+
+def test_sync_notes_move_and_groups(proj):
+    # a move is ONE "#a → #b" note (not "new #b" + "#a deleted"); groups are
+    # reported as groups, never as "new item #B00"
+    row, _ = taskmod.new(proj, "T")
+    p = _file(proj, row["id"])
+    ops.add(proj, row["id"], "a")
+    ops.add(proj, row["id"], "b")
+    ops.group_add(proj, row["id"], "G")       # A
+    _write_section(p, "Acceptance Criteria",
+                   "- [ ] #002 b\n\n### A · G2\n- [ ] #001 a\n\n### H\n- [ ] c")
+    problems, notes = rec.sync(proj)
+    assert problems == []
+    body = [n.split(": ", 1)[1] for n in notes if n.startswith(p.name)]
+    assert "item #001 → #A01" in body
+    assert "group A renamed: G → G2" in body
+    assert "group B added: H" in body
+    assert "new item #B01 (c)" in body
+    assert not any("deleted" in n or "#B00" in n or "new item #A01" in n for n in body)
 
 
 def test_ls_filters_and_refs(proj):

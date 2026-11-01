@@ -606,7 +606,7 @@ def move(state: ItemsState, spec, no: str, *, group: str | None = None,
         fresh = new.next_no(target)
         new.rows.append(_tomb(no, it.text))
         it.no = fresh
-        note = f"item #{no} → #{fresh}"
+        note = _n_moved(no, fresh)
     if after:
         a = _live_no(new, norm_no(after))
         if group_of(a.no) != target:
@@ -631,6 +631,34 @@ def remove(state: ItemsState, spec, no: str) -> tuple[ItemsState, list[str]]:
     return new, []
 
 
+# one wording for group changes — the command/sync notes and the changelog
+def _n_group_added(letter: str, title: str) -> str:
+    return f"group {letter} added: {title}"
+
+
+def _n_group_renamed(letter: str, old: str, title: str) -> str:
+    return f"group {letter} renamed: {old} → {title}"
+
+
+def _n_group_removed(letter: str, title: str) -> str:
+    return f"group {letter} removed: {title}"
+
+
+def _n_moved(old: str, fresh: str) -> str:
+    """A renumbering move; diff_log/sync_section recognise exactly this shape."""
+    return f"item #{old} → #{fresh}"
+
+
+def _moves(notes: list[str]) -> list[tuple[str, str]]:
+    """(old, fresh) for every `_n_moved` note."""
+    out = []
+    for x in notes:
+        m = re.fullmatch(r"item #(\w+) → #(\w+)", x)
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
 def group_add(state: ItemsState, spec, title: str) -> tuple[ItemsState, list[str]]:
     """A new group: the next free letter, an `X00` row appended at the end."""
     spec = _spec(spec)
@@ -643,7 +671,7 @@ def group_add(state: ItemsState, spec, title: str) -> tuple[ItemsState, list[str
     # before any tombstones (they must stay last)
     pos = next((i for i, r in enumerate(new.rows) if r.deleted), len(new.rows))
     new.rows.insert(pos, row)
-    return new, [f"group {letter} · {title}"]
+    return new, [_n_group_added(letter, title)]
 
 
 def group_rename(state: ItemsState, spec, letter: str, title: str
@@ -656,8 +684,8 @@ def group_rename(state: ItemsState, spec, letter: str, title: str
     title = title.strip()
     if g.text == title:
         return new, []
-    g.text = title
-    return new, [f"group {letter} renamed"]
+    old, g.text = g.text, title
+    return new, [_n_group_renamed(letter, old, title)]
 
 
 def group_mv(state: ItemsState, spec, letter: str, *, after: str | None = None,
@@ -697,6 +725,7 @@ def group_rm(state: ItemsState, spec, letter: str,
     g = _live_no(new, letter + "00")
     members = [r for r in new.rows if not r.deleted and not r.is_group
                and group_of(r.no) == letter]
+    notes: list[str] = []
     if members:
         if items not in ("ungroup", "delete"):
             raise ItemsError(f"group {letter} still has {len(members)} items — "
@@ -707,16 +736,19 @@ def group_rm(state: ItemsState, spec, letter: str,
                 new.rows.remove(m)
                 new.rows.append(m)
         else:
+            # same as any cross-group move: a fresh number, the old one a tombstone
             for m in sorted(members, key=lambda r: r.no):
                 new.rows.remove(m)
+                new.rows.append(_tomb(m.no, m.text))
                 fresh = new.next_no("")
+                notes.append(_n_moved(m.no, fresh))
                 m.no = fresh
                 new.rows.insert(_insert_pos(new, "", first=False), m)
                 _validate_item(m, spec)
     g.deleted = True
     new.rows.remove(g)
     new.rows.append(g)
-    return new, []
+    return new, [*notes, _n_group_removed(letter, g.text)]
 
 
 # ---- validate / diff (shared by sync and the commands) ----------------------
@@ -750,16 +782,16 @@ def diff_log(old: ItemsState, new: ItemsState, notes: list[str]
     Order-only changes produce nothing. `notes` carries the cross-group move
     renumberings ('item #003 → #A04') made by the transforms — a move writes
     ONE Changed line (the fresh number's 'Added' is suppressed)."""
-    moves = [x for x in notes if " → " in x and x.startswith("item #")]
-    moved_to = {x.rsplit(" → ", 1)[1].lstrip("#") for x in moves}
-    moved_from = {x.rsplit(" → ", 1)[0].rsplit("#", 1)[1] for x in moves}
+    moves = _moves(notes)
+    moved_from = {a for a, _ in moves}
+    moved_to = {b for _, b in moves}
     o = {r.no: r for r in old.rows}
     n = {r.no: r for r in new.rows}
     out: list[tuple[str, str]] = []
     for no, r in n.items():
         if no not in o:
             if r.is_group:
-                out.append(("Added", f"group {no[0]} · {r.text}"))
+                out.append(("Added", f"group {no[0]}: {r.text}"))
             elif not r.deleted and no not in moved_to:
                 out.append(("Added", f"item #{no}: {r.text}"))
             elif r.deleted and no not in moved_to:
@@ -772,10 +804,10 @@ def diff_log(old: ItemsState, new: ItemsState, notes: list[str]
             out.append(("Removed", f"item #{no}: {r.text}"))
     for no, r in o.items():
         if no in n and r.is_group:
-            if n[no].deleted:
-                out.append(("Removed", f"group {no[0]}"))
-            elif n[no].text != r.text:
-                out.append(("Changed", f"group {no[0]} renamed"))
+            if n[no].deleted and not r.deleted:
+                out.append(("Removed", f"group {no[0]}: {r.text}"))
+            elif not n[no].deleted and n[no].text != r.text:
+                out.append(("Changed", _n_group_renamed(no[0], r.text, n[no].text)))
     for no, r in n.items():
         if (no in o and not r.is_group and not r.deleted
                 and no not in moved_to and o[no] is not None
@@ -786,9 +818,8 @@ def diff_log(old: ItemsState, new: ItemsState, notes: list[str]
             elif any(getattr(r, f) != getattr(a, f) for f in
                      ("text", "note", "owner", "due", "commit", "trailer")):
                 out.append(("Changed", f"item #{no} edited"))
-    for x in notes:
-        if x.startswith("item #") and " → " in x:
-            out.append(("Changed", x))
+    for a, b in moves:
+        out.append(("Changed", _n_moved(a, b)))
     return out
 
 
@@ -870,11 +901,18 @@ def sync_section(db, spec, row: dict, md_text: str,
     except ItemsError as e:
         return [str(e)], []
     new_nos = {i.no for i in new.live()}
-    sync_notes: list[str] = [f"new item #{i.no} ({i.text})"
-                             for i in new.live() if i.no not in old_nos]
-    sync_notes += [f"item #{i.no} deleted ({i.text})"
-                   for i in old.live() if i.no not in new_nos]
-    sync_notes += notes  # moves, emoji defaults, promote (from commit)
+    # items only (groups have their own notes); a move is ONE "#a → #b" note,
+    # never also "new #b" + "#a deleted"
+    moves = _moves(notes)
+    moved_from = {a for a, _ in moves}
+    moved_to = {b for _, b in moves}
+    sync_notes: list[str] = [f"new item #{i.no} ({i.text})" for i in new.live()
+                             if not i.is_group and i.no not in old_nos
+                             and i.no not in moved_to]
+    sync_notes += [f"item #{i.no} deleted ({i.text})" for i in old.live()
+                   if not i.is_group and i.no not in new_nos
+                   and i.no not in moved_from]
+    sync_notes += notes  # groups, moves, emoji defaults, promote (from commit)
     sections = json.loads(row.get("sections") or "{}")
     sections[_intro_key(spec)] = new.intro
     db.set(spec, row["id"], sections=json.dumps(sections))
@@ -908,20 +946,20 @@ def apply_md(state: ItemsState, parsed: Parsed, spec
                 raise ItemsError(f"unknown group {g.letter} — the letter was "
                                  f"never assigned")
             if row.text != g.title:
-                row.text = g.title
-                notes.append(f"group {g.letter} renamed")
+                old_title, row.text = row.text, g.title
+                notes.append(_n_group_renamed(g.letter, old_title, g.title))
         else:
             letter = new.next_group()
             g.letter = letter
             new.rows.append(_new_item(letter + "00", text=g.title))
-            notes.append(f"group {letter} · {g.title}")
+            notes.append(_n_group_added(letter, g.title))
     named = {g.letter for g in parsed.groups if g.letter}
     for r in [r for r in new.rows if r.is_group and not r.deleted
               and r.no[0] not in named]:
         r.deleted = True
         new.rows.remove(r)
         new.rows.append(r)
-        notes.append(f"group {r.no[0]}")
+        notes.append(_n_group_removed(r.no[0], r.text))
     # 2. items (md order: ungrouped first, then groups in heading order)
     ordered: list[tuple[PItem, str]] = [(i, "") for i in parsed.ungrouped]
     ordered += [(i, g.letter) for g in parsed.groups for i in g.items]
@@ -953,7 +991,7 @@ def apply_md(state: ItemsState, parsed: Parsed, spec
             new.rows.append(_tomb(it.no, row.text))
             fresh = new.next_no(grp)
             row.no = fresh
-            notes.append(f"item #{it.no} → #{fresh}")
+            notes.append(_n_moved(it.no, fresh))
         new.rows.append(row)
         row.text, row.note = it.text, it.note
         row.owner, row.due = it.owner, it.due

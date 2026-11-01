@@ -289,11 +289,42 @@ def test_diff_log_outputs():
                   it.Item("A00", text="G2"),
                   it.Item("B00", text="H")])
     out = it.diff_log(old, new, [])
-    assert ("Added", "group B · H") in out
+    assert ("Added", "group B: H") in out
     assert ("Removed", "item #002: b") in out
     assert ("Changed", "item #001  → met") in out or any(
         c == "Changed" and "001" in m for c, m in out)
-    assert ("Changed", "group A renamed") in out
+    assert ("Changed", "group A renamed: G → G2") in out
+
+
+def test_diff_log_group_removed_once():
+    old = _state([it.Item("A00", text="G")])
+    new = _state([it.Item("A00", text="G", deleted=True)])
+    assert it.diff_log(old, new, []) == [("Removed", "group A: G")]
+    # an already-deleted group stays silent
+    assert it.diff_log(new, new, []) == []
+
+
+def test_group_notes_wording():
+    st = _state([it.Item("001", text="a", state="pending")])
+    st, notes = it.group_add(st, PLAN, "Backend")
+    assert notes == ["group A added: Backend"]
+    st, notes = it.group_rename(st, PLAN, "a", "API")
+    assert notes == ["group A renamed: Backend → API"]
+    st, _ = it.move(st, PLAN, "001", group="A")
+    st, notes = it.group_rm(st, PLAN, "A", items="ungroup")
+    # ungrouping is a cross-group move: fresh number, the old one a tombstone
+    assert notes == ["item #A01 → #002", "group A removed: API"]
+    assert st.by_no("A01").deleted and not st.by_no("002").deleted
+    assert st.by_no("002").text == "a"
+
+
+def test_apply_md_group_notes():
+    st = _state([it.Item("001", text="a", state="pending"),
+                 it.Item("A00", text="G"), it.Item("B00", text="H")])
+    md = "- [ ] #001 a\n\n### A · G2\n\n### New\n"
+    _, notes = it.apply_md(st, it.parse_section(md, PLAN), PLAN)
+    assert notes == ["group A renamed: G → G2", "group C added: New",
+                     "group B removed: H"]
 
 
 def test_diff_log_move_one_line():
