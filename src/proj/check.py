@@ -81,8 +81,9 @@ def check(cfg: ProjConfig) -> list[str]:
                                         f"— run `proj sync`")
                 if spec.items is not None and row["status"] in spec.gates_items:
                     from proj.engine import items as items_mod  # lazy
-                    un = items_mod.open_items(
-                        items_mod.load(db, row["id"]), spec)
+                    state = items_mod.load(db, row["id"], spec)
+                    state.intro = items_mod._intro_of(spec, row)
+                    un = items_mod.open_items(state, spec)
                     if un:
                         problems.append(
                             f"{p.name}: {spec.record_type} {row['id']} is {row['status']!r} "

@@ -377,8 +377,9 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         if spec.items is not None and sec.name == spec.items.section:
             # the items section renders entirely from the DB state (the intro
             # lives in the sections JSON alongside the item lines)
-            lines.append(items_mod.render_section(
-                items_mod.load(db, row["id"]), spec) or "")
+            state = items_mod.load(db, row["id"], spec)
+            state.intro = items_mod._intro_of(spec, row)
+            lines.append(items_mod.render_section(state, spec) or "")
         else:
             lines.append(sections.get(sec.name.lower(), "").strip())
         lines.append("")
@@ -752,7 +753,8 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
             from proj.engine import items as items_mod  # lazy: store↔items cycle
             problems, n = items_mod.sync_section(
                 db, spec, db.get(spec, u),
-                raw_sections.get(spec.items.section.lower(), ""), p.name)
+                raw_sections.get(spec.items.section.lower(), ""),
+                source=p.name)
             if problems:
                 return problems, []
             notes += n
@@ -791,11 +793,11 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         sections.pop(spec.items.section.lower(), None)
         from proj.engine import items as items_mod  # lazy: store↔items cycle
         # adopted md: every line becomes a NEW item — the record is fresh, so
-        # no number can refer to it (strip_numbers)
+        # no number can refer to it (adopt=True clears the numbers)
         problems, n = items_mod.sync_section(
             db, spec, db.get(spec, id_),
-            raw_sections.get(spec.items.section.lower(), ""), p.name,
-            strip_numbers=True)
+            raw_sections.get(spec.items.section.lower(), ""),
+            source=p.name, adopt=True)
         if problems:
             return problems, []
         notes += n

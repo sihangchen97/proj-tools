@@ -218,8 +218,9 @@ class Record:
         to_s = self.verbs[verb][1]
         if self.spec.items is not None and to_s in self.spec.gates_items:
             from proj.engine import items as items_mod  # lazy: record↔items cycle
-            un = items_mod.open_items(
-                items_mod.load(db, row["id"]), self.spec)
+            state = items_mod.load(db, row["id"], self.spec)
+            state.intro = items_mod._intro_of(self.spec, row)
+            un = items_mod.open_items(state, self.spec)
             if un:
                 raise ValueError(
                     f"{self.record_type} {row['id']}: {len(un)} unclosed {self.spec.items.noun}(s) "

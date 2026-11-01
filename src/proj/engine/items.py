@@ -1,41 +1,22 @@
-"""Item checklists — pure model, md parse/render, state transforms and DB
-access (depends only on proj.core, NOT on store — see plans/items-design.md).
-CLI/MCP operations live in engine/item_ops.py (which may depend on store).
+"""Item checklists: the pure model + md parsing/rendering + state transforms.
 
-The `items:` block of a record template defines one structured `##` section.
-This module is the single owner of its rules:
+The ONE checklist per record (the `items:` section of its template) is stored
+in a single `items` table, whose `no` column IS the 3-char number
+(plans/PLAN.md §4, plans/items-design.md):
 
-- ITEM NUMBER: 3 chars — `001`…`999` (ungrouped, max 999) or `L01`…`L99`
-  (grouped: L = group letter A-Z, max 99 per group, max 26 groups).
-  Numbers are NEVER reused (one counter per group); group letters are never
-  reused either. Parsing accepts zero-shortened refs (`#1` = `#001`,
-  `#a1` = `#A01`, case-insensitive); rendering is always the full 3-char form.
-  (The LETTER in a RECORD id means nothing — record ids are digits only.)
-- MD SHAPE: a free mix of free text, group headings and item lines.
-  A group heading is `### {LETTER} · {name}` (letter assigned by the tool;
-  a heading without a letter creates a new group). An item belongs to the
-  NEAREST heading above it; items before the first heading are ungrouped.
-  Item lines are top-level only (an indented `- [ ]` is a problem — use a
-  group). One item line:
-  `- [x | ] #{no} {emoji + " " (only when the state's closed-group holds >1
-  state)} {text}{" — " + note}{" · owner: " + owner}{" · due: " + due}`.
-  Parse strips right-to-left (due → owner → first " — " → #number → emoji).
-- SYNC (md → DB, `apply_md`): everything is renumbered from the md; a line
-  with a number the record has not issued is a problem (drop the number to
-  add it as new); duplicate numbers are a problem; a numbered line sitting
-  under a DIFFERENT heading than its stored group is a cross-group move —
-  it gets a FRESH number (changelog `item #003 → #A04`, old number void);
-  a stored item missing from the md is deleted; a heading that disappears
-  deletes its group (its items are re-homed per the rules above); empty
-  groups are kept; free text is kept verbatim (intro + trailers).
-- RE-OPEN RESTRICTION: on a record in a `gates.items` status, no unclosed
-  item may survive the write.
+- '001'..'999'  ungrouped items
+- 'A01'..'Z99'  items inside group A (the first letter is the group)
+- 'A00'         group A itself (its `text` is the group name)
 
-All transforms are pure: `(state, spec, ...) -> (new_state, notes)`, raising
-`ItemsError` (a ValueError) on any violation and never mutating their input.
-`commit` is the single write path: validate → diff_log → items_save →
-add_log → promote. Sync (`sync_section`) and every command share it, so both
-produce identical changelogs.
+Deleted numbers are kept as tombstones (`deleted=1`) so numbers and group
+letters are never reused; the next number is the max of ALL rows of its group
+(tombstones included) + 1, the next letter the max of all `X00` rows + 1.
+
+All mutations flow through the same path: load state → pure transform →
+validate → diff_log → items_save → add_log (the `commit` below). sync and the
+item commands share `apply_md`/`diff_log`, so both ways of editing produce
+identical changelogs. This module depends only on proj.core (no store import —
+`item_ops.py` is the bridge).
 """
 from __future__ import annotations
 
@@ -46,224 +27,211 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from proj.core import db as dbmod
-from proj.core.templates import ItemsSpec, RecordTypeSpec
+from proj.core.templates import ItemsSpec, ItemState, RecordTypeSpec
 
-# ---- constants ---------------------------------------------------------------
-
-UNGROUPED = ""
-UNGROUPED_CAP = 999
-GROUP_CAP = 99
-GROUP_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-NOTE_SEP = " — "
-
-GROUP_HEADING_RE = re.compile(r"^### (?:([A-Za-z]) · )?(.+)$")
-ITEM_LINE_RE = re.compile(r"^( *)- \[([ xX])\] (.*)$")
-ITEM_NO_RE = re.compile(r"^#(\w+) ")
-DUE_RE = re.compile(r" · due: (\d{4}-\d{2}-\d{2})$")
-OWNER_RE = re.compile(r" · owner: (.+)$")
-MOVE_NOTE_RE = re.compile(r"^(#\S+) → (\S+)$")
+UNGROUPED_CAP = 999               # '001'..'999'
+GROUP_CAP = 99                    # 'A01'..'A99'; 'A00' is the group itself
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+NOTE_SEP = " — "                  # the separator before a note in an item line
+NOTE_ASSIGNED = "state assigned from the checkbox (no emoji)"
 
 
 class ItemsError(ValueError):
-    """A rejected item operation (parse problem, capacity, unknown number…)."""
+    """An items problem (bad ref, unknown number, capacity, …)."""
 
 
-# ---- model (plans/items-design.md §3) ----------------------------------------
-
-@dataclass(frozen=True)
-class ItemNo:
-    """The 3-char item number: `001` (ungrouped) / `A01` (group A)."""
-
-    grp: str
-    seq: int
-
-    def __str__(self) -> str:
-        return f"{self.seq:03d}" if not self.grp else f"{self.grp}{self.seq:02d}"
+def _spec(spec) -> ItemsSpec:
+    """The ItemsSpec behind a spec (a RecordTypeSpec passes its .items)."""
+    return spec.items if isinstance(spec, RecordTypeSpec) else spec
 
 
-def parse_no(s: str) -> ItemNo:
-    """'1' / '001' / 'a1' / 'A01' → ItemNo (case-insensitive, zero-shortened);
-    ValueError on a malformed or out-of-range number."""
-    m = re.match(r"^([A-Za-z])?(\d{1,3})$", s.strip())
+def _intro_key(spec) -> str:
+    """The sections key of the checklist intro (kept in records.sections)."""
+    return _spec(spec).section.lower() + "/intro"
+
+
+def _intro_of(spec, row: dict) -> str:
+    sections = json.loads(row.get("sections") or "{}")
+    return sections.get(_intro_key(spec), "") or ""
+
+
+# ---- numbers -------------------------------------------------------------
+
+def group_of(no: str) -> str:
+    """The group letter behind a number: 'A01' → 'A'; '001' → '' (none)."""
+    return no[0] if no[0].isalpha() else ""
+
+
+def norm_no(s: str) -> str:
+    """Normalize a number: '1'/'001' → '001'; 'a1'/'A01' → 'A01';
+    'a'/'A0' → 'A00' (a bare letter names its group). Case-insensitive,
+    zero padding optional. ItemsError when malformed or over capacity."""
+    m = re.fullmatch(r"([a-zA-Z])(\d{0,2})|(\d{1,3})", s.strip())
     if not m:
-        raise ValueError(f"malformed item number {s!r} (expected e.g. 001 or A01)")
-    letter = (m.group(1) or "").upper()
-    seq = int(m.group(2))
-    if letter and seq > GROUP_CAP:
-        raise ValueError(f"item number #{letter}{seq} is out of range "
-                         f"(group items run to #{letter}{GROUP_CAP:02d})")
-    if not letter and seq > UNGROUPED_CAP:
-        raise ValueError(f"item number #{seq} is out of range "
-                         f"(ungrouped items run to #{UNGROUPED_CAP:03d})")
-    return ItemNo(letter, seq)
+        raise ItemsError(f"bad item number {s!r}")
+    if m.group(1):
+        letter = m.group(1).upper()
+        if not m.group(2):
+            return letter + "00"
+        n = int(m.group(2))
+        if n > GROUP_CAP:
+            raise ItemsError(f"item number {s!r} exceeds the per-group "
+                             f"capacity ({GROUP_CAP})")
+        return letter + f"{n:02d}"
+    n = int(m.group(3))
+    if n > UNGROUPED_CAP:
+        raise ItemsError(f"item number {s!r} exceeds the ungrouped capacity "
+                         f"({UNGROUPED_CAP})")
+    return f"{n:03d}"
 
+
+def norm_group(s: str) -> str:
+    """A group letter: 'A' / 'a' → 'A'; 'A00' → 'A'. ItemsError otherwise."""
+    no = norm_no(s)
+    if not no[0].isalpha():
+        raise ItemsError(f"{s!r} is not a group (expected a letter A-Z)")
+    return no[0]
+
+
+# ---- model ---------------------------------------------------------------
 
 @dataclass
 class Item:
-    no: ItemNo
-    text: str
-    state: str
+    """One row of the `items` table (including `X00` group rows and tombstones)."""
+    no: str
+    text: str = ""
+    state: str = ""
     note: str = ""
     owner: str = ""
     due: str = ""
+    commit: str = ""
+    trailer: str = ""             # free text right below this line (kept as-is)
     created: str = ""
     closed_at: str = ""
-    commit: str = ""
-    trailer: str = ""      # free text directly under this line (kept verbatim)
+    deleted: bool = False         # tombstone: the number is never reused
 
+    @property
+    def is_group(self) -> bool:
+        """An 'A00' row (group A itself; `text` is the group name)."""
+        return self.no.endswith("00") and self.no[0].isalpha()
 
-@dataclass
-class Group:
-    letter: str
-    title: str
-    trailer: str = ""      # free text under the heading, before the first item
+    def to_row(self) -> dict:
+        return {"no": self.no, "text": self.text, "state": self.state,
+                "note": self.note, "owner": self.owner, "due": self.due,
+                "commit": self.commit, "trailer": self.trailer,
+                "created": self.created, "closed_at": self.closed_at,
+                "deleted": self.deleted}
 
 
 @dataclass
 class ItemsState:
-    """A record's full checklist state. `items` order = display order."""
+    """A record's whole checklist: `rows` in display order (tombstones at the
+    end, not shown). `intro` is the text before the first element."""
+    intro: str = ""
+    rows: list[Item] = field(default_factory=list)
 
-    intro: str
-    items: list[Item] = field(default_factory=list)
-    groups: list[Group] = field(default_factory=list)
-    last_seq: dict[str, int] = field(default_factory=dict)   # per-group counter
-    last_group: int = 0                                      # groups allocated
+    def by_no(self, no: str) -> Item | None:
+        return next((r for r in self.rows if r.no == no), None)
+
+    def live(self) -> list[Item]:
+        """The non-deleted rows, in display order."""
+        return [r for r in self.rows if not r.deleted]
+
+    def group(self, letter: str) -> Item | None:
+        """The `X00` row of a group (None when it was never allocated)."""
+        return self.by_no(letter + "00")
+
+    def next_no(self, letter: str) -> str:
+        """The next number of a group (letter '' = ungrouped): the max of ALL
+        rows of that group (tombstones included) + 1. ItemsError when the
+        capacity is reached."""
+        cap = GROUP_CAP if letter else UNGROUPED_CAP
+        seqs = [int(r.no[1:] if letter else r.no)
+                for r in self.rows if group_of(r.no) == letter]
+        nxt = max(seqs, default=0) + 1
+        if nxt > cap:
+            where = f"group {letter}" if letter else "the ungrouped list"
+            raise ItemsError(f"{where} is at capacity ({cap} items) — "
+                             f"split the record")
+        width = 2 if letter else 3
+        return (letter or "") + f"{nxt:0{width}d}"
+
+    def next_group(self) -> str:
+        """The next free group letter: the max of all `X00` rows (tombstones
+        included) + 1. ItemsError past Z."""
+        tops = [r.no[0] for r in self.rows
+                if r.no.endswith("00") and r.no[0].isalpha()]
+        nxt = max((LETTERS.index(t) for t in tops), default=-1) + 1
+        if nxt >= len(LETTERS):
+            raise ItemsError(f"at most {len(LETTERS)} groups — split the record")
+        return LETTERS[nxt]
 
     def check(self) -> None:
         """Invariants (asserted before every save):
-        - items: all ungrouped first, then the groups' items in groups' order;
-        - item numbers unique; every seq <= the group's counter;
-        - group letters unique and within the allocated range."""
-        seen: set[ItemNo] = set()
-        ordered: list[Item] = [i for i in self.items if not i.no.grp]
-        for g in self.groups:
-            ordered += [i for i in self.items if i.no.grp == g.letter]
-        if ordered != list(self.items):
-            raise AssertionError("items order invariant broken (ungrouped first, groups in order)")
-        for i in self.items:
-            if i.no in seen:
-                raise AssertionError(f"duplicate item number #{i.no}")
-            seen.add(i.no)
-            if i.no.seq > self.last_seq.get(i.no.grp, 0):
-                raise AssertionError(f"item #{i.no} exceeds the group counter")
-        letters = [g.letter for g in self.groups]
-        if len(letters) != len(set(letters)):
-            raise AssertionError("duplicate group letter")
-        for g in self.groups:
-            if GROUP_LETTERS.index(g.letter) + 1 > self.last_group:
-                raise AssertionError(f"group letter {g.letter} beyond the allocated range")
-
-
-# ---- normalize (same rule as store.normalize — items.py must not import store)
-
-def normalize(text: str) -> str:
-    """Drop leading/trailing blank lines; compress runs of 2+ blank lines to 1
-    (outside code fences). Content as-is."""
-    out: list[str] = []
-    fence, blank = False, 0
-    for line in text.splitlines():
-        if line.lstrip().startswith("```"):
-            fence = not fence
-        if not fence and not line.strip():
-            blank += 1
-            if blank > 1:
+        - display order: all ungrouped items, then each group as a block
+          (its `X00` row immediately followed by that group's items);
+        - numbers unique within the record (tombstones included);
+        - every `Xnn` item has a non-deleted `X00` row;
+        - tombstones come last.
+        """
+        rows = self.rows
+        first_tomb = next((i for i, r in enumerate(rows) if r.deleted),
+                          len(rows))
+        if any(not r.deleted for r in rows[first_tomb:]):
+            raise ItemsError("tombstones must come last")
+        seen: set[str] = set()
+        cur_group: str | None = None      # None = the ungrouped section
+        for r in rows[:first_tomb]:
+            if r.no in seen:
+                raise ItemsError(f"duplicate item number #{r.no}")
+            seen.add(r.no)
+            grp = group_of(r.no)
+            if r.is_group:
+                if cur_group is not None and grp != cur_group and grp in seen:
+                    raise ItemsError(f"group {grp} appears twice")
+                cur_group = grp
                 continue
-        else:
-            blank = 0
-        out.append(line)
-    while out and not out[0].strip():
-        out.pop(0)
-    while out and not out[-1].strip():
-        out.pop()
-    return "\n".join(out)
+            if cur_group is not None and grp != cur_group:
+                where = grp or "the ungrouped list"
+                raise ItemsError(f"out-of-order item #{r.no} ({where} after "
+                                 f"group {cur_group})")
+            if grp:
+                g = self.group(grp)
+                if g is None or g.deleted:
+                    raise ItemsError(f"item #{r.no} has no live group row #{grp}00")
 
 
-# ---- spec helpers ------------------------------------------------------------
+def _new_item(no: str, text: str, **kw) -> Item:
+    it = Item(no=no, text=text)
+    for k, v in kw.items():
+        setattr(it, k, v)
+    if not it.created:
+        it.created = dbmod.utc_now()
+    return it
 
-def _state_of(spec: ItemsSpec, name: str):
+
+def _tomb(no: str, text: str) -> Item:
+    return Item(no=no, text=text, deleted=True)
+
+
+# ---- render (plans/items-design.md §4.1) -----------------------------------
+
+def _state_of(spec: ItemsSpec, name: str) -> ItemState | None:
     return next((s for s in spec.states if s.name == name), None)
 
 
-def _state_name(spec: ItemsSpec, name: str | None) -> str:
-    if name is None:
-        return spec.states[0].name
-    if _state_of(spec, name) is None:
-        raise ItemsError(f"unknown state {name!r} (expected: "
-                         f"{', '.join(s.name for s in spec.states)})")
-    return name
-
-
 def _show_emoji(spec: ItemsSpec, state_name: str) -> str:
-    """The state's emoji + trailing space, only when its closed-group holds >1 state."""
-    s = _state_of(spec, state_name)
-    if s is None or not s.emoji:
+    """'EMOJI ' when the state shows one (it has an emoji and its closed group
+    holds more than one state); '' otherwise."""
+    st = _state_of(spec, state_name)
+    if st is None or not st.emoji:
         return ""
-    if len([x for x in spec.states if x.closed == s.closed]) > 1:
-        return f"{s.emoji} "
-    return ""
-
-
-def _capacity(grp: str, seq: int) -> None:
-    if grp and seq > GROUP_CAP:
-        raise ItemsError(f"group {grp} is full ({GROUP_CAP} items) — split the record")
-    if not grp and seq > UNGROUPED_CAP:
-        raise ItemsError(f"the ungrouped list is full ({UNGROUPED_CAP} items) — split the record")
-
-
-def _by_no(state: ItemsState, no: ItemNo) -> Item:
-    for i in state.items:
-        if i.no == no:
-            return i
-    raise ItemsError(f"item #{no} not found")
-
-
-def _by_letter(state: ItemsState, letter: str) -> Group:
-    for g in state.groups:
-        if g.letter == letter:
-            return g
-    raise ItemsError(f"group {letter} does not exist")
-
-
-def _grp_bounds(state: ItemsState, grp: str) -> tuple[int, int]:
-    """(start, end) of the group's item block in the display list (blocks are
-    contiguous: ungrouped first, then the groups in order — the invariant).
-    For an empty group both are where its block would start (end of the
-    previous block), so insert-at-end and insert-at-first coincide there."""
-    pos = 0
-    for b in [""] + [g.letter for g in state.groups]:
-        n = sum(1 for x in state.items if x.no.grp == b)
-        if b == grp:
-            return pos, pos + n
-        pos += n
-    return pos, pos  # grp not allocated: its (empty) block is last
-
-
-def _validate_item(spec: ItemsSpec, text: str, owner: str = "", due: str = "") -> None:
-    if not text.strip():
-        raise ItemsError("item text must be non-empty")
-    if NOTE_SEP in text or " · " in text:
-        raise ItemsError(f"item text may not contain {NOTE_SEP!r} or ' · ' "
-                         f"(use --note / --owner / --due for those)")
-    if owner and "owner" not in spec.fields:
-        raise ItemsError(f"{spec.noun}s of this record type have no owner field")
-    if due:
-        if "due" not in spec.fields:
-            raise ItemsError(f"{spec.noun}s of this record type have no due field")
-        try:
-            date.fromisoformat(due)
-        except ValueError:
-            raise ItemsError(f"due {due!r} is not a valid date (YYYY-MM-DD)") from None
-
-
-# ---- render (plans/items-design.md §4.1) --------------------------------------
-
-def _it_spec(spec) -> ItemsSpec:
-    """The ItemsSpec behind a spec (a RecordTypeSpec passes its .items)."""
-    return spec.items if hasattr(spec, "items") and spec.items is not None else spec
+    sibs = [s for s in spec.states if s.closed == st.closed]
+    return f"{st.emoji} " if len(sibs) > 1 else ""
 
 
 def render_item_line(item: Item, spec) -> str:
-    spec = _it_spec(spec)
+    spec = _spec(spec)
     box = "x" if item.state in spec.closed_states else " "
     line = f"- [{box}] #{item.no} {_show_emoji(spec, item.state)}{item.text}"
     if item.note:
@@ -272,65 +240,77 @@ def render_item_line(item: Item, spec) -> str:
         line += f" · owner: {item.owner}"
     if item.due:
         line += f" · due: {item.due}"
-    return line
+    return line.rstrip()
 
 
 def render_section(state: ItemsState, spec) -> str:
     """The section content (without the `##` heading) — depends ONLY on state.
     `spec`: the ItemsSpec or its RecordTypeSpec."""
-    spec = _it_spec(spec)
+    spec = _spec(spec)
+
+    def emit(r: Item) -> None:
+        out.append(render_item_line(r, spec))
+        if r.trailer.strip():
+            out.extend(r.trailer.strip("\n").splitlines())
+
     out: list[str] = []
-
-    def emit(g: Group) -> None:
-        nonlocal out
-        out.append("")
-        out.append(f"### {g.letter} · {g.title}")
-        if g.trailer.strip():
-            out.extend(g.trailer.strip("\n").splitlines())
-
     if state.intro.strip():
-        out += state.intro.strip("\n").splitlines()
-        out.append("")
-    # groups are emitted in their own order (empty ones too — they must survive
-    # a re-render, so they round-trip through sync); items are in display order
-    gi = 0
-    cur: str | None = None
-    for item in state.items:
-        if item.no.grp:
-            while gi < len(state.groups) and state.groups[gi].letter != item.no.grp:
-                emit(state.groups[gi])  # an empty group (no items yet)
-                gi += 1
-            if item.no.grp != cur:
-                emit(state.groups[gi])
-                gi += 1
-                cur = item.no.grp
-        out.append(render_item_line(item, spec))
-        if item.trailer.strip():
-            out += item.trailer.strip("\n").splitlines()
-    while gi < len(state.groups):
-        emit(state.groups[gi])
-        gi += 1
+        out.extend(state.intro.strip("\n").splitlines())
+    for r in state.live():
+        if r.is_group:
+            out.append("")
+            out.append(f"### {r.no[0]} · {r.text}")
+            if r.trailer.strip():
+                out.extend(r.trailer.strip("\n").splitlines())
+        else:
+            emit(r)
     return normalize("\n".join(out))
 
 
-# ---- parse (plans/items-design.md §4.2) ---------------------------------------
+def normalize(text: str) -> str:
+    """Blank-line rules (same as store.normalize, kept local — no store import):
+    lines right-stripped, no leading blanks, at most one blank line, no
+    trailing blanks."""
+    out: list[str] = []
+    for ln in (text or "").split("\n"):
+        if ln.strip() == "":
+            if out and out[-1] != "":
+                out.append("")
+        else:
+            out.append(ln.rstrip())
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out)
+
+
+# ---- parse (plans/items-design.md §4.2) ------------------------------------
+
+GROUP_HEAD_RE = re.compile(r"^### (?:([A-Za-z]) · )?(.+)$")
+ITEM_RE = re.compile(r"^- \[([ xX])\] (.*)$")
+INDENT_ITEM_RE = re.compile(r"^\s+- \[[ xX]\]")
+NO_RE = re.compile(r"^#([A-Za-z0-9]+)\s*(.*)$")
+DUE_RE = re.compile(r" · due: (\d{4}-\d{2}-\d{2})$")
+OWNER_RE = re.compile(r" · owner: (.+)$")
+EMOJI_RE = re.compile(r"^(\S)\s+(.+)$")
+
 
 @dataclass
 class PItem:
-    no: ItemNo | None
+    no: str | None                 # None = a new item
     checked: bool
-    state: str
-    text: str
+    state: str = ""                # resolved (default '' when undetermined)
+    text: str = ""
     note: str = ""
     owner: str = ""
     due: str = ""
     trailer: str = ""
     line: str = ""
+    from_emoji: bool = False       # the state came from an emoji (conflict check)
 
 
 @dataclass
 class PGroup:
-    letter: str | None
+    letter: str | None             # None = unnamed (a new group)
     title: str
     trailer: str = ""
     items: list[PItem] = field(default_factory=list)
@@ -345,556 +325,663 @@ class Parsed:
     notes: list[str] = field(default_factory=list)
 
 
-def _parse_item_line(line: str, box: str, rest: str, spec: ItemsSpec,
-                     parsed: Parsed) -> PItem | None:
-    """One item line, content stripped right-to-left; None when malformed."""
-    checked = box.lower() == "x"
-    due = owner = note = ""
-    dm = DUE_RE.search(rest)
-    if dm:
-        if "due" not in spec.fields:
-            parsed.problems.append(f"item line has · due: but due is not an "
-                                   f"enabled field: {line!r}")
-        due, rest = dm.group(1), rest[:dm.start()]
-    om = OWNER_RE.search(rest)
-    if om:
-        if "owner" not in spec.fields:
-            parsed.problems.append(f"item line has · owner: but owner is not "
-                                   f"an enabled field: {line!r}")
-        owner, rest = om.group(1), rest[:om.start()]
-    if NOTE_SEP in rest:
-        rest, note = rest.split(NOTE_SEP, 1)
-        note = note.strip()
-    no: ItemNo | None = None
-    nm = ITEM_NO_RE.match(rest)
-    if nm:
-        try:
-            no = parse_no(nm.group(1))
-        except ValueError as e:
-            parsed.problems.append(f"item line {line!r}: {e}")
-            return None
-        rest = rest[nm.end():]
-    state: str | None = None
-    for s in spec.states:
-        if s.emoji and rest.startswith(s.emoji + " "):
-            state = s.name
-            rest = rest[len(s.emoji) + 1:]
-            break
-    text = rest.strip()
-    if not text:
-        parsed.problems.append(f"item line has empty text: {line!r}")
-        return None
-    group = [s for s in spec.states if s.closed == checked]
-    label = f"#{no}" if no is not None else "new item"
-    if state is not None:
-        if state not in {s.name for s in group}:
-            parsed.problems.append(
-                f"item {label}: emoji and checkbox conflict "
-                f"({('[x]' if checked else '[ ]')} with {state!r}): {line!r}")
-            return None
+def _all_items(p: Parsed) -> list[PItem]:
+    return [*p.ungrouped, *[i for g in p.groups for i in g.items]]
+
+
+def _resolve_state(it: PItem, spec: ItemsSpec) -> None:
+    unclosed = [s for s in spec.states if not s.closed]
+    closed = [s for s in spec.states if s.closed]
+    m = EMOJI_RE.match(it.text)
+    if m and any(s.emoji == m.group(1) for s in spec.states):
+        st = next(s for s in spec.states if s.emoji == m.group(1))
+        it.text = m.group(2)
+        it.state = st.name
+        it.from_emoji = True
+        return
+    if it.checked:
+        if not closed:
+            return
+        it.state = closed[0].name
+        if not it.note and len(closed) > 1:
+            it.note = NOTE_ASSIGNED
     else:
-        state = group[0].name
-        if checked and len(group) > 1:
-            parsed.notes.append(f"item {label}: [x] without state emoji → {state}: {line!r}")
-    return PItem(no=no, checked=checked, state=state, text=text, note=note,
-                 owner=owner, due=due, trailer="", line=line)
+        it.state = unclosed[0].name if unclosed else ""
 
 
-def parse_section(text: str, spec: ItemsSpec) -> Parsed:
-    """Scan the section line by line: group headings, top-level item lines and
-    free text (intro before the first element, else the trailer of the element
-    above). An indented `- [ ]` line is a problem (nesting is gone — groups)."""
-    parsed = Parsed()
+def _trailer(cur: PItem | PGroup, buf: list[str]) -> None:
+    if buf:
+        cur.trailer = (cur.trailer + "\n" if cur.trailer else "") + "\n".join(buf)
+
+
+def parse_section(text: str, spec) -> Parsed:
+    """Scan the section content line by line into a Parsed (states resolved).
+    An indented '- [ ]' line is a problem (nesting is gone); free text before
+    the first element is the intro, otherwise it trails the nearest element."""
+    spec = _spec(spec)
+    p = Parsed()
+    cur: PItem | PGroup | None = None   # the last element (trailers attach to it)
+    cur_group: PGroup | None = None     # the group an item line belongs to
+    buf: list[str] = []
     intro: list[str] = []
-    cur_item: PItem | None = None
-    cur_group: PGroup | None = None
-
-    for line in text.splitlines():
-        g = GROUP_HEADING_RE.match(line)
-        if g:
-            letter = (g.group(1) or "").upper() or None
-            cur_group = PGroup(letter=letter, title=g.group(2).strip())
-            parsed.groups.append(cur_group)
-            cur_item = None
+    for raw in (text or "").split("\n"):
+        ln = raw.rstrip()
+        if INDENT_ITEM_RE.match(raw):
+            p.problems.append(f"indented item line ({ln.strip()!r}): items no "
+                              "longer nest; use a group")
             continue
-        m = ITEM_LINE_RE.match(line)
-        if m:
-            if m.group(1):
-                parsed.problems.append(
-                    f"item line is indented — items no longer nest; use a group "
-                    f"(`### L · name`) instead: {line!r}")
-                cur_item = None
-                continue
-            p = _parse_item_line(line, m.group(2), m.group(3), spec, parsed)
-            if p is not None:
-                (cur_group.items if cur_group is not None else parsed.ungrouped).append(p)
-                cur_item = p
+        el: PItem | PGroup | None = None
+        gm = GROUP_HEAD_RE.match(ln)
+        im = ITEM_RE.match(ln)
+        if gm:
+            letter = gm.group(1).upper() if gm.group(1) else None
+            title = gm.group(2).strip()
+            if not title:
+                p.problems.append(f"group heading needs a name ({ln!r})")
+            elif any(g.letter == letter for g in p.groups if letter):
+                p.problems.append(f"group {letter} appears twice")
+            else:
+                g = PGroup(letter=letter, title=title)
+                p.groups.append(g)
+                cur_group = g
+                el = g
+        elif im:
+            rest = im.group(2)
+            it = PItem(no=None, checked=im.group(1) in "xX", line=ln)
+            dm = DUE_RE.search(rest)
+            if dm:
+                it.due = dm.group(1)
+                rest = rest[:dm.start()].rstrip()
+            om = OWNER_RE.search(rest)
+            if om:
+                it.owner = om.group(1)
+                rest = rest[:om.start()].rstrip()
+            if NOTE_SEP in rest:
+                idx = rest.index(NOTE_SEP)
+                it.note = rest[idx + len(NOTE_SEP):].strip()
+                rest = rest[:idx].rstrip()
+            nm = NO_RE.match(rest)
+            if nm:
+                try:
+                    it.no = norm_no(nm.group(1))
+                    rest = nm.group(2)
+                except ItemsError as e:
+                    p.problems.append(f"line {ln!r}: {e}")
+            it.text = rest.strip()
+            if not it.text:
+                p.problems.append(f"empty item line ({ln!r})")
+            el = it
+            (cur_group.items if cur_group is not None else p.ungrouped).append(it)
+        if el is not None:
+            if cur is not None:
+                _trailer(cur, buf)
+            buf = []
+            cur = el
             continue
-        # free text
-        if cur_item is not None:
-            cur_item.trailer = (cur_item.trailer + "\n" + line) if cur_item.trailer else line
-        elif cur_group is not None:
-            cur_group.trailer = (cur_group.trailer + "\n" + line) if cur_group.trailer else line
-        else:
-            intro.append(line)
-    parsed.intro = normalize("\n".join(intro))
-    return parsed
+        s = ln.strip()
+        if s and cur is not None:
+            buf.append(s)
+        elif s and cur is None and el is None:
+            intro.append(s)
+    if cur is not None:
+        _trailer(cur, buf)
+    p.intro = "\n".join(intro)
+    for it in _all_items(p):
+        _resolve_state(it, spec)
+        st = _state_of(spec, it.state)
+        if it.from_emoji and st is not None and st.closed != it.checked:
+            p.problems.append(
+                f"line {it.line!r}: the emoji says {it.state} "
+                f"({'closed' if st.closed else 'unclosed'}) but the checkbox "
+                f"is {'checked' if it.checked else 'unchecked'}")
+    return p
 
 
-# ---- transforms (pure; plans/items-design.md §5) ------------------------------
+# ---- state transforms (pure; plans/items-design.md §5) ----------------------
 
-def apply_md(state: ItemsState, parsed: Parsed, spec: ItemsSpec) -> tuple[ItemsState, list[str]]:
-    """Merge a parsed md section into the state (the sync path)."""
-    new = copy.deepcopy(state)
-    notes = list(parsed.notes)
-    if parsed.problems:
-        raise ItemsError(parsed.problems[0])
-    # groups: md order decides; a missing heading deletes the group; a heading
-    # without a letter gets the next allocated one
-    old_letters = {g.letter for g in new.groups}
-    new_groups: list[Group] = []
-    seen: set[str] = set()
-    for pg in parsed.groups:
-        if pg.letter:
-            if pg.letter not in old_letters:
-                raise ItemsError(
-                    f"unknown group {pg.letter!r} — never allocated for this "
-                    f"record (drop the letter to create a new group)")
-            if pg.letter in seen:
-                raise ItemsError(f"duplicate group heading {pg.letter!r}")
-            seen.add(pg.letter)
-            letter = pg.letter
-        else:
-            if new.last_group >= len(GROUP_LETTERS):
-                raise ItemsError(
-                    f"the record has {len(GROUP_LETTERS)} groups (the A-Z cap) — "
-                    f"cannot add another")
-            letter = GROUP_LETTERS[new.last_group]
-            new.last_group += 1
-        new_groups.append(Group(letter, pg.title, pg.trailer))
-    new.groups = new_groups
-    new.intro = parsed.intro
-    # items, in md order (ungrouped first, then the groups in md order)
-    old_by = {i.no: i for i in state.items}
-    new_items: list[Item] = []
-    seen_nos: set[ItemNo] = set()
-    pending = [(UNGROUPED, p) for p in parsed.ungrouped]
-    for pg, g in zip(parsed.groups, new_groups, strict=True):
-        pending += [(g.letter, p) for p in pg.items]
-    for grp, p in pending:
-        if p.no is None:
-            seq = new.last_seq.get(grp, 0) + 1
-            _capacity(grp, seq)
-            new.last_seq[grp] = seq
-            new_items.append(Item(
-                no=ItemNo(grp, seq), text=p.text, state=p.state, note=p.note,
-                owner=p.owner, due=p.due, created=dbmod.utc_now(),
-                closed_at=dbmod.utc_now() if p.state in spec.closed_states else "",
-                trailer=p.trailer))
-            continue
-        if p.no in seen_nos:
-            raise ItemsError(f"duplicate item #{p.no} — each number may appear once")
-        seen_nos.add(p.no)
-        old = old_by.pop(p.no, None)
-        if old is None:
-            raise ItemsError(f"item #{p.no} does not exist for this record — "
-                             f"drop the number to add it as new")
-        closed_now = p.state in spec.closed_states
-        closed_before = old.state in spec.closed_states
-        if old.no.grp == grp:
-            no = old.no
-        else:  # cross-group move: fresh number, old one void
-            seq = new.last_seq.get(grp, 0) + 1
-            _capacity(grp, seq)
-            new.last_seq[grp] = seq
-            no = ItemNo(grp, seq)
-            notes.append(f"#{old.no} → #{no}")
-        new_items.append(Item(
-            no=no, text=p.text, state=p.state, note=p.note, owner=p.owner,
-            due=p.due, created=old.created, commit=old.commit,
-            closed_at=old.closed_at if (closed_now and closed_before)
-            else (dbmod.utc_now() if closed_now else ""),
-            trailer=p.trailer))
-    new.items = new_items
-    new.check()
-    return new, notes
+def _clone(state: ItemsState) -> ItemsState:
+    return copy.deepcopy(state)
 
 
-def add(state: ItemsState, spec: ItemsSpec, text: str, group: str | None = None,
-        after: ItemNo | None = None, state_name: str | None = None,
-        note: str = "", owner: str = "", due: str = "") -> tuple[ItemsState, list[str]]:
-    new = copy.deepcopy(state)
-    _validate_item(spec, text, owner, due)
-    grp = (group or "").upper()
-    if grp and grp not in {g.letter for g in new.groups}:
-        raise ItemsError(f"group {grp} does not exist (create it: proj item group add)")
-    st = _state_name(spec, state_name)
-    pos = None
-    if after is not None:
-        ref = _by_no(new, after)
-        if ref.no.grp != grp:
+def _validate_item(item: Item, spec: ItemsSpec) -> None:
+    if item.is_group or item.deleted:
+        return
+    if not item.text.strip():
+        raise ItemsError(f"item #{item.no} needs text")
+    if NOTE_SEP in item.text or " · " in item.text:
+        raise ItemsError(f"item #{item.no} text must not contain {NOTE_SEP!r} "
+                         "or ' · ' (put them in the note/owner/due)")
+    if item.owner and "owner" not in spec.fields:
+        raise ItemsError("owner is not an item field of this checklist")
+    if item.due and "due" not in spec.fields:
+        raise ItemsError("due is not an item field of this checklist")
+    if item.due:
+        try:
+            date.fromisoformat(item.due)
+        except ValueError:
             raise ItemsError(
-                f"item #{ref.no} is in group {ref.no.grp or '(none)'} — "
-                f"'after' must name an item of the target group")
-        pos = new.items.index(ref) + 1
-    seq = new.last_seq.get(grp, 0) + 1
-    _capacity(grp, seq)
-    new.last_seq[grp] = seq
-    item = Item(no=ItemNo(grp, seq), text=text.strip(), state=st, note=note,
-                owner=owner, due=due, created=dbmod.utc_now(),
-                closed_at=dbmod.utc_now() if st in spec.closed_states else "")
-    if pos is None:
-        pos = _grp_bounds(new, grp)[1]
-    new.items.insert(pos, item)
-    new.check()
-    return new, []
+                f"due {item.due!r} is not a valid date (YYYY-MM-DD)") from None
+    if item.state and _state_of(spec, item.state) is None:
+        raise ItemsError(f"state {item.state!r} is not in this checklist "
+                         f"({', '.join(s.name for s in spec.states)})")
 
 
-def set_state(state: ItemsState, spec: ItemsSpec, no: ItemNo, state_name: str,
+def _live_no(state: ItemsState, no: str) -> Item:
+    it = state.by_no(no)
+    if it is None:
+        raise ItemsError(f"#{no} is not an item of this checklist")
+    if it.deleted:
+        raise ItemsError(f"#{no} was deleted (numbers are never reused) — "
+                         f"drop the number to add a new item")
+    return it
+
+
+def _insert_pos(new: ItemsState, letter: str, first: bool) -> int:
+    """The index where an item enters a group: top (first) or bottom. A
+    bottom insert goes after the group's last item, or right after its X00
+    row when the group is still empty."""
+    members = [i for i, r in enumerate(new.rows)
+               if not r.deleted and not r.is_group
+               and group_of(r.no) == letter]
+    if letter:
+        g = next(i for i, r in enumerate(new.rows)
+                 if r.no == letter + "00")
+        return members[-1] + 1 if members and not first else g + 1
+    if first or not members:
+        return next((i for i, r in enumerate(new.rows)
+                     if r.is_group or group_of(r.no)), len(new.rows))
+    return members[-1] + 1
+
+
+def add(state: ItemsState, spec, text: str, *, group: str | None = None,
+        after: str | None = None, state_name: str = "", note: str = "",
+        owner: str = "", due: str = "") -> tuple[ItemsState, list[str]]:
+    """Append to the end of the target group (or right after `after`, which
+    must be in the same group). Returns (new_state, notes)."""
+    spec = _spec(spec)
+    new = _clone(state)
+    letter = norm_group(group) if group else ""
+    if letter:
+        g = new.group(letter)
+        if g is None or g.deleted:
+            raise ItemsError(f"unknown group {letter}")
+    a: Item | None = None
+    if after:
+        a = _live_no(new, norm_no(after))
+        if group_of(a.no) != letter:
+            raise ItemsError(f"#{a.no} is in group {group_of(a.no) or '∅'} — "
+                             f"an --after item must share the target group")
+    if state_name and _state_of(spec, state_name) is None:
+        raise ItemsError(f"state {state_name!r} is not in this checklist "
+                         f"({', '.join(s.name for s in spec.states)})")
+    it = _new_item(new.next_no(letter), text.strip(),
+                   state=state_name or _first_unclosed(spec), note=note,
+                   owner=owner, due=due)
+    _validate_item(it, spec)
+    if a is not None:
+        new.rows.insert(new.rows.index(a) + 1, it)
+    else:
+        new.rows.insert(_insert_pos(new, letter, first=False), it)
+    return new, [f"new item #{it.no} ({it.text})"]
+
+
+def _first_unclosed(spec: ItemsSpec) -> str:
+    unclosed = [s for s in spec.states if not s.closed]
+    return unclosed[0].name if unclosed else ""
+
+
+def set_state(state: ItemsState, spec, no: str, state_name: str,
               note: str | None = None, commit: str = "") -> tuple[ItemsState, list[str]]:
-    new = copy.deepcopy(state)
-    st = _state_name(spec, state_name)
-    item = _by_no(new, no)
-    changed = item.state != st
-    if not changed and note is None and not commit:
-        return new, []  # nothing to do — no empty changelog entry (old bug)
-    if changed:
-        was_closed = item.state in spec.closed_states
-        is_closed = st in spec.closed_states
-        item.state = st
-        if is_closed and not was_closed:
-            item.closed_at = dbmod.utc_now()
-        elif not is_closed:
-            item.closed_at = ""
+    """Change an item's state. A no-op (same state, note=None, no commit)
+    yields an unchanged state and NO notes (no empty changelog line)."""
+    spec = _spec(spec)
+    no = norm_no(no)
+    new = _clone(state)
+    it = _live_no(new, no)
+    if _state_of(spec, state_name) is None:
+        raise ItemsError(f"state {state_name!r} is not in this checklist "
+                         f"({', '.join(s.name for s in spec.states)})")
+    if it.state == state_name and note is None and not commit:
+        return new, []
+    it.state = state_name
     if note is not None:
-        item.note = note
+        it.note = note
     if commit:
-        item.commit = commit
-    return new, []
-
-
-def edit(state: ItemsState, spec: ItemsSpec, no: ItemNo,
-         text: str | None = None, note: str | None = None,
-         owner: str | None = None, due: str | None = None) -> tuple[ItemsState, list[str]]:
-    new = copy.deepcopy(state)
-    item = _by_no(new, no)
-    if text is not None:
-        if text == "":
-            item.text = ""
-        else:
-            _validate_item(spec, text)
-            item.text = text
-    if note is not None:
-        item.note = note
-    if owner is not None:
-        if owner and "owner" not in spec.fields:
-            raise ItemsError(f"{spec.noun}s of this record type have no owner field")
-        item.owner = owner
-    if due is not None:
-        if due:
-            if "due" not in spec.fields:
-                raise ItemsError(f"{spec.noun}s of this record type have no due field")
-            _validate_item(spec, item.text, due=due)
-        item.due = due
-    return new, []
-
-
-def move(state: ItemsState, spec: ItemsSpec, no: ItemNo,
-         group: str | None = None, ungroup: bool = False,
-         after: ItemNo | None = None, first: bool = False) -> tuple[ItemsState, list[str]]:
-    """Exactly one of group / ungroup / after / first. Cross-group → fresh
-    number (the old one is void); within a group → order only."""
-    if (group is not None) + ungroup + (after is not None) + first != 1:
-        raise ItemsError("pass exactly one of group / ungroup / after / first")
-    new = copy.deepcopy(state)
-    notes: list[str] = []
-    item = _by_no(new, no)
-    grp = (group or "").upper() if group is not None else (UNGROUPED if ungroup else item.no.grp)
-    if group is not None and grp not in {g.letter for g in new.groups}:
-        raise ItemsError(f"group {grp} does not exist")
-    if after is not None:
-        ref = _by_no(new, after)
-        if ref.no.grp != grp:
-            raise ItemsError(
-                f"item #{ref.no} is in group {ref.no.grp or '(none)'} — "
-                f"'after' must name an item of the target group")
-    new.items.pop(new.items.index(item))
-    if grp == item.no.grp:
-        pos = (new.items.index(_by_no(new, after)) + 1) if after is not None \
-            else _grp_bounds(new, grp)[0 if first else 1]
-        new.items.insert(pos, item)
-    else:
-        seq = new.last_seq.get(grp, 0) + 1
-        _capacity(grp, seq)
-        new.last_seq[grp] = seq
-        item = Item(no=ItemNo(grp, seq), text=item.text, state=item.state,
-                    note=item.note, owner=item.owner, due=item.due,
-                    created=item.created, closed_at=item.closed_at,
-                    commit=item.commit, trailer=item.trailer)
-        notes.append(f"#{no} → #{item.no}")
-        pos = (new.items.index(_by_no(new, after)) + 1) if after is not None \
-            else _grp_bounds(new, grp)[0 if first else 1]
-        new.items.insert(pos, item)
-    new.check()
+        it.commit = commit
+    _validate_item(it, spec)
+    was_closed = it.state in spec.closed_states
+    it.closed_at = dbmod.utc_now() if was_closed else ""
+    notes = [f"item #{no} {state_name}"] if was_closed or state_name else []
+    if note is not None or commit:
+        notes.append(f"item #{no} edited")
     return new, notes
 
 
-def remove(state: ItemsState, spec: ItemsSpec, no: ItemNo) -> tuple[ItemsState, list[str]]:
-    new = copy.deepcopy(state)
-    item = _by_no(new, no)
-    new.items.remove(item)
-    new.check()
-    return new, []
+def edit(state: ItemsState, spec, no: str, *, text: str | None = None,
+         note: str | None = None, owner: str | None = None,
+         due: str | None = None) -> tuple[ItemsState, list[str]]:
+    """Edit fields; '' clears a field. No change → no notes."""
+    spec = _spec(spec)
+    no = norm_no(no)
+    new = _clone(state)
+    it = _live_no(new, no)
+    changed = False
+    for name, val in (("text", text), ("note", note),
+                      ("owner", owner), ("due", due)):
+        if val is None:
+            continue
+        cur = val.strip() if name == "text" else val
+        if getattr(it, name) != cur:
+            setattr(it, name, cur)
+            changed = True
+    _validate_item(it, spec)
+    return new, ([f"item #{no} edited"] if changed else [])
 
 
-def group_add(state: ItemsState, spec: ItemsSpec, title: str) -> tuple[ItemsState, list[str]]:
-    new = copy.deepcopy(state)
-    if not title.strip():
-        raise ItemsError("group title must be non-empty")
-    if new.last_group >= len(GROUP_LETTERS):
-        raise ItemsError(f"the record has {len(GROUP_LETTERS)} groups (the A-Z cap)")
-    letter = GROUP_LETTERS[new.last_group]
-    new.last_group += 1
-    new.groups.append(Group(letter, title.strip()))
-    new.check()
-    return new, []
-
-
-def group_rename(state: ItemsState, spec: ItemsSpec, letter: str,
-                 title: str) -> tuple[ItemsState, list[str]]:
-    new = copy.deepcopy(state)
-    if not title.strip():
-        raise ItemsError("group title must be non-empty")
-    g = _by_letter(new, letter.upper())
-    g.title = title.strip()
-    return new, []
-
-
-def group_mv(state: ItemsState, spec: ItemsSpec, letter: str,
-             after: str | None = None, first: bool = False) -> tuple[ItemsState, list[str]]:
-    if (after is not None) + first != 1:
-        raise ItemsError("pass exactly one of after / first")
-    new = copy.deepcopy(state)
-    letter = letter.upper()
-    g = _by_letter(new, letter)
-    new.groups.remove(g)
-    if after is not None:
-        ref = _by_letter(new, after.upper())
-        new.groups.insert(new.groups.index(ref) + 1, g)
+def move(state: ItemsState, spec, no: str, *, group: str | None = None,
+         ungroup: bool = False, after: str | None = None,
+         first: bool = False) -> tuple[ItemsState, list[str]]:
+    """Move an item: cross-group moves get a FRESH number (the old one becomes
+    a tombstone); within a group only the order changes. Exactly one of
+    group / ungroup / after / first."""
+    spec = _spec(spec)
+    no = norm_no(no)
+    n = sum((bool(group), ungroup, bool(after), first))
+    if n != 1:
+        raise ItemsError("exactly one of --group / --ungroup / --after / --first")
+    new = _clone(state)
+    it = _live_no(new, no)
+    old_grp = group_of(no)
+    if group:
+        target = norm_group(group)
+        g = new.group(target)
+        if g is None or g.deleted:
+            raise ItemsError(f"unknown group {target}")
     else:
-        new.groups.insert(0, g)
+        target = "" if ungroup else old_grp
+    new.rows.remove(it)
+    note = ""
+    if target != old_grp:
+        fresh = new.next_no(target)
+        new.rows.append(_tomb(no, it.text))
+        it.no = fresh
+        note = f"item #{no} → #{fresh}"
+    if after:
+        a = _live_no(new, norm_no(after))
+        if group_of(a.no) != target:
+            raise ItemsError(f"#{a.no} is in group {group_of(a.no) or '∅'} — "
+                             f"an --after item must share the target group")
+        new.rows.insert(new.rows.index(a) + 1, it)
+    else:
+        new.rows.insert(_insert_pos(new, target, first=bool(first)), it)
+    _validate_item(it, spec)
+    return new, ([note] if note else [])
+
+
+def remove(state: ItemsState, spec, no: str) -> tuple[ItemsState, list[str]]:
+    """Mark a row a tombstone (the number is never reused)."""
+    spec = _spec(spec)
+    no = norm_no(no)
+    new = _clone(state)
+    it = _live_no(new, no)
+    it.deleted = True
+    new.rows.remove(it)
+    new.rows.append(it)
     return new, []
 
 
-def group_rm(state: ItemsState, spec: ItemsSpec, letter: str,
+def group_add(state: ItemsState, spec, title: str) -> tuple[ItemsState, list[str]]:
+    """A new group: the next free letter, an `X00` row appended at the end."""
+    spec = _spec(spec)
+    title = title.strip()
+    if not title:
+        raise ItemsError("a group needs a name")
+    new = _clone(state)
+    letter = new.next_group()
+    row = _new_item(letter + "00", text=title)
+    # before any tombstones (they must stay last)
+    pos = next((i for i, r in enumerate(new.rows) if r.deleted), len(new.rows))
+    new.rows.insert(pos, row)
+    return new, [f"group {letter} · {title}"]
+
+
+def group_rename(state: ItemsState, spec, letter: str, title: str
+                 ) -> tuple[ItemsState, list[str]]:
+    """Rename a group (its letter is unchanged)."""
+    spec = _spec(spec)
+    letter = norm_group(letter)
+    new = _clone(state)
+    g = _live_no(new, letter + "00")
+    title = title.strip()
+    if g.text == title:
+        return new, []
+    g.text = title
+    return new, [f"group {letter} renamed"]
+
+
+def group_mv(state: ItemsState, spec, letter: str, *, after: str | None = None,
+             first: bool = False) -> tuple[ItemsState, list[str]]:
+    """Move a group (its whole block: `X00` + items): exactly one of
+    after / first."""
+    spec = _spec(spec)
+    letter = norm_group(letter)
+    if sum((bool(after), first)) != 1:
+        raise ItemsError("exactly one of --after / --first")
+    new = _clone(state)
+    g = _live_no(new, letter + "00")
+    block = [r for r in new.rows
+             if r is g or (not r.deleted and not r.is_group
+                           and group_of(r.no) == letter)]
+    for r in block:
+        new.rows.remove(r)
+    if first:
+        pos = _insert_pos(new, "", first=True)
+    else:
+        a = _live_no(new, norm_no(after))
+        pos = new.rows.index(a) + 1
+    for r in block:
+        new.rows.insert(pos, r)
+        pos += 1
+    return new, []
+
+
+def group_rm(state: ItemsState, spec, letter: str,
              items: str | None = None) -> tuple[ItemsState, list[str]]:
-    """Delete a group; when it still holds items, `items` must be 'ungroup'
-    (fresh ungrouped numbers) or 'delete'."""
-    new = copy.deepcopy(state)
-    letter = letter.upper()
-    _by_letter(new, letter)
-    members = [i for i in new.items if i.no.grp == letter]
+    """Delete a group: the `X00` row becomes a tombstone (the letter is never
+    reused). A non-empty group needs items='ungroup' (the items move to the
+    ungrouped list with fresh numbers) or 'delete'."""
+    spec = _spec(spec)
+    letter = norm_group(letter)
+    new = _clone(state)
+    g = _live_no(new, letter + "00")
+    members = [r for r in new.rows if not r.deleted and not r.is_group
+               and group_of(r.no) == letter]
     if members:
         if items not in ("ungroup", "delete"):
-            raise ItemsError(
-                f"group {letter} holds {len(members)} item(s) — "
-                f"pass items='ungroup' or items='delete'")
+            raise ItemsError(f"group {letter} still has {len(members)} items — "
+                             f"pass items='ungroup' or 'delete'")
         if items == "delete":
-            new.items = [i for i in new.items if i.no.grp != letter]
+            for m in members:
+                m.deleted = True
+                new.rows.remove(m)
+                new.rows.append(m)
         else:
-            end = next((i for i, x in enumerate(new.items) if x.no.grp),
-                       len(new.items))
-            new.items = [i for i in new.items if i.no.grp != letter]
-            kept: list[Item] = []
-            for i in members:
-                seq = new.last_seq.get(UNGROUPED, 0) + 1
-                _capacity(UNGROUPED, seq)
-                new.last_seq[UNGROUPED] = seq
-                kept.append(Item(no=ItemNo(UNGROUPED, seq), text=i.text, state=i.state,
-                                 note=i.note, owner=i.owner, due=i.due,
-                                 created=i.created, closed_at=i.closed_at,
-                                 commit=i.commit, trailer=i.trailer))
-            new.items[end:end] = kept
-    new.groups = [g for g in new.groups if g.letter != letter]
-    new.check()
+            for m in sorted(members, key=lambda r: r.no):
+                new.rows.remove(m)
+                fresh = new.next_no("")
+                m.no = fresh
+                new.rows.insert(_insert_pos(new, "", first=False), m)
+                _validate_item(m, spec)
+    g.deleted = True
+    new.rows.remove(g)
+    new.rows.append(g)
     return new, []
 
 
-# ---- validate + changelog (plans/items-design.md §5.3-5.4) -------------------
+# ---- validate / diff (shared by sync and the commands) ----------------------
 
-def validate(old: ItemsState, new: ItemsState, spec: ItemsSpec,
+def validate(old: ItemsState, new: ItemsState, spec,
              record_status: str, gates_items: list[str] | None = None) -> None:
-    ungrouped = [i for i in new.items if not i.no.grp]
-    if len(ungrouped) > UNGROUPED_CAP:
-        raise ItemsError(f"the ungrouped list holds more than {UNGROUPED_CAP} items — "
-                         f"split the record")
-    for g in new.groups:
-        n = sum(1 for i in new.items if i.no.grp == g.letter)
-        if n > GROUP_CAP:
-            raise ItemsError(f"group {g.letter} holds more than {GROUP_CAP} items — "
-                             f"split the record")
-    if len(new.groups) > len(GROUP_LETTERS):
-        raise ItemsError(f"the record holds more than {len(GROUP_LETTERS)} groups — "
-                         f"split the record")
+    spec = _spec(spec)
+    caps: dict[str, int] = {}
+    for r in new.live():
+        if r.is_group:
+            continue
+        g = group_of(r.no)
+        caps[g] = caps.get(g, 0) + 1
+        if caps[g] > (GROUP_CAP if g else UNGROUPED_CAP):
+            raise ItemsError(f"group {g or '∅'} exceeds its capacity "
+                             f"({GROUP_CAP if g else UNGROUPED_CAP})")
+    if len([r for r in new.live() if r.is_group]) > len(LETTERS):
+        raise ItemsError(f"at most {len(LETTERS)} groups")
     if record_status in (gates_items or []):
-        un = [i for i in new.items if i.state not in spec.closed_states]
-        if un:
+        open_n = open_items(new, spec)
+        if open_n:
             raise ItemsError(
-                f"record is {record_status!r} (a closed state) — "
-                f"#{un[0].no} {un[0].text} is unclosed; un-close the record "
-                f"first, then edit items")
+                f"the {record_status} state requires all items closed: "
+                + ", ".join(open_n))
     new.check()
 
 
-def diff_log(old: ItemsState, new: ItemsState,
-             notes: list[str]) -> list[tuple[str, str]]:
-    """(category, message) entries for the changelog — the single source for
-    both sync and commands. Order-only changes log nothing."""
+def diff_log(old: ItemsState, new: ItemsState, notes: list[str]
+             ) -> list[tuple[str, str]]:
+    """(category, message) lines by comparing the two states by number.
+    Order-only changes produce nothing. `notes` carries the cross-group move
+    renumberings ('item #003 → #A04') made by the transforms — a move writes
+    ONE Changed line (the fresh number's 'Added' is suppressed)."""
+    moves = [x for x in notes if " → " in x and x.startswith("item #")]
+    moved_to = {x.rsplit(" → ", 1)[1].lstrip("#") for x in moves}
+    moved_from = {x.rsplit(" → ", 1)[0].rsplit("#", 1)[1] for x in moves}
+    o = {r.no: r for r in old.rows}
+    n = {r.no: r for r in new.rows}
     out: list[tuple[str, str]] = []
-    old_by = {i.no: i for i in old.items}
-    new_by = {i.no: i for i in new.items}
-    moves = [(m.group(1), m.group(2)) for m in (MOVE_NOTE_RE.match(n) for n in notes) if m]
-    moved_old = {a for a, _ in moves}
-    moved_new = {b for _, b in moves}
-    for a, b in moves:
-        out.append(("Changed", f"item {a} → {b}"))
-    for no, i in old_by.items():
-        if no in new_by or no in moved_old:
+    for no, r in n.items():
+        if no not in o:
+            if r.is_group:
+                out.append(("Added", f"group {no[0]} · {r.text}"))
+            elif not r.deleted and no not in moved_to:
+                out.append(("Added", f"item #{no}: {r.text}"))
+            elif r.deleted and no not in moved_to:
+                out.append(("Removed", f"item #{no}: {r.text}"))
+    for no, r in o.items():
+        if r.is_group or r.deleted or no in moved_from:
             continue
-        out.append(("Removed", f"item #{no}: {i.text}"))
-    for no, i in new_by.items():
-        if no in old_by or no in moved_new:
-            continue
-        out.append(("Added", f"item #{no}: {i.text}"))
-    for no, i in new_by.items():
-        o = old_by.get(no)
-        if o is None:
-            continue
-        if i.state != o.state:
-            out.append(("Changed", f"item #{no} {o.state} → {i.state}"))
-        elif i.text != o.text or i.note != o.note or i.owner != o.owner or i.due != o.due:
-            out.append(("Changed", f"item #{no} edited"))
-    old_g = {g.letter: g for g in old.groups}
-    new_g = {g.letter: g for g in new.groups}
-    for L, g in new_g.items():
-        if L not in old_g:
-            out.append(("Added", f"group {L} · {g.title}"))
-        elif old_g[L].title != g.title:
-            out.append(("Changed", f"group {L} renamed"))
-    for L in old_g:
-        if L not in new_g:
-            out.append(("Removed", f"group {L}"))
+        nr = n.get(no)
+        if nr is None or nr.deleted:
+            out.append(("Removed", f"item #{no}: {r.text}"))
+    for no, r in o.items():
+        if no in n and r.is_group:
+            if n[no].deleted:
+                out.append(("Removed", f"group {no[0]}"))
+            elif n[no].text != r.text:
+                out.append(("Changed", f"group {no[0]} renamed"))
+    for no, r in n.items():
+        if (no in o and not r.is_group and not r.deleted
+                and no not in moved_to and o[no] is not None
+                and not o[no].deleted):
+            a = o[no]
+            if r.state != a.state:
+                out.append(("Changed", f"item #{no} {a.state} → {r.state}"))
+            elif any(getattr(r, f) != getattr(a, f) for f in
+                     ("text", "note", "owner", "due", "commit", "trailer")):
+                out.append(("Changed", f"item #{no} edited"))
+    for x in notes:
+        if x.startswith("item #") and " → " in x:
+            out.append(("Changed", x))
     return out
 
 
-# ---- DB access + single write path (plans/items-design.md §6.2) ---------------
-
-def _stored_intro(row: dict, spec: ItemsSpec) -> str:
-    # deviation from the design (see the report): the intro lives in the
-    # records.sections JSON (the old mechanism), not in a new table
-    return json.loads(row["sections"] or "{}").get(spec.items.section.lower(), "")
-
-
-def load(db, record_id: str, intro: str = "") -> ItemsState:
-    data = db.items_load(record_id)
-    state = ItemsState(intro=intro, last_seq=dict(data["last_seq"]),
-                       last_group=data["last_group"])
-    for g in data["groups"]:
-        state.groups.append(Group(g["letter"], g["title"], g.get("trailer", "")))
-    rows = data["items"]
-    ordered = [r for r in rows if not r["grp"]]
-    for g in state.groups:
-        ordered += [r for r in rows if r["grp"] == g.letter]
-    for r in ordered:
-        state.items.append(Item(no=ItemNo(r["grp"], r["seq"]), text=r["text"],
-                                state=r["state"], note=r["note"], owner=r["owner"],
-                                due=r["due"], created=r["created"],
-                                closed_at=r["closed_at"], commit=r["commit"],
-                                trailer=r.get("trailer", "")))
-    return state
-
+# ---- the one write path ------------------------------------------------------
 
 def progress(state: ItemsState, spec) -> tuple[int, int]:
     """(closed, total) — the n/m of a task row (all groups counted).
     `spec`: the ItemsSpec or its RecordTypeSpec."""
-    spec = _it_spec(spec)
-    closed = sum(1 for i in state.items if i.state in spec.closed_states)
-    return closed, len(state.items)
+    spec = _spec(spec)
+    items = [i for i in state.live() if not i.is_group]
+    closed = sum(1 for i in items if i.state in spec.closed_states)
+    return closed, len(items)
 
 
 def open_items(state: ItemsState, spec) -> list[str]:
     """The unclosed items as '#no text' — the gates.items message.
     `spec`: the ItemsSpec or its RecordTypeSpec."""
-    spec = _it_spec(spec)
-    return [f"#{i.no} {i.text}" for i in state.items
-            if i.state not in spec.closed_states]
+    spec = _spec(spec)
+    return [f"#{i.no} {i.text}" for i in state.live()
+            if not i.is_group and i.state not in spec.closed_states]
 
 
-def commit(db, spec: RecordTypeSpec, row: dict, old: ItemsState, new: ItemsState,
+def load(db, record_id: str, spec) -> ItemsState:
+    """The whole checklist from the DB (intro from records.sections)."""
+    rows = db.items_load(record_id)
+    state = ItemsState()  # the intro is set by the caller from records.sections
+    for r in rows:
+        state.rows.append(Item(no=r["no"], text=r["text"], state=r["state"],
+                               note=r["note"], owner=r["owner"], due=r["due"],
+                               commit=r["commit"], trailer=r["trailer"],
+                               created=r["created"], closed_at=r["closed_at"],
+                               deleted=bool(r["deleted"])))
+    return state
+
+
+def commit(db, spec, row: dict, old: ItemsState, new: ItemsState,
            notes: list[str]) -> list[str]:
-    """The single write path: validate → invariant → changelog → save → promote."""
-    it = spec.items
-    assert it is not None
-    validate(old, new, it, row["status"], spec.gates_items)
-    for category, message in diff_log(old, new, notes):
-        db.add_log(row["id"], message, category)
-    if _stored_intro(row, spec) != new.intro:
-        sections = json.loads(row["sections"] or "{}")
-        sections[it.section.lower()] = new.intro
-        db.set(spec, row["id"], sections=json.dumps(sections, ensure_ascii=False))
-    db.items_save(
-        row["id"],
-        [{"grp": i.no.grp, "seq": i.no.seq, "text": i.text, "state": i.state,
-          "note": i.note, "owner": i.owner, "due": i.due, "created": i.created,
-          "closed_at": i.closed_at, "commit": i.commit, "trailer": i.trailer}
-         for i in new.items],
-        [{"letter": g.letter, "title": g.title, "trailer": g.trailer}
-         for g in new.groups],
-        new.last_seq, new.last_group)
-    if (it.promote_from and it.promote_to and row["status"] in it.promote_from
-            and any(i.state in it.closed_states for i in new.items)):
-        db.set(spec, row["id"], status=it.promote_to)
-        db.add_log(row["id"], f"auto-promoted → {it.promote_to} (first closed item)",
-                   "Changed")
-        notes.append(f"{row['id']} promoted → {it.promote_to} (first closed item)")
-    return notes
+    """The single write path: validate → diff_log → items_save → add_log →
+    (auto-promote). `spec`: the RecordTypeSpec; returns the notes."""
+    itspec = _spec(spec)
+    gates = spec.gates_items if isinstance(spec, RecordTypeSpec) else []
+    validate(old, new, itspec, row["status"], gates)
+    for cat, msg in diff_log(old, new, notes):
+        db.add_log(row["id"], msg, category=cat)
+    db.items_save(row["id"], [r.to_row() for r in new.rows])
+    if (itspec.promote_to and itspec.promote_from
+            and row["status"] in itspec.promote_from
+            and any(not i.is_group and i.state in itspec.closed_states
+                    for i in new.live())):
+            db.set(spec, row["id"], status=itspec.promote_to)
+            db.add_log(row["id"],
+                       f"promoted {row['status']} → {itspec.promote_to}",
+                       category="Changed")
+            notes.append(f"promoted to {itspec.promote_to}")
+    return list(notes)
 
 
-def sync_section(db, spec: RecordTypeSpec, row: dict, md_text: str,
-                 source: str = "", strip_numbers: bool = False) -> tuple[list[str], list[str]]:
+def sync_section(db, spec, row: dict, md_text: str,
+                 source: str = "", adopt: bool = False) -> tuple[list[str], list[str]]:
     """Store's sync entry: parse → apply_md → commit. On problems nothing is
-    written and the md stays as-is. The stored section is re-rendered from the
-    DB afterwards — the intro/trailers travel with the state.
-    `strip_numbers` (adopt channel): every line is treated as a NEW item — the
-    stored record is fresh, so no number can refer to it."""
-    it = spec.items
-    assert it is not None
-    parsed = parse_section(md_text, it)
+    written and the md stays as-is. `source`: the filename each note is
+    prefixed with. adopt=True: every line is treated as a NEW item (the stored
+    record is fresh, so no number can refer to it — the numbers are cleared).
+    The notes reported to the user are the sync-level ones (new/deleted items
+    plus moves/emoji/promote from commit), each prefixed with source."""
+    itspec = _spec(spec)
+    parsed = parse_section(md_text, itspec)
+    if adopt:
+        for it in _all_items(parsed):
+            it.no = None
     if parsed.problems:
         return parsed.problems, []
-    if strip_numbers:
-        for p in list(parsed.ungrouped) + [x for g in parsed.groups for x in g.items]:
-            p.no = None
-    old = load(db, row["id"], intro=_stored_intro(row, spec))
+    old = load(db, row["id"], spec)
+    old.intro = _intro_of(spec, row)
+    old_nos = {i.no for i in old.live()}
     try:
-        new, notes = apply_md(old, parsed, it)
+        new, notes = apply_md(old, parsed, itspec)
         notes = commit(db, spec, row, old, new, notes)
     except ItemsError as e:
         return [str(e)], []
-    old_by = {i.no: i for i in old.items}
-    new_by = {i.no: i for i in new.items}
-    sync_notes: list[str] = []
-    for i in new.items:
-        if i.no not in old_by:
-            sync_notes.append(f"new item #{i.no} ({i.text})")
-    for i in old.items:
-        if i.no not in new_by:
-            sync_notes.append(f"item #{i.no} deleted ({i.text})")
-    sync_notes += notes  # moves, emoji defaults, promote
+    new_nos = {i.no for i in new.live()}
+    sync_notes: list[str] = [f"new item #{i.no} ({i.text})"
+                             for i in new.live() if i.no not in old_nos]
+    sync_notes += [f"item #{i.no} deleted ({i.text})"
+                   for i in old.live() if i.no not in new_nos]
+    sync_notes += notes  # moves, emoji defaults, promote (from commit)
+    sections = json.loads(row.get("sections") or "{}")
+    sections[_intro_key(spec)] = new.intro
+    db.set(spec, row["id"], sections=json.dumps(sections))
     return [], [f"{source}: {n}" for n in sync_notes]
 
 
-def drift(db, spec: RecordTypeSpec, row: dict, md_text: str) -> bool:
-    """True when the md's section differs from the DB render (normalized)."""
-    state = load(db, row["id"], intro=_stored_intro(row, spec))
+def drift(db, spec, row: dict, md_text: str) -> bool:
+    """normalize(md_text) != render_section(load(...)) — an unsynced edit."""
+    state = load(db, row["id"], spec)
+    state.intro = _intro_of(spec, row)
     return normalize(md_text) != render_section(state, spec)
+
+
+# ---- apply_md (sync: merge the parsed md into the state) ---------------------
+
+def apply_md(state: ItemsState, parsed: Parsed, spec
+             ) -> tuple[ItemsState, list[str]]:
+    """Merge a Parsed section into the state (plans/items-design.md §5.1):
+    known numbers move (cross-group → fresh number, the old one a tombstone),
+    unnamed headings get a letter, missing rows become tombstones."""
+    spec = _spec(spec)
+    if parsed.problems:
+        raise ItemsError("; ".join(parsed.problems))
+    new = _clone(state)
+    notes = list(parsed.notes)
+    # 1. groups
+    for g in parsed.groups:
+        if g.letter:
+            row = new.group(g.letter)
+            if row is None or row.deleted:
+                raise ItemsError(f"unknown group {g.letter} — the letter was "
+                                 f"never assigned")
+            if row.text != g.title:
+                row.text = g.title
+                notes.append(f"group {g.letter} renamed")
+        else:
+            letter = new.next_group()
+            g.letter = letter
+            new.rows.append(_new_item(letter + "00", text=g.title))
+            notes.append(f"group {letter} · {g.title}")
+    named = {g.letter for g in parsed.groups if g.letter}
+    for r in [r for r in new.rows if r.is_group and not r.deleted
+              and r.no[0] not in named]:
+        r.deleted = True
+        new.rows.remove(r)
+        new.rows.append(r)
+        notes.append(f"group {r.no[0]}")
+    # 2. items (md order: ungrouped first, then groups in heading order)
+    ordered: list[tuple[PItem, str]] = [(i, "") for i in parsed.ungrouped]
+    ordered += [(i, g.letter) for g in parsed.groups for i in g.items]
+    md_nos: set[str] = set()
+    live: list[Item] = []
+    if parsed.intro.strip():
+        new.intro = parsed.intro
+    for it, grp in ordered:
+        if it.no is None:
+            row = _new_item(new.next_no(grp), it.text,
+                            state=it.state or _first_unclosed(spec),
+                            note=it.note, owner=it.owner, due=it.due,
+                            trailer=it.trailer)
+            _validate_item(row, spec)
+            md_nos.add(row.no)
+            live.append(row)
+            new.rows.append(row)  # so the next fresh number sees this one
+            continue  # the "new item" note is added by sync_section (with source)
+        if it.no in md_nos:
+            raise ItemsError(f"duplicate item number #{it.no} — drop the number "
+                             f"to add it as new")
+        row = new.by_no(it.no)
+        if row is None:
+            raise ItemsError(f"unknown item number #{it.no} — drop the number "
+                             f"to add it as new")
+        md_nos.add(it.no)
+        new.rows.remove(row)
+        if group_of(it.no) != grp:
+            new.rows.append(_tomb(it.no, row.text))
+            fresh = new.next_no(grp)
+            row.no = fresh
+            notes.append(f"item #{it.no} → #{fresh}")
+        new.rows.append(row)
+        row.text, row.note = it.text, it.note
+        row.owner, row.due = it.owner, it.due
+        row.trailer = it.trailer
+        if it.state and row.state != it.state:
+            row.state = it.state
+            row.closed_at = dbmod.utc_now() if it.state in spec.closed_states \
+                else ""
+        _validate_item(row, spec)
+        live.append(row)
+    # 3. missing items → tombstones
+    for r in [r for r in new.rows if not r.deleted and not r.is_group
+              and r.no not in md_nos]:
+        r.deleted = True  # the "deleted" note is added by sync_section
+    # 4. display order: ungrouped, then each group block (X00 + its items),
+    # tombstones last. Deduped by object identity (a row is referenced both by
+    # `live` and still present in new.rows for the next_no lookups).
+    blocks: list[Item] = [r for r in live if not group_of(r.no)]
+    for g in parsed.groups:
+        blocks.append(new.group(g.letter))
+        blocks.extend(r for r in live if group_of(r.no) == g.letter)
+    tombstones = [r for r in new.rows if r.deleted]
+    seen: set[int] = set()
+    out: list[Item] = []
+    for r in [*blocks, *tombstones]:
+        if id(r) in seen:
+            continue
+        seen.add(id(r))
+        out.append(r)
+    new.rows = out
+    new.check()
+    return new, notes

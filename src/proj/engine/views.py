@@ -39,7 +39,9 @@ def _item_expansion(r: dict, registry: dict | None, db, depth: int) -> list[str]
     if tspec is None or tspec.items is None or db is None:
         return []
     from proj.engine import items as items_mod  # lazy: views↔items cycle
-    sec = items_mod.render_section(items_mod.load(db, r["id"]), tspec)
+    state = items_mod.load(db, r["id"], tspec)
+    state.intro = items_mod._intro_of(tspec, r)
+    sec = items_mod.render_section(state, tspec)
     if not sec:
         return []
     pad = "  " * (depth + 1)

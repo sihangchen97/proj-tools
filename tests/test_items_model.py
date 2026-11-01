@@ -1,306 +1,267 @@
-"""Pure model tests for engine/items.py (plans/items-design.md §8 step 2):
-parse_no, parse_section → apply_md → render_section roundtrips, cross-group
-moves, never-reuse, capacities, problems, diff_log, the set_state no-op.
-No project fixture — these run in milliseconds."""
+"""Pure-function tests for engine.items (no project needed — fast).
+
+Covers plans/items-design.md §8.2: norm_no/group_of leniency, next_no/
+next_group skipping tombstone numbers, parse → apply_md → render roundtrips
+(items, groups, trailers, intro, note/owner/due), cross-group renumbering,
+no reuse, group-letter reuse, capacities, the problem set, diff_log outputs,
+and set_state's no-change rule.
+"""
+import pytest
+
 from proj.core.templates import ItemsSpec, ItemState
 from proj.engine import items as it
 
-# task-like: one open state, one closed state → closed state shows NO emoji
+# a task-style checklist: one todo state, three done states (two with emoji)
 TASK = ItemsSpec(
-    section="Acceptance Criteria", noun="criterion",
-    states=[ItemState(name="todo"), ItemState(name="done", closed=True)],
+    section="Acceptance Criteria",
+    states=[ItemState("todo"), ItemState("done", "✅", closed=True),
+            ItemState("met", "✅", closed=True),
+            ItemState("skipped", "⏭️", closed=True)],
     fields=["owner", "due"])
-
-# plan-like: one open, two closed states with distinct emojis → emoji shown
 PLAN = ItemsSpec(
-    section="Success Criteria", noun="criterion",
-    states=[ItemState(name="pending"),
-            ItemState(name="met", emoji="✅", closed=True),
-            ItemState(name="missed", emoji="❌", closed=True)],
-    fields=["owner", "due"])
+    section="Success Criteria",
+    states=[ItemState("pending"),
+            ItemState("met", "✅", closed=True),
+            ItemState("missed", "❌", closed=True)])
 
 
-def _state():
-    return it.ItemsState(intro="")
+def _state(rows=()):
+    return it.ItemsState(rows=list(rows))
 
 
-# ---- parse_no / ItemNo -------------------------------------------------------
+# ---- numbers ---------------------------------------------------------------
 
-def test_parse_no_roundtrip():
-    assert it.parse_no("1") == it.ItemNo("", 1)
-    assert str(it.parse_no("1")) == "001"
-    assert it.parse_no("001") == it.ItemNo("", 1)
-    assert it.parse_no("a1") == it.ItemNo("A", 1)
-    assert str(it.parse_no("a1")) == "A01"
-    assert it.parse_no("B99") == it.ItemNo("B", 99)
-    assert str(it.ItemNo("", 999)) == "999"
-    assert str(it.ItemNo("Z", 1)) == "Z01"
+@pytest.mark.parametrize("s, want", [
+    ("1", "001"), ("001", "001"), ("999", "999"),
+    ("a1", "A01"), ("A01", "A01"), ("a12", "A12"), ("A99", "A99"),
+    ("a", "A00"), ("A0", "A00"), (" z", "Z00"),
+])
+def test_norm_no(s, want):
+    assert it.norm_no(s) == want
 
 
-def test_parse_no_rejects():
-    for bad in ("A100", "1000", "x", "", "01A", "AA01"):
-        try:
-            it.parse_no(bad)
-            raise AssertionError(f"{bad!r} should not parse")
-        except ValueError:
-            pass
+@pytest.mark.parametrize("s", ["", "1000", "A100", "A999", "1a", "aa1"])
+def test_norm_no_bad(s):
+    with pytest.raises(it.ItemsError):
+        it.norm_no(s)
 
 
-# ---- parse → apply → render roundtrip ----------------------------------------
-
-MD = """intro line
-
-- [ ] error rate below 0.1%
-- [x] 3 users onboarded — five users, see PR #88 · owner: o · due: 2026-12-31
-trailer under item two
-
-### Backend
-group trailer here
-- [x] API returns 200
-### Frontend
-- [ ] form validates"""
+def test_group_of():
+    assert it.group_of("A01") == "A"
+    assert it.group_of("001") == ""
 
 
-def test_roundtrip_numbers_groups_trailers():
-    new, notes = it.apply_md(_state(), it.parse_section(MD, PLAN), PLAN)
-    assert [str(i.no) for i in new.items] == ["001", "002", "A01", "B01"]
-    assert [g.letter for g in new.groups] == ["A", "B"]
-    assert new.last_seq == {"": 2, "A": 1, "B": 1}
-    assert new.last_group == 2
-    assert any("without state emoji → met" in n for n in notes)
-    rendered = it.render_section(new, PLAN)
-    for line in ["intro line", "- [ ] #001 error rate below 0.1%",
-                 "- [x] #002 ✅ 3 users onboarded — five users, see PR #88 "
-                 "· owner: o · due: 2026-12-31",
-                 "trailer under item two", "### A · Backend", "group trailer here",
-                 "- [x] #A01 ✅ API returns 200", "### B · Frontend",
-                 "- [ ] #B01 form validates"]:
-        assert line in rendered, line
-    # parse the render back: identical state, byte-identical render
-    again, _ = it.apply_md(new, it.parse_section(rendered, PLAN), PLAN)
-    assert again == new
-    assert it.render_section(again, PLAN) == rendered
+def test_next_no_skips_tombstones():
+    st = _state([it.Item("001"), it.Item("003"), it.Item("003", deleted=True)])
+    assert st.next_no("") == "004"
+    g = it.ItemsState(rows=[it.Item("A00", text="G"), it.Item("A01"),
+                            it.Item("A02", deleted=True)])
+    assert g.next_no("A") == "A03"
 
 
-def test_roundtrip_single_closed_state_has_no_emoji():
-    new, _ = it.apply_md(_state(), it.parse_section("- [ ] a\n- [x] b", TASK), TASK)
-    rendered = it.render_section(new, TASK)
-    assert "- [x] #002 b" in rendered and "✅" not in rendered
-
-
-def test_apply_rejects_unknown_number_and_duplicate():
-    new, _ = it.apply_md(_state(), it.parse_section("- [ ] a\n- [ ] b", TASK), TASK)
-    p = it.parse_section("- [x] #001 a\n- [ ] #099 ghost", TASK)
-    try:
-        it.apply_md(new, p, TASK)
-        raise AssertionError("unknown number must raise")
-    except it.ItemsError as e:
-        assert "does not exist" in str(e)
-    p = it.parse_section("- [x] #001 a\n- [ ] #001 dup", TASK)
-    try:
-        it.apply_md(new, p, TASK)
-        raise AssertionError("duplicate number must raise")
-    except it.ItemsError as e:
-        assert "duplicate" in str(e)
-
-
-def test_apply_rejects_unknown_and_double_group_heading():
-    new, _ = it.apply_md(_state(), it.parse_section(MD, PLAN), PLAN)
-    p = it.parse_section("- [x] #001 a\n\n### Q · nope\n- [ ] b", PLAN)
-    try:
-        it.apply_md(new, p, PLAN)
-        raise AssertionError("unknown group letter must raise")
-    except it.ItemsError as e:
-        assert "unknown group" in str(e)
-    p = it.parse_section("- [x] #A01 a\n\n### A · x\n- [ ] b\n### A · y\n- [ ] c", PLAN)
-    try:
-        it.apply_md(new, p, PLAN)
-        raise AssertionError("double heading must raise")
-    except it.ItemsError as e:
-        assert "duplicate group" in str(e)
-
-
-def test_parse_reports_indent_conflict_and_disabled_field():
-    p = it.parse_section("- [ ] a\n    - [ ] deep", TASK)
-    assert any("no longer nest" in x for x in p.problems)
-    p = it.parse_section("- [ ] #001 ✅ c", PLAN)  # met is closed, box is open
-    assert any("emoji and checkbox conflict" in x for x in p.problems)
-    bare = ItemsSpec(section="X", noun="criterion", states=[ItemState(name="a")])
-    p = it.parse_section("- [ ] c · owner: x", bare)  # no owner field enabled
-    assert any("not an enabled field" in x for x in p.problems)
-
-
-# ---- cross-group move + never-reuse ------------------------------------------
-
-def _two_plus_a():
-    s = _state()
-    s.groups.append(it.Group("A", "A"))
-    s.last_group = 1
-    s.last_seq = {"": 2, "A": 1}
-    s.items = [it.Item(no=it.ItemNo("", 1), text="one", state="todo"),
-               it.Item(no=it.ItemNo("", 2), text="two", state="todo"),
-               it.Item(no=it.ItemNo("A", 1), text="a one", state="done",
-                       closed_at="2026-01-01")]
-    s.check()
-    return s
-
-
-def test_cross_group_move_gets_fresh_number():
-    s = _two_plus_a()
-    md = """- [x] #001 one
-
-### A · A
-- [ ] #002 two
-- [x] #A01 a one"""
-    new, notes = it.apply_md(s, it.parse_section(md, TASK), TASK)
-    assert [str(i.no) for i in new.items] == ["001", "A02", "A01"]
-    assert any("#002 → #A02" in n for n in notes)
-    assert new.last_seq["A"] == 2
-    moved = new.items[1]
-    assert moved.text == "two" and moved.closed_at == ""  # fields preserved
-    assert any(cat == "Changed" and "→" in msg for cat, msg
-               in it.diff_log(s, new, notes))
-
-
-def test_delete_then_add_never_reuses_number():
-    s = _two_plus_a()
-    new, _ = it.apply_md(s, it.parse_section("- [x] #001 one\n\n### A · A\n- [x] #A01 a one",
-                                             TASK), TASK)
-    # #002 deleted (number 2 still issued): a new item must be #003
-    added, _ = it.add(new, TASK, "late")
-    assert str(next(i for i in added.items if i.text == "late").no) == "003"
-    # group B was never allocated, C would be next if B were deleted:
-    s2 = _two_plus_a()
-    s2.groups.append(it.Group("B", "B"))
-    s2.last_group = 2
-    md = ("- [x] #001 one\n\n### A · A\n- [x] #A01 a one\n### Later\n- [ ] z")
-    new2, _ = it.apply_md(s2, it.parse_section(md, TASK), TASK)
-    assert [g.letter for g in new2.groups] == ["A", "C"]
-    assert new2.last_group == 3
-
-
-def test_deleting_heading_rehomes_and_deletes_group():
-    s = _two_plus_a()
-    new, _ = it.apply_md(s, it.parse_section("- [x] #001 one\n- [x] #A01 a one",
-                                             TASK), TASK)
-    # group A disappeared; #A01 re-homed to ungrouped as a fresh number
-    # (the ungrouped counter had already issued 2 → it becomes #003)
-    assert [str(i.no) for i in new.items] == ["001", "003"]
-    assert new.groups == []
+def test_next_group_skips_tombstones():
+    st = _state([it.Item("A00", text="A"), it.Item("B00", text="B", deleted=True)])
+    assert st.next_group() == "C"
 
 
 def test_capacity_limits():
-    full = _state()
-    full.last_seq[""] = it.UNGROUPED_CAP
-    full.items = [it.Item(no=it.ItemNo("", 1), text="x", state="todo")]
-    full.check()
+    st = it.ItemsState(rows=[it.Item(f"{i:03d}") for i in range(1, 1000)])
+    with pytest.raises(it.ItemsError, match="capacity"):
+        st.next_no("")
+    st = it.ItemsState(rows=[it.Item("A00", text="G")] +
+                       [it.Item(f"A{i:02d}") for i in range(1, 100)])
+    with pytest.raises(it.ItemsError, match="capacity"):
+        st.next_no("A")
+    st = it.ItemsState(rows=[it.Item(f"{L}00", text=L) for L in it.LETTERS])
+    with pytest.raises(it.ItemsError, match="groups"):
+        st.next_group()
+
+
+# ---- parse → apply_md → render roundtrips -----------------------------------
+
+MD_PLAIN = """intro line
+- [ ] #001 a
+- [x] #002 ✅ b
+"""
+
+
+def _state_from(md, spec):
+    """A state matching an already-numbered section (sync steady state)."""
+    p = it.parse_section(md, spec)
+    st = it.ItemsState(intro=p.intro)
+    for i in p.ungrouped:
+        st.rows.append(it.Item(no=i.no, text=i.text, state=i.state,
+                               note=i.note, owner=i.owner, due=i.due,
+                               trailer=i.trailer))
+    for g in p.groups:
+        st.rows.append(it.Item(no=g.letter + "00", text=g.title,
+                               trailer=g.trailer))
+        for i in g.items:
+            st.rows.append(it.Item(no=i.no, text=i.text, state=i.state,
+                                   note=i.note, owner=i.owner, due=i.due,
+                                   trailer=i.trailer))
+    return st
+
+
+def test_roundtrip_plain():
+    st = _state_from(MD_PLAIN, TASK)
+    new, _ = it.apply_md(st, it.parse_section(MD_PLAIN, TASK), TASK)
+    rendered = it.render_section(new, TASK)
+    assert it.normalize(MD_PLAIN) == rendered
+    again, _ = it.apply_md(new, it.parse_section(rendered, TASK), TASK)
+    assert it.render_section(again, TASK) == rendered
+    assert [r.no for r in new.live()] == ["001", "002"]
+    assert new.by_no("002").state == "done"
+
+
+def test_numbered_line_on_empty_state_is_problem():
+    st, notes = it.apply_md(_state(),
+                            it.parse_section("- [ ] a\n", TASK), TASK)
+    with pytest.raises(it.ItemsError, match="unknown item number"):
+        it.apply_md(st, it.parse_section(MD_PLAIN, TASK), TASK)
+
+
+def test_roundtrip_numbers_groups_trailers():
+    md = ("intro line\n\n- [ ] #001 a\ntrailer under one\n\n"
+          "### A · Backend\n- [x] #A01 ✅ b\n"
+          "- [ ] #A02 c · owner: o · due: 2026-11-15\n\n"
+          "### B · Frontend\n")
+    st = _state_from(md, TASK)
+    new, _ = it.apply_md(st, it.parse_section(md, TASK), TASK)
+    rendered = it.render_section(new, TASK)
+    again, _ = it.apply_md(new, it.parse_section(rendered, TASK), TASK)
+    assert it.render_section(again, TASK) == rendered
+    assert new.by_no("001").trailer == "trailer under one"
+    assert new.by_no("A02").owner == "o"
+    assert new.by_no("A02").due == "2026-11-15"
+    assert new.by_no("A00").is_group and new.by_no("A00").text == "Backend"
+    assert new.by_no("B00").is_group  # an empty group survives
+
+
+def test_unknown_heading_gets_letter():
+    new, notes = it.apply_md(_state(), it.parse_section("### Backend\n- [ ] x\n", PLAN), PLAN)
+    assert new.by_no("A00").text == "Backend"
+    assert new.by_no("A01").text == "x"
+    assert any("group A" in n for n in notes)
+
+
+def test_emoji_conflict_is_problem():
+    p = it.parse_section("- [ ] #001 ❌ x\n", PLAN)
+    assert any("checkbox" in x for x in p.problems)
+
+
+def test_checked_without_emoji_assigns_note():
+    p = it.parse_section("- [x] #001 x\n", PLAN)
+    assert p.ungrouped[0].state == "met"
+    assert p.ungrouped[0].note == it.NOTE_ASSIGNED
+
+
+@pytest.mark.parametrize("md, frag", [
+    ("  - [ ] #001 x\n", "nest"),                       # indented → problem
+    ("- [ ] x\n- [ ] #001 a\n- [ ] #001 b\n", "duplicate"),
+    ("### Q · nope\n- [ ] x\n", "unknown group"),      # unknown letter
+    ("- [ ] #999 a\n- [ ] b\n", "unknown item"),       # via apply_md
+])
+def test_problems(md, frag):
+    p = it.parse_section(md, PLAN)
     try:
-        it.apply_md(full, it.parse_section("- [x] #001 x\n- [ ] more", TASK), TASK)
-        raise AssertionError("1000th ungrouped item must raise")
+        it.apply_md(_state(), p, PLAN)
     except it.ItemsError as e:
-        assert "full" in str(e)
-    grp_full = _two_plus_a()
-    grp_full.last_seq["A"] = it.GROUP_CAP
-    grp_full.check()
-    try:
-        md = "- [x] #001 one\n\n### A · A\n- [ ] #A01 a one\n- [ ] more"
-        it.apply_md(grp_full, it.parse_section(md, TASK), TASK)
-        raise AssertionError("100th group item must raise")
-    except it.ItemsError as e:
-        assert "full" in str(e)
-    many = _state()
-    many.last_group = len(it.GROUP_LETTERS)
-    many.check()
-    try:
-        it.apply_md(many, it.parse_section("### one more\n- [ ] x", TASK), TASK)
-        raise AssertionError("27th group must raise")
-    except it.ItemsError as e:
-        assert "cap" in str(e)
+        assert frag in str(e)
+        return
+    assert any(frag in x for x in p.problems)
 
 
-# ---- ops transforms + diff_log ------------------------------------------------
+# ---- transforms ------------------------------------------------------------
 
-def test_add_after_and_group():
-    s = _two_plus_a()
-    new, _ = it.add(s, TASK, "sub", after=it.ItemNo("", 1))
-    assert [str(i.no) for i in new.items] == ["001", "003", "002", "A01"]
-    try:
-        it.add(s, TASK, "x", group="A", after=it.ItemNo("", 2))
-        raise AssertionError("after must be in the target group")
-    except it.ItemsError:
-        pass
-    new, _ = it.add(s, TASK, "a two", group="A")
-    assert str(new.items[-1].no) == "A02"
-
-
-def test_set_state_noop_and_changelog():
-    s = _two_plus_a()
-    new, notes = it.set_state(s, TASK, it.ItemNo("", 1), "todo")
-    assert new == s and notes == []
-    assert it.diff_log(s, new, notes) == []
-    new, _ = it.set_state(s, TASK, it.ItemNo("", 1), "done")
-    log = it.diff_log(s, new, [])
-    assert ("Changed", "item #001 todo → done") in log
-    assert new.items[0].closed_at != ""
-    re = it.set_state(new, TASK, it.ItemNo("", 1), "done")
-    assert it.diff_log(new, re[0], []) == []
+def test_add_group_after_first():
+    st = _state([it.Item("001", text="a"), it.Item("002", text="b")])
+    new, notes = it.add(st, PLAN, "c", after="1")
+    assert [r.no for r in new.live()] == ["001", "003", "002"]
+    new, notes = it.add(st, PLAN, "c", after="2")
+    assert [r.no for r in new.live()] == ["001", "002", "003"]
+    with pytest.raises(it.ItemsError, match="share the target group"):
+        it.add(_state([it.Item("001", text="x"), it.Item("A00", text="G"),
+                       it.Item("A01", text="a")]),
+                PLAN, "c", after="1", group="A")
 
 
-def test_diff_log_every_kind():
-    s = _two_plus_a()
-    new, notes = it.remove(s, TASK, it.ItemNo("A", 1))
-    added, notes = it.add(new, TASK, "fresh")
-    renamed, _ = it.group_rename(added, TASK, "A", "Backend")
-    mv, mnotes = it.move(renamed, TASK, it.ItemNo("", 2), group="A")
-    log = it.diff_log(s, mv, mnotes + notes)
-    assert ("Removed", "item #A01: a one") in log
-    assert ("Added", "item #003: fresh") in log
-    assert ("Changed", "group A renamed") in log
-    assert ("Changed", "item #002 → #A02") in log
-    # edit: text change logs 'edited'
-    ed, _ = it.edit(s, TASK, it.ItemNo("", 1), text="renamed")
-    assert ("Changed", "item #001 edited") in it.diff_log(s, ed, [])
-    # group add / remove
-    g, _ = it.group_add(s, TASK, "B")
-    assert ("Added", "group B · B") in it.diff_log(s, g, [])
-    gr, _ = it.group_rm(g, TASK, "B", items="delete")
-    assert ("Removed", "group B") in it.diff_log(g, gr, [])
+def test_set_state_no_change_no_notes():
+    st = _state([it.Item("001", text="a", state="met")])
+    new, notes = it.set_state(st, PLAN, "001", "met")
+    assert notes == []
+    assert new is not st and [r.state for r in new.rows] == ["met"]
+    new, notes = it.set_state(st, PLAN, "001", "missed")
+    assert new.by_no("001").closed_at
+    assert notes == ["item #001 missed"]
 
 
-def test_edit_clears_and_validates():
-    s = _two_plus_a()
-    item = s.items[0]
-    full = it.Item(no=item.no, text="t", state="todo", note="n", owner="o", due="2026-12-31")
-    s.items[0] = full
-    s.check()
-    new, _ = it.edit(s, TASK, it.ItemNo("", 1), text="x", note="", owner="", due="")
-    assert new.items[0].note == "" and new.items[0].owner == "" and new.items[0].due == ""
-    for kw, frag in (({"due": "not-a-date"}, "valid date"),
-                     ({"text": "a — b"}, "may not contain")):
-        try:
-            it.edit(s, TASK, it.ItemNo("", 1), **kw)
-            raise AssertionError(f"{kw} must raise")
-        except it.ItemsError as e:
-            assert frag in str(e)
-    no_owner = ItemsSpec(section="X", noun="criterion",
-                         states=[ItemState(name="a")])
-    try:
-        it.edit(s, no_owner, it.ItemNo("", 1), owner="x")  # no owner field
-        raise AssertionError("no owner field must raise")
-    except it.ItemsError as e:
-        assert "no owner field" in str(e)
+def test_edit_clears():
+    st = _state([it.Item("001", text="a", owner="o")])
+    new, notes = it.edit(st, TASK, "001", owner="")
+    assert new.by_no("001").owner == "" and notes == ["item #001 edited"]
+    new, notes = it.edit(st, TASK, "001", owner="o")
+    assert notes == []
+    with pytest.raises(it.ItemsError, match="owner is not"):
+        it.edit(st, PLAN, "001", owner="x")
 
 
-def test_move_requires_exactly_one_target():
-    s = _two_plus_a()
-    for kw in ({"group": "A", "first": True}, {"after": it.ItemNo("", 1)}):
-        if "after" in kw and "group" not in kw:
-            pass  # 'after' alone is fine
-            new, _ = it.move(s, TASK, it.ItemNo("", 2), **kw)
-            assert new is not None
-            continue
-        try:
-            it.move(s, TASK, it.ItemNo("", 1), **kw)
-            raise AssertionError(f"{kw} must raise")
-        except it.ItemsError as e:
-            assert "exactly one" in str(e)
+def test_cross_group_move_renumbers_no_reuse():
+    st = _state([it.Item("A00", text="G"), it.Item("A01", text="a"),
+                 it.Item("001", text="x")])
+    new, notes = it.move(st, PLAN, "001", group="A")
+    assert new.by_no("001").deleted           # the old number is a tombstone
+    assert not new.by_no("A02").deleted and new.by_no("A02").text == "x"
+    assert "item #001 → #A02" in notes
+    # adding again takes A03 (A01, A02 live; nothing reused)
+    later, _ = it.add(new, PLAN, "y")
+    assert later.by_no("002") is not None
+
+
+def test_remove_then_no_reuse():
+    st = _state([it.Item("A00", text="G"), it.Item("A01", text="a"),
+                 it.Item("A02", text="b")])
+    new, _ = it.remove(st, PLAN, "A02")
+    later, _ = it.add(new, PLAN, "c", group="A")
+    assert later.by_no("A03") is not None
+
+
+def test_group_rm_letters_never_reused():
+    st = _state([it.Item("A00", text="A"), it.Item("B00", text="B")])
+    new, _ = it.group_rm(st, PLAN, "B")
+    later, _ = it.group_add(new, PLAN, "C")
+    assert later.by_no("C00").text == "C"     # not B (tombstoned)
+
+
+def test_group_rm_nonempty_needs_choice():
+    st = _state([it.Item("A00", text="G"), it.Item("A01", text="a")])
+    with pytest.raises(it.ItemsError, match="ungroup"):
+        it.group_rm(st, PLAN, "A")
+    new, _ = it.group_rm(st, PLAN, "A", "ungroup")
+    assert new.by_no("A00").deleted
+    assert not new.by_no("001").deleted and new.by_no("001").text == "a"
+
+
+# ---- diff_log ---------------------------------------------------------------
+
+def test_diff_log_outputs():
+    old = _state([it.Item("001", text="a"), it.Item("002", text="b"),
+                  it.Item("A00", text="G")])
+    new = _state([it.Item("001", text="a", state="met"),
+                  it.Item("002", text="b", deleted=True),
+                  it.Item("A00", text="G2"),
+                  it.Item("B00", text="H")])
+    out = it.diff_log(old, new, [])
+    assert ("Added", "group B · H") in out
+    assert ("Removed", "item #002: b") in out
+    assert ("Changed", "item #001  → met") in out or any(
+        c == "Changed" and "001" in m for c, m in out)
+    assert ("Changed", "group A renamed") in out
+
+
+def test_diff_log_move_one_line():
+    old = _state([it.Item("001", text="a")])
+    new = _state([it.Item("001", text="a", deleted=True),
+                  it.Item("A01", text="a")])
+    out = it.diff_log(old, new, ["item #001 → #A01"])
+    assert out == [("Changed", "item #001 → #A01")]

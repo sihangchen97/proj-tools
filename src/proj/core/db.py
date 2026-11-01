@@ -33,7 +33,7 @@ import yaml
 
 from proj.core.templates import ItemsSpec, ItemState, RecordTypeSpec
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 LOCK_FILE = ".proj.lock"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
@@ -90,35 +90,24 @@ class Db:
             "CREATE TABLE IF NOT EXISTS record_changelog "
             "(id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, date TEXT, "
             "category TEXT, message TEXT, status TEXT)")
-        # item checklists (items.py): rows of a record's structured items;
-        # seq = the per-record, monotonic, non-reused number (#n in the md);
-        # pos = display order; depth 0|1 (a sub-item under a depth-0 item).
+        # item checklists (items.py): ONE table. `no` is the 3-char number:
+        # '001'..'999' ungrouped, 'A01'..'Z99' inside group A (the first letter IS
+        # the group), 'A00' = group A itself (its text is the group name). Deleted
+        # numbers stay as tombstones (deleted=1) so numbers are never reused;
+        # groups have no counter table either (the max 'X00' wins).
+        # pos = display order of the whole checklist.
         # FK CASCADE deletes items with their record (no manual cleanup).
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS items "
             "(record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE, "
-            "grp TEXT NOT NULL DEFAULT '', "
-            "seq INTEGER NOT NULL, pos INTEGER NOT NULL, "
-            "text TEXT NOT NULL, state TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', "
-            "owner TEXT NOT NULL DEFAULT '', due TEXT NOT NULL DEFAULT '', "
-            "created TEXT NOT NULL, closed_at TEXT NOT NULL DEFAULT '', "
-            "\"commit\" TEXT NOT NULL DEFAULT '', trailer TEXT NOT NULL DEFAULT '', "
-            "PRIMARY KEY (record_id, grp, seq))")
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS item_counters "
-            "(record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE, "
-            "grp TEXT NOT NULL DEFAULT '', last INTEGER NOT NULL, "
-            "PRIMARY KEY (record_id, grp))")
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS item_groups "
-            "(record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE, "
-            "letter TEXT NOT NULL, title TEXT NOT NULL, pos INTEGER NOT NULL, "
-            "trailer TEXT NOT NULL DEFAULT '', "
-            "PRIMARY KEY (record_id, letter))")
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS item_group_counter "
-            "(record_id TEXT PRIMARY KEY REFERENCES records(id) ON DELETE CASCADE, "
-            "last INTEGER NOT NULL)")
+            "no TEXT NOT NULL, pos INTEGER NOT NULL, "
+            "text TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', "
+            "note TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '', "
+            "due TEXT NOT NULL DEFAULT '', "
+            "\"commit\" TEXT NOT NULL DEFAULT '', "
+            "trailer TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, "
+            "closed_at TEXT NOT NULL DEFAULT '', deleted INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (record_id, no))")
     # ---- template-driven schema -------------------------------------------
 
     def ensure_kind(self, spec: RecordTypeSpec) -> None:
@@ -320,55 +309,28 @@ class Db:
 
     # ---- item checklists (items.py) -----------------------------------------
 
-    def items_load(self, record_id: str) -> dict:
-        """The whole checklist state: items in display order (pos), groups in
-        order (pos), and the two counters (last_seq per group, last_group).
-        The counters may exceed the stored numbers (they never decrease)."""
-        items = [dict(r) for r in self.conn.execute(
+    def items_load(self, record_id: str) -> list[dict]:
+        """All rows of the record's checklist (tombstones included), in display
+        order (pos). Plain dicts."""
+        return [dict(r) for r in self.conn.execute(
             "SELECT * FROM items WHERE record_id=? ORDER BY pos", (record_id,))]
-        groups = [dict(r) for r in self.conn.execute(
-            "SELECT * FROM item_groups WHERE record_id=? ORDER BY pos", (record_id,))]
-        last_seq = {r["grp"]: r["last"] for r in self.conn.execute(
-            "SELECT grp, last FROM item_counters WHERE record_id=?", (record_id,))}
-        row = self.conn.execute(
-            "SELECT last FROM item_group_counter WHERE record_id=?", (record_id,)).fetchone()
-        return {"items": items, "groups": groups,
-                "last_seq": last_seq, "last_group": row["last"] if row else 0}
 
-    def items_save(self, record_id: str, items: list[dict], groups: list[dict],
-                   last_seq: dict[str, int], last_group: int) -> None:
-        """One transaction: delete and re-insert all items/groups of the record,
-        then update both counters to max(old, new) — a counter never decreases."""
-        cur = self.conn.cursor()
-        try:
-            cur.execute("DELETE FROM items WHERE record_id=?", (record_id,))
-            cur.execute("DELETE FROM item_groups WHERE record_id=?", (record_id,))
-            for pos, it in enumerate(items):
-                cur.execute(
-                    "INSERT INTO items (record_id, grp, seq, pos, text, state, note, "
-                    "owner, due, created, closed_at, \"commit\", trailer) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (record_id, it["grp"], it["seq"], pos, it["text"], it["state"],
-                     it.get("note", ""), it.get("owner", ""), it.get("due", ""),
-                     it.get("created") or utc_now(), it.get("closed_at", ""),
-                     it.get("commit", ""), it.get("trailer", "")))
-            for pos, g in enumerate(groups):
-                cur.execute(
-                    "INSERT INTO item_groups (record_id, letter, title, pos, trailer) "
-                    "VALUES (?,?,?,?,?)",
-                    (record_id, g["letter"], g["title"], pos, g.get("trailer", "")))
-            for grp, last in last_seq.items():
-                cur.execute(
-                    "INSERT INTO item_counters (record_id, grp, last) VALUES (?,?,?) "
-                    "ON CONFLICT(record_id, grp) DO UPDATE SET last=max(last, excluded.last)",
-                    (record_id, grp, last))
-            cur.execute(
-                "INSERT INTO item_group_counter (record_id, last) VALUES (?,?) "
-                "ON CONFLICT(record_id) DO UPDATE SET last=max(last, excluded.last)",
-                (record_id, last_group))
-            self.conn.commit()
-        finally:
-            cur.close()
+    def items_save(self, record_id: str, rows: list[dict]) -> None:
+        """One transaction: delete and re-insert all rows of the record
+        (pos = the list index). The whole checklist is rewritten as a unit;
+        items.py is the only writer."""
+        self.conn.execute("DELETE FROM items WHERE record_id=?", (record_id,))
+        for pos, it in enumerate(rows):
+            self.conn.execute(
+                "INSERT INTO items (record_id, no, pos, text, state, note, owner, "
+                "due, \"commit\", trailer, created, closed_at, deleted) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (record_id, it["no"], pos, it["text"], it.get("state", ""),
+                 it.get("note", ""), it.get("owner", ""), it.get("due", ""),
+                 it.get("commit", ""), it.get("trailer", ""),
+                 it.get("created") or utc_now(), it.get("closed_at", ""),
+                 1 if it.get("deleted") else 0))
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

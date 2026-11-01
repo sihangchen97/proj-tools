@@ -165,9 +165,9 @@ def proj_show(record_type: str, id_: str, root: str | None = None,
         if parent:
             lines.append(f"parent: {parent['source']}")
     if spec.items is not None:
-        intro = json.loads(row["sections"] or "{}").get(spec.items.section.lower(), "")
-        rendered = items_mod.render_section(
-            items_mod.load(db, row["id"], intro=intro), spec)
+        state = items_mod.load(db, row["id"], spec)
+        state.intro = items_mod._intro_of(spec, row)
+        rendered = items_mod.render_section(state, spec)
         if rendered:
             lines.append("")
             lines.append(f"{spec.items.section}:")

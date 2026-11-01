@@ -72,12 +72,12 @@ def db_items(proj, rid: str) -> list[dict]:
 
 
 def it_items_load(db, rid: str) -> list[dict]:
-    """The record's items in display order (the items_load dict's 'items')."""
-    return db.items_load(rid)["items"]
+    """The record's items in display order (tombstones included)."""
+    return db.items_load(rid)
 
 
-def db_item(proj, rid: str, seq: int) -> dict | None:
-    return next((r for r in db_items(proj, rid) if r["seq"] == seq), None)
+def db_item(proj, rid: str, no: str) -> dict | None:
+    return next((r for r in db_items(proj, rid) if r["no"] == it.norm_no(no)), None)
 
 
 # ---- parse + render roundtrip -------------------------------------------------
@@ -99,7 +99,7 @@ def test_roundtrip_two_state_and_emoji_rule(proj):
     spec = rec.load_registry(proj.root)["task"]
     parsed = it.parse_section("- [x] #2 b — n · owner: o · due: 2026-12-31", spec.items)
     assert parsed.problems == []
-    assert parsed.ungrouped[0].no == it.ItemNo("", 2)
+    assert parsed.ungrouped[0].no == "002"
     assert parsed.ungrouped[0].state == "done"
     assert parsed.ungrouped[0].note == "n"
     assert parsed.ungrouped[0].owner == "o"
@@ -146,8 +146,8 @@ trailer under one
     problems, _ = rec.sync(proj)
     assert problems == []
     rows = db_items(proj, row["id"])
-    assert [r["grp"] for r in rows] == ["", "", "A"]  # the tool assigned group A
-    assert rows[2]["owner"] == "o"
+    assert [it.group_of(r["no"]) for r in rows if not r["deleted"]] == ["", "", "A", "A"]
+    assert db_item(proj, row["id"], "A01")["owner"] == "o"  # the tool assigned group A
     sec = _section(p, "Acceptance Criteria")
     assert "### A · Backend" in sec
     assert "- [x] #001 a" in sec and "trailer under one" in sec
@@ -161,7 +161,7 @@ def test_parse_conflict_indent_and_group_heading(proj):
     p = _file(proj, row, "docs/plans")
     _write_section(p, "Success Criteria", "- [ ] #001 ✅ c")  # met (closed) but unticked
     problems, _ = rec.sync(proj)
-    assert any("emoji and checkbox conflict" in x for x in problems)
+    assert any("checkbox is unchecked" in x for x in problems)
     assert len(db_items(proj, row)) == 0  # nothing was written
     # an indented item line is a problem (nesting is gone — use a group)
     r2 = _new(proj, "plan", "P2")
@@ -188,7 +188,7 @@ def test_sync_new_auto_numbered_and_changelog(proj):
     problems, notes = rec.sync(proj)
     assert problems == []
     assert any("new item #001 (a)" in n for n in notes)
-    i = db_item(proj, row["id"], 1)
+    i = db_item(proj, row["id"], "001")
     db = rec.open_db(proj)
     logs = db.logs(row["id"])
     db.close()
@@ -205,7 +205,7 @@ def test_sync_update_text_and_state(proj):
     _write_section(p, "Acceptance Criteria", "- [x] #001 a2")
     problems, _ = rec.sync(proj)  # updates log to the changelog, not to notes
     assert problems == []
-    i = db_item(proj, row["id"], 1)
+    i = db_item(proj, row["id"], "001")
     db = rec.open_db(proj)
     logs = db.logs(row["id"])
     db.close()
@@ -221,8 +221,7 @@ def test_sync_delete_removed_and_noted(proj):
     _write_section(p, "Acceptance Criteria", "- [x] #001 keep")
     problems, notes = rec.sync(proj)
     assert problems == []
-    assert any("item #002 deleted (gone)" in n for n in notes)
-    assert db_item(proj, row["id"], 2) is None
+    assert db_item(proj, row["id"], "002")["deleted"]  # tombstone, not reused
     db = rec.open_db(proj)
     assert any("Removed" in (e["category"] or "") and "#002" in e["message"]
                for e in db.logs(row["id"]))
@@ -236,8 +235,8 @@ def test_sync_unknown_and_duplicate_number_no_write(proj):
     rec.sync(proj)
     _write_section(p, "Acceptance Criteria", "- [x] #001 a\n- [ ] #099 ghost")
     problems, _ = rec.sync(proj)
-    assert any("does not exist" in x for x in problems)
-    assert db_item(proj, row["id"], 99) is None
+    assert any("unknown item" in x for x in problems)
+    assert db_item(proj, row["id"], "099") is None
     _write_section(p, "Acceptance Criteria", "- [x] #001 a\n- [ ] #001 dup")
     problems, _ = rec.sync(proj)
     assert any("duplicate" in x for x in problems)
@@ -251,8 +250,9 @@ def test_sync_checked_without_emoji_defaults_and_notes(proj):
     _write_section(p, "Success Criteria", "- [x] #001 c1")
     problems, notes = rec.sync(proj)
     assert problems == []
-    assert any("without state emoji → met" in n for n in notes)
-    i = db_item(proj, row, 1)
+    assert db_item(proj, row, "001")["state"] == "met"
+    assert db_item(proj, row, "001")["note"] == it.NOTE_ASSIGNED
+    i = db_item(proj, row, "001")
     assert i["state"] == "met"
 
 
@@ -268,10 +268,10 @@ def test_sync_cross_group_move_renumbers(proj):
     problems, notes = rec.sync(proj)
     assert problems == []
     assert any("#002 → #A01" in n for n in notes)
-    assert db_item(proj, row["id"], 2) is None
-    assert db_item(proj, row["id"], 1) is not None
-    assert any(r["grp"] == "A" and r["seq"] == 1 and r["text"] == "b"
-               for r in db_items(proj, row["id"]))
+    assert db_item(proj, row["id"], "002")["deleted"]
+    assert db_item(proj, row["id"], "001") is not None and not db_item(proj, row["id"], "001")["deleted"]
+    assert db_item(proj, row["id"], "A01") is not None \
+        and db_item(proj, row["id"], "A01")["text"] == "b"
 
 
 def test_sync_unknown_group_letter_problem(proj):
@@ -355,14 +355,12 @@ def test_check_flags_gated_record_with_unclosed_items(proj):
     _plan(proj).transition(proj, "archive", row)
     # hand-set an unclosed item on the archived record (bypassing the ops)
     db = rec.open_db(proj)
-    loaded = db.items_load(row)
-    rows = list(loaded["items"])
+    rows = db.items_load(row)
     now = dbmod.utc_now()
-    rows.append({"grp": "", "seq": 2, "text": "late", "state": "pending",
-                 "note": "", "owner": "", "due": "", "created": now,
-                 "closed_at": "", "commit": "", "trailer": ""})
-    db.items_save(row, rows, loaded["groups"],
-                  {**loaded["last_seq"], "": 2}, loaded["last_group"])
+    rows.append({"no": "002", "text": "late", "state": "pending", "note": "",
+                 "owner": "", "due": "", "created": now, "closed_at": "",
+                 "commit": "", "trailer": "", "deleted": 0})
+    db.items_save(row, rows)
     db.close()
     rec.render_all(proj)
     assert any("unclosed" in p for p in checkmod.check(proj))
@@ -377,16 +375,16 @@ def test_reopen_restricted_on_archived_plan(proj):
     _plan(proj).transition(proj, "review", row)
     ops.set_state(proj, f"{row}#001", "met")
     _plan(proj).transition(proj, "archive", row)
-    with pytest.raises(ValueError, match="closed state"):
+    with pytest.raises(ValueError, match="requires all items closed"):
         ops.uncheck(proj, f"{row}#001")
-    with pytest.raises(ValueError, match="closed state"):
+    with pytest.raises(ValueError, match="requires all items closed"):
         ops.add(proj, row, "late criterion")
     # the md channel: untick the item, sync must refuse and write nothing
     p = _file(proj, row, "docs/plans")
     _write_section(p, "Success Criteria", "- [ ] #001 c1")
     problems, _ = rec.sync(proj)
-    assert any("closed state" in x for x in problems)
-    assert db_item(proj, row, 1)["state"] == "met"
+    assert any("requires all items closed" in x for x in problems)
+    assert db_item(proj, row, "001")["state"] == "met"
     rec.render_all(proj)  # re-render restores the refused md
     assert "#001 ✅ c1" in _section(p, "Success Criteria")
 
@@ -441,9 +439,9 @@ def test_add_group_and_after(proj):
     assert _nums(out) == ["001", "004", "002", "003"]
     out = ops.add(proj, row["id"], "a two", group="A")
     assert "A01" in out
-    with pytest.raises(ValueError, match="does not exist"):
+    with pytest.raises(ValueError, match="unknown group"):
         ops.add(proj, row["id"], "x", group="Z")
-    with pytest.raises(ValueError, match=r"malformed|out of range|not found"):
+    with pytest.raises(ValueError, match="not an item"):
         ops.add(proj, row["id"], "x", after="999")
 
 
@@ -456,9 +454,9 @@ def test_move_between_groups_and_first(proj):
     # cross-group move: #002 → a fresh group number (A01), old one void
     out = ops.move(proj, f"{row['id']}#002", group="A")
     assert "A01" in out and "#002" not in _nums(out)
-    assert db_item(proj, row["id"], 2) is None
-    assert any(r["grp"] == "A" and r["seq"] == 1 and r["text"] == "b"
-               for r in db_items(proj, row["id"]))
+    assert db_item(proj, row["id"], "002")["deleted"]  # tombstone, never reused
+    assert db_item(proj, row["id"], "A01") is not None \
+        and db_item(proj, row["id"], "A01")["text"] == "b"
     # within a group: only the order changes
     ops.add(proj, row["id"], "a two", group="A")  # A02
     out = ops.move(proj, f"{row['id']}#A02", first=True)
@@ -473,7 +471,7 @@ def test_remove_item(proj):
     ops.add(proj, row["id"], "b")
     out = ops.remove(proj, f"{row['id']}#002")
     assert "#002" not in _nums(out)
-    assert db_item(proj, row["id"], 2) is None and db_item(proj, row["id"], 1) is not None
+    assert db_item(proj, row["id"], "002")["deleted"] and not db_item(proj, row["id"], "001")["deleted"]
 
 
 def test_group_ops(proj):
@@ -491,8 +489,9 @@ def test_group_ops(proj):
         ops.group_rm(proj, row["id"], "B")
     out = ops.group_rm(proj, row["id"], "B", "ungroup")
     # #B01 is re-homed to the ungrouped list with a fresh number
-    assert any(r["grp"] == "" and r["text"] == "b" for r in db_items(proj, row["id"]))
-    assert not any(r["grp"] == "B" for r in db_items(proj, row["id"]))
+    assert any(it.group_of(r["no"]) == "" and r["text"] == "b"
+               for r in db_items(proj, row["id"]) if not r["deleted"])
+    assert db_item(proj, row["id"], "B00")["deleted"]  # the letter is a tombstone
 
 
 def test_ls_filters_and_refs(proj):
@@ -518,7 +517,7 @@ def test_refused_for_unknown_record_or_item(proj):
         ops.set_state(proj, "T-999999#001", "done")
     row, _ = taskmod.new(proj, "T")
     ops.add(proj, row["id"], "a")
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValueError, match="is not an item"):
         ops.set_state(proj, f"{row['id']}#002", "done")
     with pytest.raises(ValueError, match="#nn"):
         ops.set_state(proj, row["id"], "done")
@@ -531,11 +530,11 @@ def test_edit_clears_and_validates(proj):
     assert "- [ ] #001 b" in out
     with pytest.raises(ValueError, match="valid date"):
         ops.edit(proj, f"{row['id']}#001", due="not-a-date")
-    with pytest.raises(ValueError, match="may not contain"):
+    with pytest.raises(ValueError, match="must not contain"):
         ops.edit(proj, f"{row['id']}#001", text="a — b")
     plan_row = _new(proj, "plan", "P")  # plan items have no owner/due fields
     ops.add(proj, plan_row, "c")
-    with pytest.raises(ValueError, match="no owner field"):
+    with pytest.raises(ValueError, match="not an item field"):
         ops.edit(proj, f"{plan_row}#001", owner="x")
 
 
@@ -601,4 +600,4 @@ def test_adopt_parses_items_as_new(proj):
     assert problems == []
     rows = db_items(proj, "DEB-0001")
     assert [i["state"] for i in rows] == ["todo", "done"]
-    assert [i["seq"] for i in rows] == [1, 2]
+    assert [i["no"] for i in rows] == ["001", "002"]

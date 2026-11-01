@@ -6,7 +6,6 @@ same flow: resolve the ref → check the md is in sync → pure transform → co
 (one changelog) → re-render → return the fresh item list."""
 from __future__ import annotations
 
-import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
@@ -22,20 +21,27 @@ def _record_section_md(cfg: ProjConfig, spec, row: dict) -> str:
     if not p.is_file():
         return ""
     _mk, _u, raw = rec.parse_record(p.read_text(encoding="utf-8"))
-    return raw.get(spec.items.section.lower(), "")
+    return raw.get(spec.items.section.lower(), "") or ""
 
 
-def _parse_ref(cfg: ProjConfig, ref: str, need_item: bool) -> tuple[object, object, str]:
-    """(spec, row, record-part) for a ref; the item number (or None) when need_item."""
+def _load_state(db, spec, row: dict) -> items.ItemsState:
+    state = items.load(db, row["id"], spec)
+    state.intro = items._intro_of(spec, row)
+    return state
+
+
+def _parse_ref(cfg: ProjConfig, ref: str, need_item: bool) -> tuple[object, object, str | None]:
+    """(spec, row, item number) for a ref; the number (norm_no'd) when need_item."""
     rec_part, sep, no_part = ref.partition("#")
     no = None
     if need_item:
         if not sep:
-            raise items.ItemsError(f"pass an item ref like {ref!r} plus #nn (e.g. {ref}#001)")
+            raise items.ItemsError(
+                f"pass an item ref like {ref!r} plus #nn (e.g. {ref}#001)")
         try:
-            no = items.parse_no(no_part)
-        except ValueError as e:
-            raise items.ItemsError(str(e)) from None
+            no = items.norm_no(no_part)
+        except items.ItemsError as e:
+            raise items.ItemsError(f"item part of {ref!r}: {e}") from None
     db = rec.open_db(cfg)
     try:
         spec, row = rec.ref_record(cfg, db, rec_part)
@@ -54,16 +60,18 @@ class _Ctx:
     spec: object
     db: object
     row: dict
-    it: object
-    state: object
-    no: object
+    it: object        # the ItemsSpec
+    state: items.ItemsState
+    no: str | None
 
-    def save(self, new, notes) -> str:
+    def save(self, new: items.ItemsState, notes: list[str]) -> str:
+        """Commit (one changelog), re-render the record and views, and return
+        the fresh item list."""
         items.commit(self.db, self.spec, self.row, self.state, new, notes)
         rec.render_all(self.cfg)
         row = self.db.get(self.spec, self.row["id"])
-        intro = json.loads(row["sections"] or "{}").get(self.it.section.lower(), "")
-        return items.render_section(items.load(self.db, row["id"], intro=intro), self.it)
+        state = _load_state(self.db, self.spec, row)
+        return items.render_section(state, self.it)
 
 
 @contextmanager
@@ -78,19 +86,26 @@ def _editing(cfg: ProjConfig, ref: str, need_item: bool):
             raise items.ItemsError(
                 f"{row['id']}: the {spec.items.section} section has unsynced md "
                 f"edits — run `proj sync` first")
-        yield _Ctx(cfg, spec, db, row, spec.items, items.load(db, row["id"]), no)
+        yield _Ctx(cfg, spec, db, row, spec.items, _load_state(db, spec, row), no)
     finally:
         db.close()
 
 
-def _parse_after(ctx: _Ctx, s: str) -> items.ItemNo:
-    """The --after value: '#003' / 'A01' (same record) or 'T-000001#003'."""
+def _parse_after(ctx: _Ctx, s: str) -> str:
+    """The --after value: '#003' / 'A01' (same record) or 'T-000001#003' —
+    returned as the normalized number of THIS record."""
     rec_part, sep, no_part = s.partition("#")
     if sep:
         if rec_part and rec_part.upper() != ctx.row["id"].upper():
             raise items.ItemsError(f"--after {s!r} is not an item of {ctx.row['id']}")
-        return items.parse_no(no_part)
-    return items.parse_no(s)
+        try:
+            return items.norm_no(no_part)
+        except items.ItemsError as e:
+            raise items.ItemsError(f"--after {s!r}: {e}") from None
+    try:
+        return items.norm_no(s)
+    except items.ItemsError as e:
+        raise items.ItemsError(f"--after {s!r}: {e}") from None
 
 
 # ---- ops (one per CLI/MCP command) ---------------------------------------------
@@ -101,7 +116,8 @@ def add(cfg: ProjConfig, ref: str, text: str, group: str | None = None,
     with _editing(cfg, ref, need_item=False) as c:
         after_no = _parse_after(c, after) if after is not None else None
         new, notes = items.add(c.state, c.it, text, group=group, after=after_no,
-                               state_name=state, note=note, owner=owner, due=due)
+                               state_name=state or "", note=note,
+                               owner=owner, due=due)
         return c.save(new, notes)
 
 
@@ -164,7 +180,9 @@ def group_rename(cfg: ProjConfig, ref: str, letter: str, title: str) -> str:
 def group_mv(cfg: ProjConfig, ref: str, letter: str, after: str | None = None,
              first: bool = False) -> str:
     with _editing(cfg, ref, need_item=False) as c:
-        new, notes = items.group_mv(c.state, c.it, letter, after=after, first=first)
+        after_no = _parse_after(c, after) if after is not None else None
+        new, notes = items.group_mv(c.state, c.it, letter, after=after_no,
+                                    first=first)
         return c.save(new, notes)
 
 
@@ -179,7 +197,9 @@ def group_rm(cfg: ProjConfig, ref: str, letter: str, items_mode: str | None = No
 def ls(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
        open_only: bool = False, record_type: str | None = None,
        owner: str | None = None, overdue: bool = False) -> list[str]:
-    """Item lines as `ID#A01  state  text  [owner]  [due]` (one record or all)."""
+    """Item lines as `ID#A01  state  text  [owner]  [due]` (one record or all).
+    A ref that exists but has no items (or no such record) is an error — the
+    old silent empty result is gone."""
     reg = rec.load_registry(cfg.root)
     if record_type is not None and record_type not in reg:
         raise items.ItemsError(
@@ -189,14 +209,17 @@ def ls(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
     try:
         out: list[str] = []
         today = date.today().isoformat()
+        grp = group.upper() if group else None
 
         def scan(spec, row):
             if spec.items is None:
                 return
             if record_type is not None and spec.record_type != record_type:
                 return
-            for i in items.load(db, row["id"]).items:
-                if i.no.grp and group and i.no.grp != group.upper():
+            for i in _load_state(db, spec, row).live():
+                if i.is_group:
+                    continue
+                if grp and items.group_of(i.no) != grp:
                     continue
                 if open_only and i.state in spec.items.closed_states:
                     continue
