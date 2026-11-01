@@ -379,6 +379,31 @@ class Db:
                  it.get("created") or utc_now(), it.get("closed_at", ""),
                  1 if it.get("deleted") else 0))
 
+    # ---- WIP.md (plans §5): the registered "in progress" list (wip_entries) ----
+
+    def wip_all(self) -> list[dict]:
+        """Every WIP entry, in list order (pos): record_id, pos, added_at, source."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM wip_entries ORDER BY pos, record_id")]
+
+    def wip_has(self, record_id: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM wip_entries WHERE record_id=?", (record_id,)).fetchone() is not None
+
+    def wip_add(self, record_id: str, source: str) -> int:
+        """Register a record in WIP.md at the end of the list (its new pos)."""
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(pos), -1) FROM wip_entries").fetchone()
+        pos = row[0] + 1
+        self.conn.execute(
+            "INSERT INTO wip_entries (record_id, pos, added_at, source) VALUES (?,?,?,?)",
+            (record_id, pos, utc_now(), source))
+        return pos
+
+    def wip_remove(self, record_id: str) -> None:
+        """Un-register a record; remaining entries keep their pos (gaps allowed)."""
+        self.conn.execute("DELETE FROM wip_entries WHERE record_id=?", (record_id,))
+
     def begin(self) -> None:
         # R3: open the write transaction (deferred — the exclusive lock is taken
         # lazily on the FIRST write, so a pure read through a `with` takes no
