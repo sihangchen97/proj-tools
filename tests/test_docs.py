@@ -38,10 +38,9 @@ def test_type_sections_only_type_specific_verbs(proj):
     common = sections["所有 record 共用的命令"]
     for cmd in ("new", "ls", "show", "update"):
         assert f"proj <rt> {cmd}" in common
-    for heading, block in sections.items():
-        if heading == "所有 record 共用的命令":
-            continue
-        assert f"proj {heading} new" not in block
-        assert f"proj {heading} ls" not in block
-        assert f"proj {heading} show" not in block
-        assert f"proj {heading} update" not in block
+    # only record_type sections are checked (item/changelog/hooks are static groups)
+    from proj.engine import store as rec
+    for heading in rec.load_registry(None):
+        block = sections[heading]
+        for cmd in ("new", "ls", "show", "update"):
+            assert f"proj {heading} {cmd}" not in block
