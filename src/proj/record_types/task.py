@@ -79,6 +79,7 @@ class Task(Record):
         """Re-home an existing task (parent=None = detach to Unparented).
         Guards: target exists (any type), is not the task itself, is not one of
         its own descendants (cycle), and is not in a closed (gates.tasks) state."""
+        rec.ensure_synced(cfg)  # A1
         db = rec.open_db(cfg)
         try:
             row = rec.by_id(cfg, self.spec, db, id_)

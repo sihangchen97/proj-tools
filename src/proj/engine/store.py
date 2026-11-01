@@ -60,6 +60,7 @@ from pathlib import Path
 
 from proj.core import db as dbmod
 from proj.core.config import ProjConfig
+from proj.core.db import ProjError
 from proj.core.templates import RecordTypeSpec, load_registry, slugify
 
 # tool-owned id marker (an html-comment line, on line 1 above the blockquote head)
@@ -386,60 +387,95 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db) -> bool:
+    """One record file vs the DB (its text sections, and the items section when
+    the record_type has items)."""
+    _mk, _u, raw = parse_record(p.read_text(encoding="utf-8"))
+    stored = json.loads(row["sections"] or "{}")
+    if spec.items is not None:
+        from proj.engine import items as items_mod  # lazy: store↔items cycle
+        if items_mod.drift(db, spec, row, raw.get(spec.items.section.lower(), "")):
+            return True
+    for s in spec.sections:
+        if s.kind == "text" and \
+                normalize(raw.get(s.name.lower(), "")) != stored.get(s.name.lower(), ""):
+            return True
+    return False
+
+
 def md_drift(cfg: ProjConfig) -> list[str]:
-    """md files whose section content differs from the DB (unsynced edits).
-    Used to warn before DB-only renders silently overwrite them."""
+    """md files whose section content differs from the DB (unsynced edits)."""
     reg = load_registry(cfg.root)
     db = open_db(cfg)
-    out: list[str] = []
-    for spec in reg.values():
-        d = cfg.root / spec.dir
-        if not d.is_dir():
-            continue
-        for p in sorted(x for x in d.glob("*.md") if not x.name.startswith("_")):
-            text = p.read_text(encoding="utf-8")
-            (mk, u), _t, raw_sections = parse_record(text)
-            if mk != spec.record_type or not u:
-                continue
-            row = db.get(spec, u)
-            if row is None:
-                continue
-            stored = json.loads(row["sections"] or "{}")
-            if spec.items is not None:
-                from proj.engine import items as items_mod  # lazy: store↔items cycle
-                if items_mod.drift(db, spec, row, raw_sections.get(spec.items.section.lower(), "")):
-                    out.append(p.name)
+    try:
+        out: list[str] = []
+        for spec in reg.values():
+            for p in _scan_files(cfg, spec, None):
+                (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
+                if mk != spec.record_type or not u:
                     continue
-            for s in spec.sections:
-                if s.kind != "text":
-                    continue
-                if normalize(raw_sections.get(s.name.lower(), "")) != \
-                        stored.get(s.name.lower(), ""):
+                row = db.get(spec, u)
+                if row is not None and _md_drifts(p, row, spec, db):
                     out.append(p.name)
-                    break
-    db.close()
-    return out
+        return out
+    finally:
+        db.close()
+
+
+def ensure_synced(cfg: ProjConfig) -> None:
+    """A1 (Q4): before a write command overwrites record files, ingest every
+    file with unsynced hand edits (md → DB). No-op when nothing drifted.
+    Problems abort the whole operation — nothing is rendered or half-written."""
+    reg = load_registry(cfg.root)
+    db = open_db(cfg)
+    try:
+        for spec in reg.values():
+            for p in _scan_files(cfg, spec, None):
+                (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
+                if mk != spec.record_type or not u:
+                    continue
+                row = db.get(spec, u)
+                if row is None or not _md_drifts(p, row, spec, db):
+                    continue
+                problems, _ = _ingest_md(cfg, spec, db, p, strict=True)
+                if problems:
+                    raise ProjError("unsynced md edits with problems — fix and retry:\n"
+                                    + "\n".join(f"  {x}" for x in problems))
+    finally:
+        db.close()
 
 
 def render_all(cfg: ProjConfig) -> list[Path]:
-    """Phase 2: DB → every record file + global views. Returns written paths."""
+    """Phase 2: DB → every record file + global views. Returns written paths.
+    B1: writes only files whose rendered content actually changed (a command no
+    longer rewrites every file). No auto-sync here: render_all always runs AFTER
+    a write, when the md is stale by design — A1's auto-sync lives at the write
+    command entry points (ensure_synced), not in the render itself."""
     from proj.engine.views import render_changelog_md, render_tasklist_md
     reg = load_registry(cfg.root)
     db = open_db(cfg)
-    written: list[Path] = []
-    for spec in reg.values():
-        d = cfg.root / spec.dir
-        d.mkdir(parents=True, exist_ok=True)
-        for row in db.all(spec):
-            p = file_path(cfg, spec, row)
-            p.write_text(render_record(spec, row, db, reg), encoding="utf-8")
-            written.append(p)
-    for view in (render_tasklist_md(cfg, db, reg), render_changelog_md(cfg, db)):
-        if view is not None:
+    try:
+        written: list[Path] = []
+        for spec in reg.values():
+            d = cfg.root / spec.dir
+            d.mkdir(parents=True, exist_ok=True)
+            for row in db.all(spec):
+                p = file_path(cfg, spec, row)
+                text = render_record(spec, row, db, reg)
+                if p.exists() and p.read_text(encoding="utf-8") == text:
+                    continue  # unchanged (B1)
+                p.write_text(text, encoding="utf-8")
+                written.append(p)
+        for view in (render_tasklist_md(cfg, db, reg), render_changelog_md(cfg, db)):
+            if view is None:
+                continue
+            if view.path.exists() and view.path.read_text(encoding="utf-8") == view.text:
+                continue  # unchanged (B1)
             view.path.write_text(view.text, encoding="utf-8")
             written.append(view.path)
-    db.close()
-    return written
+        return written
+    finally:
+        db.close()
 
 
 # ---- parsing ----------------------------------------------------------------
@@ -611,6 +647,7 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
     else:
         reg = load_registry(cfg.root)
         spec = spec or reg[record_type]
+    ensure_synced(cfg)  # A1: an unsynced hand edit is ingested, never clobbered
     db = open_db(cfg)
     id_ = dbmod.next_id(spec, db)
     status = spec.status_allowed[0] if spec.status_allowed else ""
@@ -628,6 +665,7 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
 
 def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
                when: str | None = None) -> dict:
+    ensure_synced(cfg)  # A1
     spec, db = spec_and_db(cfg, record_type)
     row = by_id(cfg, spec, db, id_)
     if row is None:
@@ -668,6 +706,7 @@ def add_log(cfg: ProjConfig, record_type: str, id_: str, summary: str,
 def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None = None,
                   summary: str | None = None, message: str | None = None) -> dict:
     """Update a record's title / summary (and optionally append a changelog entry)."""
+    ensure_synced(cfg)  # A1
     spec, db = spec_and_db(cfg, record_type)
     row = by_id(cfg, spec, db, id_)
     if row is None:

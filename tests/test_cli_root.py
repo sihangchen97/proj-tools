@@ -95,3 +95,28 @@ def test_s_is_summary_on_new(proj, monkeypatch):
     # --supersede long-only still creates the edge
     r = runner.invoke(app, ["decision", "new", "S2", "--supersede", "DEC-0001", "-y"])
     assert r.exit_code == 0, r.output
+
+def test_unsynced_edit_survives_an_unrelated_write(proj, monkeypatch):
+    """A1 (the original bug): hand-editing a record's md and running ANOTHER
+    write command (task new) used to silently clobber the edit — every write
+    rendered ALL md from the DB. Now the edit is auto-synced and survives."""
+    monkeypatch.chdir(proj.root)
+    out = runner.invoke(app, ["decision", "new", "D1", "-y"]).output
+    rel = out.split("docs/decisions/")[1].strip()        # DEC-0002-d1.md
+    rid = "-".join(rel.split("-")[:2])                   # the record id (DEC-0002)
+    target = proj.root / "docs/decisions" / rel
+    target.write_text(target.read_text().replace(
+        "## Context", "## Context\n\nhand-written line kept", 1))
+    # an UNRELATED write command (task new) must not lose the hand edit
+    r = runner.invoke(app, ["task", "new", "Unrelated", "-y"])
+    assert r.exit_code == 0, r.output
+    assert "hand-written line kept" in target.read_text()
+    # ...and it was ingested into the DB (A1 auto-sync, not clobbered)
+    import json
+
+    from proj.engine import store as rec
+    spec = rec.load_registry(proj.root)["decision"]
+    db = rec.open_db(proj)
+    row = db.get(spec, rid)
+    db.close()
+    assert "hand-written line kept" in json.loads(row["sections"]).get("context", "")

@@ -14,6 +14,7 @@ from proj.engine.views import read_versions, release, render_changelog_md
 
 def add(cfg: ProjConfig, entry: str, version: str | None = None) -> None:
     cl = load_changelog_spec(cfg.root)
+    rec.ensure_synced(cfg)  # A1 (uniform write-command entry)
     version = version or cl.unreleased
     category, text = dbmod.parse_summary(entry, cl)
     db = rec.open_db(cfg)

@@ -79,13 +79,9 @@ def _editing(cfg: ProjConfig, ref: str, need_item: bool):
     """The whole op flow (plans/items-design.md §7): resolve ref → refuse on
     unsynced md → yield _Ctx → (caller computes new state) → ctx.save re-renders."""
     spec, row, no = _parse_ref(cfg, ref, need_item)
+    rec.ensure_synced(cfg)  # A1: unsynced edits are ingested, never refused
     db = rec.open_db(cfg)
     try:
-        section = _record_section_md(cfg, spec, row)
-        if items.drift(db, spec, row, section):
-            raise items.ItemsError(
-                f"{row['id']}: the {spec.items.section} section has unsynced md "
-                f"edits — run `proj sync` first")
         yield _Ctx(cfg, spec, db, row, spec.items, _load_state(db, spec, row), no)
     finally:
         db.close()

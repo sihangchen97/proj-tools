@@ -163,6 +163,9 @@ def test_parse_conflict_indent_and_group_heading(proj):
     problems, _ = rec.sync(proj)
     assert any("checkbox is unchecked" in x for x in problems)
     assert len(db_items(proj, row)) == 0  # nothing was written
+    # A1: the malformed md also blocks the NEXT write command until fixed —
+    # restore a valid section so the cases below stay independent
+    _write_section(p, "Success Criteria", "")
     # an indented item line is a problem (nesting is gone — use a group)
     r2 = _new(proj, "plan", "P2")
     _write_section(_file(proj, r2, "docs/plans"), "Success Criteria",
@@ -170,6 +173,7 @@ def test_parse_conflict_indent_and_group_heading(proj):
     problems, _ = rec.sync(proj)
     assert any("no longer nest" in x for x in problems)
     assert len(db_items(proj, r2)) == 0
+    _write_section(_file(proj, r2, "docs/plans"), "Success Criteria", "")
     # a plain-text line interleaved among items is legal (intro / trailer)
     r3 = _new(proj, "plan", "P3")
     _write_section(_file(proj, r3, "docs/plans"), "Success Criteria",
@@ -413,20 +417,24 @@ def test_promote_task_and_debt(proj):
 
 # ---- ops: drift refusal, group/after, move, remove, ls --------------------------
 
-def test_ops_refused_on_unsynced_md(proj):
+def test_ops_auto_sync_unsynced_md(proj):
+    """A1: an unsynced hand edit is ingested by the next write command (not
+    refused, not clobbered) — the edit lands in the DB and the op proceeds."""
     row, _ = taskmod.new(proj, "T")
     ops.add(proj, row["id"], "a")
     p = _file(proj, row["id"])
     # keep the number: an unticked, unnumbered line would be a NEW item to the merge
     p.write_text(p.read_text().replace("- [ ] #001 a", "- [ ] #001 a (md edited)"))
-    with pytest.raises(ValueError, match="unsynced"):
-        ops.add(proj, row["id"], "b")
-    with pytest.raises(ValueError, match="unsynced"):
-        ops.set_state(proj, f"{row['id']}#001", "done")
-    problems, _ = rec.sync(proj)
-    assert problems == []
+    # A1: add auto-syncs the hand edit first — the op succeeds and the edit is kept
     out = ops.add(proj, row["id"], "b")
     assert "#002 b" in out
+    assert db_item(proj, row["id"], "001")["text"] == "a (md edited)"
+    # a malformed unsynced edit (duplicate number) aborts the next write command
+    p.write_text(p.read_text().replace("- [ ] #002 b",
+                                       "- [ ] #002 b\n- [ ] #002 dup"))  # duplicate → problem
+    with pytest.raises(ValueError, match="unsynced md edits"):
+        ops.set_state(proj, f"{row['id']}#001", "done")
+    assert db_item(proj, row["id"], "001")["state"] == "todo"  # untouched
 
 
 def test_add_group_and_after(proj):

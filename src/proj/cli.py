@@ -441,16 +441,16 @@ def render(record_type: str | None = typer.Option(None, "--record-type"),
     """DB → md (no md input). No args = every record + views; else one type/record."""
     cfg = _cfg()
     try:
-        drift = rec.md_drift(cfg)
-        if drift:
-            typer.echo(f"warning: unsynced md edits will be overwritten by this "
-                       f"render: {', '.join(drift)} — run `proj sync` first",
-                       err=True)
+        # A1: render is a write command — ingest unsynced hand edits first so
+        # they are never clobbered (problems abort before any file is written)
+        rec.ensure_synced(cfg)
         if record_type is None:
             written = rec.render_all(cfg)
             typer.echo(f"Rendered {len(written)} file(s)")
             return
         _render_type(cfg, record_type, id)
+    except rec.ProjError as e:
+        _fail(str(e))
     except KeyError as e:
         _fail(f"unknown record_type {e.args[0]!r}")
 

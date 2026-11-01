@@ -92,6 +92,7 @@ class Record:
 
     def add_related(self, cfg: ProjConfig, id_: str, refs: list[str]) -> dict:
         """Attach related records (any type, unordered) to an existing record."""
+        rec.ensure_synced(cfg)  # A1
         db = rec.open_db(cfg)
         try:
             row = rec.by_id(cfg, self.spec, db, id_)
