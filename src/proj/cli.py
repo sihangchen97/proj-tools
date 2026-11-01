@@ -35,6 +35,7 @@ from proj.check import check as run_checks
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
 from proj.core.db import show_date
 from proj.core.templates import resolve_record_type
+from proj.engine import item_ops
 from proj.engine import items as items_mod
 from proj.engine import store as rec
 from proj.engine.record import record_for
@@ -223,7 +224,8 @@ def _dyn_show(name: str, id_: str, history: bool) -> None:
         if parent:
             typer.echo(f"parent: {parent['source']}")
     if spec.items is not None:
-        rendered = items_mod.section_text(db, spec, row)
+        intro = json.loads(row["sections"] or "{}").get(spec.items.section.lower(), "")
+        rendered = items_mod.render_section(items_mod.load(db, row["id"], intro=intro), spec)
         if rendered:
             typer.echo("")
             typer.echo(f"{spec.items.section}:")
@@ -530,16 +532,17 @@ def cl_list():
 
 @item_app.command("ls")
 def item_ls(ref: str | None = typer.Argument(None, help="one record id (omit = every record)"),
+            group: str | None = typer.Option(None, "--group", help="only items of group L"),
             open_only: bool = typer.Option(False, "--open", help="only unclosed items"),
             type_: str | None = typer.Option(None, "--type", help="limit to one record_type"),
             owner: str | None = typer.Option(None, "--owner", help="only items with this owner"),
             overdue: bool = typer.Option(False, "--overdue",
                                         help="only past-due unclosed items")):
-    """List items as `ID#n  state  text  [owner]  [due]` (one record, or across all)."""
+    """List items as `ID#A01  state  text  [owner]  [due]` (one record, or across all)."""
     cfg = _cfg()
     try:
-        lines = items_mod.ls(cfg, ref, open_only=open_only, record_type=type_,
-                             owner=owner, overdue=overdue)
+        lines = item_ops.ls(cfg, ref, group=group, open_only=open_only, record_type=type_,
+                            owner=owner, overdue=overdue)
     except ValueError as e:
         _fail(str(e))
     if not lines:
@@ -550,19 +553,19 @@ def item_ls(ref: str | None = typer.Argument(None, help="one record id (omit = e
 
 @item_app.command("add")
 def item_add(ref: str, text: str,
-             under: int | None = typer.Option(
-                 None, "--under", help="add as a sub-item of #N (N must be top-level)"),
-             after: int | None = typer.Option(None, "--after", help="insert right after #N"),
+             group: str | None = typer.Option(
+                 None, "--group", help="add to group L (default: the ungrouped list)"),
+             after: str | None = typer.Option(None, "--after", help="insert right after ITEM"),
              state: str | None = typer.Option(
                  None, "--state", help="state to start in (default: the first)"),
              note: str = typer.Option("", "--note", help="free text after ' — '"),
              owner: str = typer.Option("", "--owner", help="the owner field (if enabled)"),
              due: str = typer.Option("", "--due", help="a YYYY-MM-DD date (if enabled)")):
-    """Add an item to a record's list (auto-numbered; appended at the end)."""
+    """Add an item to a record's list (auto-numbered; appended at the end of its group)."""
     cfg = _cfg()
     try:
-        typer.echo(items_mod.add(cfg, ref, text, under=under, after=after, state=state,
-                                 note=note, owner=owner, due=due).rstrip())
+        typer.echo(item_ops.add(cfg, ref, text, group=group, after=after, state=state,
+                                note=note, owner=owner, due=due).rstrip())
     except ValueError as e:
         _fail(str(e))
 
@@ -574,7 +577,7 @@ def item_set(item: str, state: str,
     """Set an item's state (e.g. met / missed / done / skipped); optional note/commit."""
     cfg = _cfg()
     try:
-        typer.echo(items_mod.set_state(cfg, item, state, note=note, commit=commit).rstrip())
+        typer.echo(item_ops.set_state(cfg, item, state, note=note, commit=commit).rstrip())
     except ValueError as e:
         _fail(str(e))
 
@@ -586,7 +589,7 @@ def item_check(item: str,
     """Mark an item closed (the first closed state of its checklist)."""
     cfg = _cfg()
     try:
-        typer.echo(items_mod.check(cfg, item, note=note, commit=commit).rstrip())
+        typer.echo(item_ops.check(cfg, item, note=note, commit=commit).rstrip())
     except ValueError as e:
         _fail(str(e))
 
@@ -596,7 +599,7 @@ def item_uncheck(item: str):
     """Re-open an item (back to the first, unclosed state)."""
     cfg = _cfg()
     try:
-        typer.echo(items_mod.uncheck(cfg, item).rstrip())
+        typer.echo(item_ops.uncheck(cfg, item).rstrip())
     except ValueError as e:
         _fail(str(e))
 
@@ -610,32 +613,92 @@ def item_edit(item: str,
     """Edit an item's text / note / owner / due (pass an empty string to clear a field)."""
     cfg = _cfg()
     try:
-        typer.echo(items_mod.edit(cfg, item, text=text, note=note, owner=owner, due=due).rstrip())
+        typer.echo(item_ops.edit(cfg, item, text=text, note=note, owner=owner, due=due).rstrip())
     except ValueError as e:
         _fail(str(e))
 
 
 @item_app.command("mv")
 def item_mv(item: str,
-            after: int | None = typer.Option(None, "--after", help="move right after #N"),
-            first: bool = typer.Option(False, "--first", help="move to the top"),
-            under: int | None = typer.Option(None, "--under", help="re-parent as a sub-item of #N"),
-            top: bool = typer.Option(False, "--top", help="promote to the top level")):
-    """Move an item (its sub-items move with it): exactly one of --after/--first/--under/--top."""
+            group: str | None = typer.Option(
+                None, "--group", help="move into group L (fresh number)"),
+            ungroup: bool = typer.Option(
+                False, "--ungroup", help="move to the ungrouped list (fresh number)"),
+            after: str | None = typer.Option(None, "--after", help="move right after ITEM"),
+            first: bool = typer.Option(False, "--first", help="move to the top of its group")):
+    """Move an item: exactly one of --group/--ungroup/--after/--first.
+    Cross-group moves get a fresh number (the old one is void)."""
     cfg = _cfg()
     try:
-        typer.echo(items_mod.move(
-            cfg, item, after=after, first=first, under=under, top=top).rstrip())
+        typer.echo(item_ops.move(
+            cfg, item, group=group, ungroup=ungroup, after=after, first=first).rstrip())
     except ValueError as e:
         _fail(str(e))
 
 
 @item_app.command("rm")
 def item_rm(item: str):
-    """Remove an item (and any sub-items under it)."""
+    """Remove an item (its number is never reused)."""
     cfg = _cfg()
     try:
-        typer.echo(items_mod.remove(cfg, item).rstrip())
+        typer.echo(item_ops.remove(cfg, item).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+# ---- item groups ----------------------------------------------------------------------
+
+item_group_app = typer.Typer(help="Manage a record's item groups (### L \u00b7 name).")
+item_app.add_typer(item_group_app, name="group")
+
+
+@item_group_app.command("add")
+def item_group_add(ref: str, title: str):
+    """Add a group (the tool assigns the next free letter A-Z; empty groups are kept)."""
+    cfg = _cfg()
+    try:
+        typer.echo(item_ops.group_add(cfg, ref, title).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_group_app.command("rename")
+def item_group_rename(ref: str, letter: str, title: str):
+    """Rename a group (the letters are stable; only the name after ' \u00b7 ' changes)."""
+    cfg = _cfg()
+    try:
+        typer.echo(item_ops.group_rename(cfg, ref, letter, title).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_group_app.command("rm")
+def item_group_rm(ref: str, letter: str,
+                  ungroup_items: bool = typer.Option(
+                      False, "--ungroup-items",
+                      help="keep the group's items as ungrouped (fresh numbers)"),
+                  delete_items: bool = typer.Option(
+                      False, "--delete-items", help="delete the group's items with it")):
+    """Delete a group. When it still holds items, pass exactly one of
+    --ungroup-items / --delete-items."""
+    cfg = _cfg()
+    mode = ("ungroup" if ungroup_items else "delete" if delete_items else None)
+    if ungroup_items == delete_items:
+        _fail("pass exactly one of --ungroup-items / --delete-items")
+    try:
+        typer.echo(item_ops.group_rm(cfg, ref, letter, mode).rstrip())
+    except ValueError as e:
+        _fail(str(e))
+
+
+@item_group_app.command("mv")
+def item_group_mv(ref: str, letter: str,
+                  after: str | None = typer.Option(None, "--after", help="after group B"),
+                  first: bool = typer.Option(False, "--first", help="to the top")):
+    """Move a group (its items keep their numbers): exactly one of --after/--first."""
+    cfg = _cfg()
+    try:
+        typer.echo(item_ops.group_mv(cfg, ref, letter, after=after, first=first).rstrip())
     except ValueError as e:
         _fail(str(e))
 

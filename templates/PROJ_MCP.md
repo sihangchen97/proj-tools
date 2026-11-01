@@ -75,14 +75,16 @@ one of the two. Refused for itself / its own descendants / closed records.
 
 ### `proj_item_ls`
 
-List items as 'ID#n  state  text  [owner]  [due]'. ref: one record id
-(omit = every record); open_only / record_type / owner / overdue filter.
+List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
+(omit = every record); group / open_only / record_type / owner / overdue
+filter.
 
 ### `proj_item_add`
 
-Add an item to a record's checklist (auto-numbered). under: sub-item of
-#N; after: after #N; state/note/owner/due optional. Returns the fresh item
-list.
+Add an item to a record's checklist (auto-numbered, appended to its
+group). group: the group letter L (default the ungrouped list); after:
+insert right after ITEM; state/note/owner/due optional. Returns the fresh
+item list.
 
 ### `proj_item_set`
 
@@ -106,10 +108,30 @@ Returns the fresh item list.
 
 ### `proj_item_mv`
 
-Move an item ('ID#n'): exactly one of after #N / first / under #N / top.
-Sub-items move with it. Returns the fresh item list.
+Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
+ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
+first (top of its group). Cross-group moves get a fresh number. Returns the
+fresh item list.
 
 ### `proj_item_rm`
 
-Remove an item ('ID#n') and its sub-items. Returns the fresh item list.
+Remove an item ('ID#A01'); its number is never reused. Returns the fresh
+item list.
+
+### `proj_item_group_add`
+
+Add a group; the tool assigns the next free letter (A-Z, never reused).
+Returns the fresh item list.
+
+### `proj_item_group_rename`
+
+Rename a group. Returns the fresh item list.
+
+### `proj_item_group_rm`
+
+Delete a group; `items` = 'ungroup' or 'delete' when it holds items.
+
+### `proj_item_group_mv`
+
+Move a group: exactly one of after / first. Returns the fresh item list.
 

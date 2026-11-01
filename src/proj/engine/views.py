@@ -39,11 +39,19 @@ def _item_expansion(r: dict, registry: dict | None, db, depth: int) -> list[str]
     if tspec is None or tspec.items is None or db is None:
         return []
     from proj.engine import items as items_mod  # lazy: views↔items cycle
-    sec = items_mod.section_text(db, tspec, r)
+    sec = items_mod.render_section(items_mod.load(db, r["id"]), tspec)
     if not sec:
         return []
     pad = "  " * (depth + 1)
-    return [f"{pad}{line}" if line.strip() else "" for line in sec.splitlines()]
+    # group headings would break the outer structure: render them as bold lines
+    out = []
+    for line in sec.splitlines():
+        m = re.match(r"^### ([A-Z]) · (.+)$", line)
+        if m:
+            out.append(f"{pad}**{m.group(1)} · {m.group(2)}**")
+        else:
+            out.append(f"{pad}{line}" if line.strip() else "")
+    return out
 
 
 def _task_line(r: dict, depth: int, registry: dict | None,

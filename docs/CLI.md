@@ -26,7 +26,8 @@ proj docs
 
 - **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单向 md→DB，`render` 单向 DB→md。
 - 手写 md 后跑 `proj sync`（或 `proj update`）；只改 DB 后跑 `proj render`。
-- 记录的 `# <标题>` 行**可手改**（编号 id 在文件名 + 首行 marker 里体现）：`sync` 把新标题
+- 记录的 H1 是 `# <ID>. <标题>`：标题文字**可手改**（编号 id 在文件名 + 首行 marker
+  里体现，DB 为准）：`sync` 把新标题
   回收进 DB 并把文件重命名到新 slug（id 不变；changelog 块、`<!-- proj:head … -->`
   围栏内的 metadata 仍由工具维护）。
 - `check` 检查：.proj.lock 模板在、表 schema 匹配模板、md 各 section 与 DB 一致、
@@ -213,29 +214,36 @@ proj hooks install
 ## item
 
 ```
-proj item ls [<REF>] [--open] [--type <TYPE>] [--owner <OWNER>] [--overdue]
-proj item add <REF> <TEXT> [--under <UNDER>] [--after <AFTER>] [--state <STATE>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>]
+proj item ls [<REF>] [--group <GROUP>] [--open] [--type <TYPE>] [--owner <OWNER>] [--overdue]
+proj item add <REF> <TEXT> [--group <GROUP>] [--after <AFTER>] [--state <STATE>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>]
 proj item set <ITEM> <STATE> [--note <NOTE>] [--commit <COMMIT>]
 proj item check <ITEM> [--note <NOTE>] [--commit <COMMIT>]
 proj item uncheck <ITEM>
 proj item edit <ITEM> [--text <TEXT>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>]
-proj item mv <ITEM> [--after <AFTER>] [--first] [--under <UNDER>] [--top]
+proj item mv <ITEM> [--group <GROUP>] [--ungroup] [--after <AFTER>] [--first]
 proj item rm <ITEM>
+proj item group
 ```
 
 - 结构化清单（模板 `items:` 声明的某个 `##` 节）：task 的 Acceptance Criteria、
 plan 的 Success Criteria、debt 的 Repayment Plan、decision 的 Confirmation…
-引用格式 `ID#n`（`T-000001#01`，n 渲染为两位、解析任意宽度）；没有 `items:` 的
-类型用这些命令会报 `has no items`。
-- `add REF TEXT`：自动编号、追加到末尾（`--under`/`--after` 指定位置、`--state`
-起始状态、`--note`/`--owner`/`--due`，后三者需该类型启用对应字段）；返回该记录的
-最新清单。`ls [REF]`：`ID#n  state  text  [owner]  [due]`（省 REF = 全部记录；
-`--open`/`--owner`/`--overdue` 过滤，`--type` 限定类型）。
+编号**全局三位**（无分组 `#001`；分组内 `#A01`，组字母 A–Z 由工具分配、永不复用），
+解析任意宽度。引用格式 `ID#n`（`T-000001#A01`）；没有 `items:` 的类型用这些
+命令会报 `has no items`。
+- `add REF TEXT`：自动编号、追加到其组末尾（`--group L` 指定组、`--after ITEM`
+指定位置、`--state` 起始状态、`--note`/`--owner`/`--due`，后三者需该类型启用对应
+字段）；返回该记录的最新清单。`ls [REF]`：`ID#n  state  text  [owner]  [due]`
+（省 REF = 全部记录；`--group`/`--open`/`--owner`/`--overdue` 过滤，`--type`
+限定类型）。
 - `set ID#n STATE`：改状态（如 met / missed / done / skipped）；`check ID#n` =
 标记为已处理（该清单第一个 closed 状态）；`uncheck ID#n` = 重开（回到第一个未处理
 状态）；`edit ID#n --text/--note/--owner/--due`（空串清除该字段）。
-- `mv ID#n`：`--after`/`--first`/`--under`/`--top` 四选一（子项随之移动）；
-`rm ID#n` 删除（连同其子项）。
+- `mv ID#n`：`--group L`/`--ungroup`/`--after ITEM`/`--first` 四选一。
+**跨组移动换新编号**（旧编号作废，永不复用）；组内移动只换顺序。
+`rm ID#n` 删除（编号永不复用）。
+- 分组是清单里的 `### L · 名称` 标题（空组也保留）：`item group add REF 名称`
+分配下一个字母；`group rename` 改名称（字母不变）；`group rm REF L`
+（有成员须 `--ungroup-items`/`--delete-items`）；`group mv REF L --after B/--first`。
 - 操作前 md 必须与 DB 一致，否则报 `unsynced edits`（先 `proj sync`）。处于
 `gates.items` 门禁状态的记录（如 Archived plan）拒绝重开/新增未处理项。
 - 进度：任务带清单时，其行末在 Tasks 块与 `TASKLIST.md` 显示 `n/m`（已处理/总数）。

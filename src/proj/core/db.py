@@ -33,7 +33,7 @@ import yaml
 
 from proj.core.templates import ItemsSpec, ItemState, RecordTypeSpec
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 LOCK_FILE = ".proj.lock"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
@@ -97,14 +97,26 @@ class Db:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS items "
             "(record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE, "
-            "seq INTEGER NOT NULL, pos INTEGER NOT NULL, depth INTEGER NOT NULL DEFAULT 0, "
+            "grp TEXT NOT NULL DEFAULT '', "
+            "seq INTEGER NOT NULL, pos INTEGER NOT NULL, "
             "text TEXT NOT NULL, state TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', "
             "owner TEXT NOT NULL DEFAULT '', due TEXT NOT NULL DEFAULT '', "
             "created TEXT NOT NULL, closed_at TEXT NOT NULL DEFAULT '', "
-            "\"commit\" TEXT NOT NULL DEFAULT '', "
-            "PRIMARY KEY (record_id, seq))")
+            "\"commit\" TEXT NOT NULL DEFAULT '', trailer TEXT NOT NULL DEFAULT '', "
+            "PRIMARY KEY (record_id, grp, seq))")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS item_counters "
+            "(record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE, "
+            "grp TEXT NOT NULL DEFAULT '', last INTEGER NOT NULL, "
+            "PRIMARY KEY (record_id, grp))")
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS item_groups "
+            "(record_id TEXT NOT NULL REFERENCES records(id) ON DELETE CASCADE, "
+            "letter TEXT NOT NULL, title TEXT NOT NULL, pos INTEGER NOT NULL, "
+            "trailer TEXT NOT NULL DEFAULT '', "
+            "PRIMARY KEY (record_id, letter))")
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS item_group_counter "
             "(record_id TEXT PRIMARY KEY REFERENCES records(id) ON DELETE CASCADE, "
             "last INTEGER NOT NULL)")
     # ---- template-driven schema -------------------------------------------
@@ -308,64 +320,55 @@ class Db:
 
     # ---- item checklists (items.py) -----------------------------------------
 
-    def items_of(self, record_id: str) -> list[dict]:
-        """This record's items in display order (pos)."""
-        return [dict(r) for r in self.conn.execute(
+    def items_load(self, record_id: str) -> dict:
+        """The whole checklist state: items in display order (pos), groups in
+        order (pos), and the two counters (last_seq per group, last_group).
+        The counters may exceed the stored numbers (they never decrease)."""
+        items = [dict(r) for r in self.conn.execute(
             "SELECT * FROM items WHERE record_id=? ORDER BY pos", (record_id,))]
-
-    def item_get(self, record_id: str, seq: int) -> dict | None:
+        groups = [dict(r) for r in self.conn.execute(
+            "SELECT * FROM item_groups WHERE record_id=? ORDER BY pos", (record_id,))]
+        last_seq = {r["grp"]: r["last"] for r in self.conn.execute(
+            "SELECT grp, last FROM item_counters WHERE record_id=?", (record_id,))}
         row = self.conn.execute(
-            "SELECT * FROM items WHERE record_id=? AND seq=?", (record_id, seq)).fetchone()
-        return dict(row) if row else None
+            "SELECT last FROM item_group_counter WHERE record_id=?", (record_id,)).fetchone()
+        return {"items": items, "groups": groups,
+                "last_seq": last_seq, "last_group": row["last"] if row else 0}
 
-    def item_last(self, record_id: str) -> int:
-        """The record's current item counter (last seq issued) without bumping —
-        a read-only peek so the next n seqs can be predicted (items.validate)."""
-        row = self.conn.execute(
-            "SELECT last FROM item_counters WHERE record_id=?", (record_id,)).fetchone()
-        return row["last"] if row else 0
-
-    def item_next_seq(self, record_id: str) -> int:
-        """Bump the record's counter and return the new (never-reused) seq."""
-        row = self.conn.execute(
-            "SELECT last FROM item_counters WHERE record_id=?", (record_id,)).fetchone()
-        last = row["last"] if row else 0
-        seq = last + 1
-        self.conn.execute(
-            "INSERT OR REPLACE INTO item_counters (record_id, last) VALUES (?, ?)",
-            (record_id, seq))
-        return seq
-
-    def item_insert(self, record_id: str, *, seq: int, pos: int, depth: int, text: str,
-                    state: str, note: str = "", owner: str = "", due: str = "",
-                    created: str | None = None, closed_at: str = "", commit: str = "") -> None:
-        self.conn.execute(
-            "INSERT INTO items (record_id, seq, pos, depth, text, state, note, owner, due, "
-            "created, closed_at, \"commit\") VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (record_id, seq, pos, depth, text, state, note, owner, due,
-             created or utc_now(), closed_at, commit))
-        self.conn.commit()
-
-    def item_update(self, record_id: str, seq: int, **cols: str | int) -> None:
-        if not cols:
-            return
-        sets = ", ".join(f"{k}=?" for k in cols)
-        self.conn.execute(
-            f"UPDATE items SET {sets} WHERE record_id=? AND seq=?",
-            (*cols.values(), record_id, seq))
-        self.conn.commit()
-
-    def item_delete(self, record_id: str, seq: int) -> None:
-        self.conn.execute("DELETE FROM items WHERE record_id=? AND seq=?", (record_id, seq))
-        self.conn.commit()
-
-    def item_reorder(self, record_id: str, ordered_seqs: list[int]) -> None:
-        """pos = position in the given seq order (children keep their relative order)."""
-        for pos, seq in enumerate(ordered_seqs):
-            self.conn.execute(
-                "UPDATE items SET pos=? WHERE record_id=? AND seq=?",
-                (pos, record_id, seq))
-        self.conn.commit()
+    def items_save(self, record_id: str, items: list[dict], groups: list[dict],
+                   last_seq: dict[str, int], last_group: int) -> None:
+        """One transaction: delete and re-insert all items/groups of the record,
+        then update both counters to max(old, new) — a counter never decreases."""
+        cur = self.conn.cursor()
+        try:
+            cur.execute("DELETE FROM items WHERE record_id=?", (record_id,))
+            cur.execute("DELETE FROM item_groups WHERE record_id=?", (record_id,))
+            for pos, it in enumerate(items):
+                cur.execute(
+                    "INSERT INTO items (record_id, grp, seq, pos, text, state, note, "
+                    "owner, due, created, closed_at, \"commit\", trailer) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (record_id, it["grp"], it["seq"], pos, it["text"], it["state"],
+                     it.get("note", ""), it.get("owner", ""), it.get("due", ""),
+                     it.get("created") or utc_now(), it.get("closed_at", ""),
+                     it.get("commit", ""), it.get("trailer", "")))
+            for pos, g in enumerate(groups):
+                cur.execute(
+                    "INSERT INTO item_groups (record_id, letter, title, pos, trailer) "
+                    "VALUES (?,?,?,?,?)",
+                    (record_id, g["letter"], g["title"], pos, g.get("trailer", "")))
+            for grp, last in last_seq.items():
+                cur.execute(
+                    "INSERT INTO item_counters (record_id, grp, last) VALUES (?,?,?) "
+                    "ON CONFLICT(record_id, grp) DO UPDATE SET last=max(last, excluded.last)",
+                    (record_id, grp, last))
+            cur.execute(
+                "INSERT INTO item_group_counter (record_id, last) VALUES (?,?) "
+                "ON CONFLICT(record_id) DO UPDATE SET last=max(last, excluded.last)",
+                (record_id, last_group))
+            self.conn.commit()
+        finally:
+            cur.close()
 
     def close(self) -> None:
         self.conn.close()

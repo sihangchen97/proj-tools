@@ -68,9 +68,10 @@ def check(cfg: ProjConfig) -> list[str]:
                     if s.kind != "text":
                         continue
                     if spec.items is not None and s.name == spec.items.section:
-                        # the items section = stored intro + the DB item list
+                        # the items section renders entirely from the DB state
                         from proj.engine import items as items_mod  # lazy
-                        if items_mod.md_drift_one(cfg, spec, row):
+                        if items_mod.drift(db, spec, row,
+                                           raw_sections.get(s.name.lower(), "")):
                             problems.append(f"{p.name}: section '{s.name}' (items) differs "
                                             f"from DB — run `proj sync`")
                         continue
@@ -80,7 +81,8 @@ def check(cfg: ProjConfig) -> list[str]:
                                         f"— run `proj sync`")
                 if spec.items is not None and row["status"] in spec.gates_items:
                     from proj.engine import items as items_mod  # lazy
-                    un = items_mod.open_items(db, spec, row)
+                    un = items_mod.open_items(
+                        items_mod.load(db, row["id"]), spec)
                     if un:
                         problems.append(
                             f"{p.name}: {spec.record_type} {row['id']} is {row['status']!r} "

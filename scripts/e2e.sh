@@ -143,7 +143,8 @@ expect_fail "move task under closed plan" -- $PROJ task move "$UNPARENTED" --par
 ITASK=$($PROJ task new "Items task" -y | grep -oE '[A-Z]+-[0-9]{6}')
 expect_ok "item add #001"            "#001" -- $PROJ item add "$ITASK" "tests pass"
 expect_ok "item add #002"            "#002" -- $PROJ item add "$ITASK" "docs updated"
-expect_ok "item add #003 sub-item"   "#003" -- $PROJ item add "$ITASK" "sub-detail" --under 1
+expect_ok "item group add A"         "### A" -- $PROJ item group add "$ITASK" "Checks"
+expect_ok "item add to group A01"    "#A01" -- $PROJ item add "$ITASK" "sub-detail" --group A
 expect_ok "item ls (open)"          "$ITASK#001" -- $PROJ item ls "$ITASK" --open
 # the first closed item promotes Draft → In Progress (the task profile's promote)
 expect_ok "item check #001"          "- [x] #001" -- $PROJ item check "$ITASK#001"
@@ -152,7 +153,7 @@ $PROJ task show "$ITASK" | grep -qF "status: In Progress" \
 # gates.items: done is blocked while any criterion is still unclosed
 expect_fail "done blocked by open item" -- $PROJ task done "$ITASK"
 $PROJ item check "${ITASK}#002" >/dev/null
-$PROJ item check "${ITASK}#003" >/dev/null
+$PROJ item check "${ITASK}#A01" >/dev/null
 expect_ok "done after all items closed" "→ Done" -- $PROJ task done "$ITASK"
 # numbers are monotonic per record: deleting #002 then adding yields #003, not #002
 ITASK2=$($PROJ task new "Items task 2" -y | grep -oE '[A-Z]+-[0-9]{6}')
@@ -160,7 +161,11 @@ $PROJ item add "$ITASK2" "one" >/dev/null
 $PROJ item add "$ITASK2" "two" >/dev/null
 $PROJ item rm "${ITASK2}#002" >/dev/null
 expect_ok "number not reused after rm" "#003" -- $PROJ item add "$ITASK2" "three"
-expect_ok "item mv to first"           "#003" -- $PROJ item mv "${ITASK2}#003" --first
+# a cross-group move gets a FRESH number (#003 → #A01); the old one is void
+$PROJ item group add "$ITASK2" "Later" >/dev/null
+expect_ok "item mv cross-group renumbers" "#A01" -- $PROJ item mv "${ITASK2}#003" --group A
+expect_fail "old number void after move" -- $PROJ item check "${ITASK2}#003"
+expect_ok "item mv to first"           "#001" -- $PROJ item mv "${ITASK2}#001" --first
 expect_fail "bad item ref"             -- $PROJ item check "${ITASK2}#99"
 expect_fail "unknown item state"       -- $PROJ item set "${ITASK2}#001" nosuch
 $PROJ check >/dev/null && ok "check with items" || fail "check with items"

@@ -23,6 +23,7 @@ from proj.check import check as run_checks
 from proj.core.config import load_config, load_project_env
 from proj.core.db import show_date
 from proj.core.templates import resolve_record_type
+from proj.engine import item_ops
 from proj.engine import items as items_mod
 from proj.engine import store as rec
 from proj.engine.record import record_for
@@ -164,7 +165,9 @@ def proj_show(record_type: str, id_: str, root: str | None = None,
         if parent:
             lines.append(f"parent: {parent['source']}")
     if spec.items is not None:
-        rendered = items_mod.section_text(db, spec, row)
+        intro = json.loads(row["sections"] or "{}").get(spec.items.section.lower(), "")
+        rendered = items_mod.render_section(
+            items_mod.load(db, row["id"], intro=intro), spec)
         if rendered:
             lines.append("")
             lines.append(f"{spec.items.section}:")
@@ -267,8 +270,8 @@ def proj_task_move(id_: str, parent: str | None = None, detach: bool = False,
 
 # ---- items (record checklists): the engine in engine/items.py validates refs,
 # unsynced md edits, closed-record re-open and due dates; on success it re-renders
-# and returns the record's fresh item list. item_ref format: ID#nnn (e.g. T-000001#002,
-# zero-padded to 3 digits; parsing accepts any width).
+# and returns the record's fresh item list. item ref format: ID#nnn (T-000001#002
+# ungrouped; T-000001#A01 inside group A — the letter is never reused).
 
 def _item_call(fn, *args, **kwargs) -> str:
     """Shared body for the proj_item_* tools: config + ValueError → 'error:' text.
@@ -281,26 +284,26 @@ def _item_call(fn, *args, **kwargs) -> str:
         return f"error: {e}"
 
 
-def proj_item_ls(ref: str | None = None, open_only: bool = False,
+def proj_item_ls(ref: str | None = None, group: str | None = None, open_only: bool = False,
                  record_type: str | None = None, owner: str | None = None,
                  overdue: bool = False, root: str | None = None) -> str:
     """List items as 'ID#n  state  text  [owner]  [due]'. ref: one record id;
     omitted = every record. open_only: only unclosed items. record_type/owner/
     overdue: filters (overdue = past-due and still unclosed)."""
-    lines = _item_call(items_mod.ls, ref, open_only=open_only, record_type=record_type,
-                       owner=owner, overdue=overdue, root=root)
+    lines = _item_call(item_ops.ls, ref, group=group, open_only=open_only,
+                       record_type=record_type, owner=owner, overdue=overdue, root=root)
     return lines or "(no items)"
 
 
-def proj_item_add(ref: str, text: str, under: int | None = None, after: int | None = None,
+def proj_item_add(ref: str, text: str, group: str | None = None, after: str | None = None,
                   state: str | None = None, note: str = "", owner: str = "", due: str = "",
                   root: str | None = None) -> str:
-    """Add an item to a record's checklist (auto-numbered; appended at the end).
-    ref: the record id. under: add as a sub-item of #N (N must be top-level).
-    after: insert right after #N. state: start in a non-default state.
+    """Add an item to a record's checklist (auto-numbered; appended at the end of
+    its group). ref: the record id. group: add to group L (default ungrouped).
+    after: insert right after ITEM. state: start in a non-default state.
     note/owner/due: optional fields (owner/due only where the type enables them).
     Returns the record's fresh item list."""
-    return _item_call(items_mod.add, ref, text, under=under, after=after, state=state,
+    return _item_call(item_ops.add, ref, text, group=group, after=after, state=state,
                       note=note, owner=owner, due=due, root=root)
 
 
@@ -310,20 +313,20 @@ def proj_item_set(item: str, state: str, note: str | None = None, commit: str = 
     states). note: also set the note; commit: a git commit hash. Returns the
     record's fresh item list. Refused when it would un-close an item on a record
     in a closed (gates.items) status."""
-    return _item_call(items_mod.set_state, item, state, note=note, commit=commit, root=root)
+    return _item_call(item_ops.set_state, item, state, note=note, commit=commit, root=root)
 
 
 def proj_item_check(item: str, note: str | None = None, commit: str = "",
                     root: str | None = None) -> str:
     """Mark an item ('ID#n') closed — the first closed state of its checklist.
     Returns the record's fresh item list."""
-    return _item_call(items_mod.check, item, note=note, commit=commit, root=root)
+    return _item_call(item_ops.check, item, note=note, commit=commit, root=root)
 
 
 def proj_item_uncheck(item: str, root: str | None = None) -> str:
     """Re-open an item ('ID#n') — back to the first, unclosed state. Refused on a
     record in a closed (gates.items) status. Returns the fresh item list."""
-    return _item_call(items_mod.uncheck, item, root=root)
+    return _item_call(item_ops.uncheck, item, root=root)
 
 
 def proj_item_edit(item: str, text: str | None = None, note: str | None = None,
@@ -331,25 +334,52 @@ def proj_item_edit(item: str, text: str | None = None, note: str | None = None,
                    root: str | None = None) -> str:
     """Edit an item's ('ID#n') text / note / owner / due; an empty string clears
     a field. Returns the record's fresh item list."""
-    return _item_call(items_mod.edit, item, text=text, note=note, owner=owner, due=due,
+    return _item_call(item_ops.edit, item, text=text, note=note, owner=owner, due=due,
                       root=root)
 
 
-def proj_item_mv(item: str, after: int | None = None, first: bool = False,
-                 under: int | None = None, top: bool = False,
+def proj_item_mv(item: str, group: str | None = None, ungroup: bool = False,
+                 after: str | None = None, first: bool = False,
                  root: str | None = None) -> str:
-    """Move an item ('ID#n') within its checklist: exactly one of after (right
-    after #N) / first (to the top) / under (re-parent as a sub-item of #N) /
-    top (promote to the top level). Its sub-items move with it. Returns the
-    fresh item list."""
-    return _item_call(items_mod.move, item, after=after, first=first, under=under,
-                      top=top, root=root)
+    """Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
+    ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
+    first (to the top of its group). Cross-group moves get a fresh number (the
+    old one is void). Returns the fresh item list."""
+    return _item_call(item_ops.move, item, group=group, ungroup=ungroup, after=after,
+                      first=first, root=root)
 
 
 def proj_item_rm(item: str, root: str | None = None) -> str:
-    """Remove an item ('ID#n') and any sub-items under it. Returns the fresh item
-    list (with the also-removed sub-items named)."""
-    return _item_call(items_mod.remove, item, root=root)
+    """Remove an item ('ID#A01'); its number is never reused. Returns the fresh
+    item list."""
+    return _item_call(item_ops.remove, item, root=root)
+
+
+def proj_item_group_add(ref: str, title: str, root: str | None = None) -> str:
+    """Add a group to a record's checklist; the tool assigns the next free letter
+    (A-Z, never reused). Returns the fresh item list."""
+    return _item_call(item_ops.group_add, ref, title, root=root)
+
+
+def proj_item_group_rename(ref: str, letter: str, title: str,
+                           root: str | None = None) -> str:
+    """Rename a group (letters are stable; only the name changes). Returns the
+    fresh item list."""
+    return _item_call(item_ops.group_rename, ref, letter, title, root=root)
+
+
+def proj_item_group_rm(ref: str, letter: str, items: str | None = None,
+                       root: str | None = None) -> str:
+    """Delete a group. When it still holds items, `items` must be 'ungroup'
+    (fresh ungrouped numbers) or 'delete'."""
+    return _item_call(item_ops.group_rm, ref, letter, items_mode=items, root=root)
+
+
+def proj_item_group_mv(ref: str, letter: str, after: str | None = None,
+                       first: bool = False, root: str | None = None) -> str:
+    """Move a group (its items keep their numbers): exactly one of after (group
+    B) / first. Returns the fresh item list."""
+    return _item_call(item_ops.group_mv, ref, letter, after=after, first=first, root=root)
 
 
 # ---- MCP tools (thin async wrappers; exposed tool names match the CLI verbs) ----
@@ -455,23 +485,26 @@ async def _t_task_move(id_: str, parent: str | None = None, detach: bool = False
 
 
 @mcp.tool(name="proj_item_ls")
-async def _t_item_ls(ref: str | None = None, open_only: bool = False,
-                     record_type: str | None = None, owner: str | None = None,
-                     overdue: bool = False, root: str | None = None) -> str:
-    """List items as 'ID#n  state  text  [owner]  [due]'. ref: one record id
-    (omit = every record); open_only / record_type / owner / overdue filter."""
-    return _safe(proj_item_ls, ref, open_only, record_type, owner, overdue, root)
+async def _t_item_ls(ref: str | None = None, group: str | None = None,
+                     open_only: bool = False, record_type: str | None = None,
+                     owner: str | None = None, overdue: bool = False,
+                     root: str | None = None) -> str:
+    """List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
+    (omit = every record); group / open_only / record_type / owner / overdue
+    filter."""
+    return _safe(proj_item_ls, ref, group, open_only, record_type, owner, overdue, root)
 
 
 @mcp.tool(name="proj_item_add")
-async def _t_item_add(ref: str, text: str, under: int | None = None,
-                      after: int | None = None, state: str | None = None,
+async def _t_item_add(ref: str, text: str, group: str | None = None,
+                      after: str | None = None, state: str | None = None,
                       note: str = "", owner: str = "", due: str = "",
                       root: str | None = None) -> str:
-    """Add an item to a record's checklist (auto-numbered). under: sub-item of
-    #N; after: after #N; state/note/owner/due optional. Returns the fresh item
-    list."""
-    return _safe(proj_item_add, ref, text, under, after, state, note, owner, due, root)
+    """Add an item to a record's checklist (auto-numbered, appended to its
+    group). group: the group letter L (default the ungrouped list); after:
+    insert right after ITEM; state/note/owner/due optional. Returns the fresh
+    item list."""
+    return _safe(proj_item_add, ref, text, group, after, state, note, owner, due, root)
 
 
 @mcp.tool(name="proj_item_set")
@@ -507,18 +540,49 @@ async def _t_item_edit(item: str, text: str | None = None, note: str | None = No
 
 
 @mcp.tool(name="proj_item_mv")
-async def _t_item_mv(item: str, after: int | None = None, first: bool = False,
-                     under: int | None = None, top: bool = False,
+async def _t_item_mv(item: str, group: str | None = None, ungroup: bool = False,
+                     after: str | None = None, first: bool = False,
                      root: str | None = None) -> str:
-    """Move an item ('ID#n'): exactly one of after #N / first / under #N / top.
-    Sub-items move with it. Returns the fresh item list."""
-    return _safe(proj_item_mv, item, after, first, under, top, root)
+    """Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
+    ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
+    first (top of its group). Cross-group moves get a fresh number. Returns the
+    fresh item list."""
+    return _safe(proj_item_mv, item, group, ungroup, after, first, root)
 
 
 @mcp.tool(name="proj_item_rm")
 async def _t_item_rm(item: str, root: str | None = None) -> str:
-    """Remove an item ('ID#n') and its sub-items. Returns the fresh item list."""
+    """Remove an item ('ID#A01'); its number is never reused. Returns the fresh
+    item list."""
     return _safe(proj_item_rm, item, root)
+
+
+@mcp.tool(name="proj_item_group_add")
+async def _t_item_group_add(ref: str, title: str, root: str | None = None) -> str:
+    """Add a group; the tool assigns the next free letter (A-Z, never reused).
+    Returns the fresh item list."""
+    return _safe(proj_item_group_add, ref, title, root)
+
+
+@mcp.tool(name="proj_item_group_rename")
+async def _t_item_group_rename(ref: str, letter: str, title: str,
+                               root: str | None = None) -> str:
+    """Rename a group. Returns the fresh item list."""
+    return _safe(proj_item_group_rename, ref, letter, title, root)
+
+
+@mcp.tool(name="proj_item_group_rm")
+async def _t_item_group_rm(ref: str, letter: str, items: str | None = None,
+                           root: str | None = None) -> str:
+    """Delete a group; `items` = 'ungroup' or 'delete' when it holds items."""
+    return _safe(proj_item_group_rm, ref, letter, items, root)
+
+
+@mcp.tool(name="proj_item_group_mv")
+async def _t_item_group_mv(ref: str, letter: str, after: str | None = None,
+                           first: bool = False, root: str | None = None) -> str:
+    """Move a group: exactly one of after / first. Returns the fresh item list."""
+    return _safe(proj_item_group_mv, ref, letter, after, first, root)
 
 
 def main():

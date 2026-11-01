@@ -45,7 +45,7 @@ def test_seed_decision_content(proj):
 def test_lock_written_and_consistent(proj):
     lock = dbmod.read_lock(proj.root)
     assert lock is not None
-    assert lock["schema_version"] == 5
+    assert lock["schema_version"] == dbmod.SCHEMA_VERSION
     assert "decision" in lock["record_types"]
     # lock spec round-trips to the same schema
     specs = dbmod.specs_from_lock(lock)

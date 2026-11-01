@@ -375,10 +375,10 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     for sec in spec.sections:
         lines += [f"## {sec.name}", ""]
         if spec.items is not None and sec.name == spec.items.section:
-            # the items section = stored intro + the DB-owned item list; the item
-            # lines carry trailing hard-break spaces — do not strip (they keep
-            # the re-parsed md byte-compatible with the DB render, no drift)
-            lines.append(items_mod.section_text(db, spec, row))
+            # the items section renders entirely from the DB state (the intro
+            # lives in the sections JSON alongside the item lines)
+            lines.append(items_mod.render_section(
+                items_mod.load(db, row["id"]), spec) or "")
         else:
             lines.append(sections.get(sec.name.lower(), "").strip())
         lines.append("")
@@ -405,9 +405,8 @@ def md_drift(cfg: ProjConfig) -> list[str]:
                 continue
             stored = json.loads(row["sections"] or "{}")
             if spec.items is not None:
-                # the items section = stored intro + the DB item list (items.merge)
                 from proj.engine import items as items_mod  # lazy: store↔items cycle
-                if items_mod.md_drift_one(cfg, spec, row):
+                if items_mod.drift(db, spec, row, raw_sections.get(spec.items.section.lower(), "")):
                     out.append(p.name)
                     continue
             for s in spec.sections:
@@ -745,14 +744,18 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         # only its intro (text before the list) is stored in the section. Validate
         # fully before any write; the items write + changelog + promote follow.
         if spec.items is not None:
+            sections.pop(spec.items.section.lower(), None)  # not stored separately
+        db.set(spec, u, sections=json.dumps(sections, ensure_ascii=False))
+        # the items section: sync last (after the text sections) — it writes
+        # its own intro into the sections JSON; a problem leaves everything untouched
+        if spec.items is not None:
             from proj.engine import items as items_mod  # lazy: store↔items cycle
-            raw_items = raw_sections.get(spec.items.section.lower(), "")
-            problems, intro = items_mod.validate(db, spec, row, raw_items, p.name)
+            problems, n = items_mod.sync_section(
+                db, spec, db.get(spec, u),
+                raw_sections.get(spec.items.section.lower(), ""), p.name)
             if problems:
                 return problems, []
-            sections[spec.items.section.lower()] = intro
-            items_mod.ingest(db, spec, row, raw_items, notes, p.name)
-        db.set(spec, u, sections=json.dumps(sections, ensure_ascii=False))
+            notes += n
         # one_sentence: md wins (hand-written result/progress), DB otherwise
         db.set(spec, u, one_sentence=md_summary(text) or (row.get("one_sentence") or ""))
         # record_type-specific ingest side effects (base: no-op)
@@ -783,15 +786,19 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         sections[TASKS_BLOCK_KEY] = md_tasks_block(text)
     # adopted md: the items section is parsed the same way — every line becomes
     # a NEW item (items.adopt); the intro stays in the stored section
+    notes: list[str] = []
     if spec.items is not None:
+        sections.pop(spec.items.section.lower(), None)
         from proj.engine import items as items_mod  # lazy: store↔items cycle
-        raw_items = raw_sections.get(spec.items.section.lower(), "")
-        problems, intro = items_mod.validate(db, spec, db.get(spec, id_), raw_items, p.name)
+        # adopted md: every line becomes a NEW item — the record is fresh, so
+        # no number can refer to it (strip_numbers)
+        problems, n = items_mod.sync_section(
+            db, spec, db.get(spec, id_),
+            raw_sections.get(spec.items.section.lower(), ""), p.name,
+            strip_numbers=True)
         if problems:
             return problems, []
-        sections[spec.items.section.lower()] = intro
-        notes: list[str] = []
-        items_mod.ingest(db, spec, db.get(spec, id_), raw_items, notes, p.name)
+        notes += n
     db.set(spec, id_, sections=json.dumps(sections, ensure_ascii=False))
     # adopt: same record_type hook, fresh row; promotion notes are dropped
     from proj.engine.record import record_for  # lazy: record↔store cycle
