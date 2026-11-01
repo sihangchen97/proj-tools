@@ -1,4 +1,4 @@
-"""RecordType registry from YAML profiles (v3: profile = schema, DB = storage).
+"""RecordType registry from YAML profiles (profile = schema, DB = storage).
 
 A profile file declares a record_type's table schema and behavior:
 

@@ -1,4 +1,4 @@
-"""`proj init` — scaffold, lock, and adoption (v3). Idempotent."""
+"""`proj init` — scaffold, lock, and adoption. Idempotent."""
 from __future__ import annotations
 
 import json

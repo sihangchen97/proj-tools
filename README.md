@@ -6,8 +6,7 @@ SQLite as source of truth, Markdown as the human/LLM input channel.
 
 Design doc (kept outside the git repo, in `plans/` locally):
 `plans/PLAN.md` — architecture, record types, CLI surface, release state and
-the open work list. Superseded v1/v2/v3 designs live in
-`tobedelete/plans-superseded/` (archaeology only, not authoritative).
+the open work list.
 
 ## Install / develop
 
