@@ -34,10 +34,8 @@ from typer.main import get_command as _to_click_command
 from proj import scaffold
 from proj.check import check as run_checks
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
-from proj.core.db import show_date
 from proj.core.templates import resolve_record_type
-from proj.engine import item_ops
-from proj.engine import items as items_mod
+from proj.engine import item_ops, present
 from proj.engine import store as rec
 from proj.engine.record import record_for
 from proj.hooks import install as hooks_install
@@ -202,13 +200,12 @@ def _dyn_list(name: str | None, status: str | None) -> list[dict]:
     for n in names:
         for r in record_for(n, reg).list(cfg, status):
             parent = db.parent_of(r["id"])
-            parent = f"  (parent {parent['source']})" if parent else ""
-            typer.echo(
-                f"{r['id']:<8} {reg[n].status_display(r['status']):<24} "
-                f"{r['title']}{parent}")
             rows.append({"id": r["id"], "type": n, "status": r["status"],
                          "title": r["title"], "parent": (parent["source"] if parent else None)})
     db.close()
+    for row in rows:
+        parent = f"  (parent {row['parent']})" if row["parent"] else ""
+        typer.echo(f"{row['id']:<8} {row['status']:<24} {row['title']}{parent}")
     if not rows:
         typer.echo("(no records)" + (f" with status {status!r}" if status else ""))
     return rows
@@ -216,8 +213,9 @@ def _dyn_list(name: str | None, status: str | None) -> list[dict]:
 
 def _dyn_show(name: str | None, id_: str, history: bool, json_out: bool = False) -> None:
     """Show one record (from DB); `name` may be None — the id then resolves
-    across every record_type (C5: `proj show T-000001`). With `json_out` the
-    result is a JSON object (C10) and nothing else is printed."""
+    across every record_type (C5: `proj show T-000001`). Formatting is shared
+    with the MCP server (engine/present.py, D5); with `json_out` the result is
+    a JSON object (C10) and nothing else is printed."""
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
     db = rec.open_db(cfg)
@@ -226,45 +224,12 @@ def _dyn_show(name: str | None, id_: str, history: bool, json_out: bool = False)
     if row is None:
         db.close()
         _fail(f"{(name + ' ' if name else '') + id_} not found")
+    text, data = present.show(spec, row, db, history=history)
+    db.close()
     if json_out:
-        parent = db.parent_of(row["id"])
-        data = {"id": row["id"], "type": spec.record_type, "title": row["title"],
-                "status": row["status"], "created": row["created"],
-                "one_sentence": row.get("one_sentence") or None,
-                "commit": row.get("commit") or None,
-                "parent": (parent["source"] if parent else None)}
-        logs = db.logs(row["id"])
-        data["changelog"] = [{"date": e["date"], "category": e["category"],
-                              "text": rec._log_body(e, spec)} for e in logs]
-        db.close()
         typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
         return
-    typer.echo(f"id: {row['id']}")
-    typer.echo(f"title: {row['title']}")
-    typer.echo(f"status: {row['status']}")
-    typer.echo(f"created: {show_date(row['created'])}")
-    if row.get("one_sentence"):
-        typer.echo(f"one_sentence: {row['one_sentence']}")
-    if row.get("commit"):
-        typer.echo(f"commit: {row['commit']}")
-    if spec.record_type == "task":
-        parent = db.parent_of(row["id"])
-        if parent:
-            typer.echo(f"parent: {parent['source']}")
-    if spec.items is not None:
-        state = items_mod.load(db, row["id"], spec)
-        state.intro = items_mod._intro_of(spec, row)
-        rendered = items_mod.render_section(state, spec)
-        if rendered:
-            typer.echo("")
-            typer.echo(f"{spec.items.section}:")
-            typer.echo(rendered)
-    logs = db.logs(row["id"])
-    db.close()
-    if history:
-        for e in logs:
-            typer.echo(f"  {show_date(e['date'])}  [{e['category']}] "
-                       f"{rec._log_body(e, spec)}")
+    typer.echo(text)
 
 
 def _dyn_verb(name: str, verb: str, id_: str, title: str | None, summary: str | None,

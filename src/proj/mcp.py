@@ -1,9 +1,23 @@
-"""MCP server for proj (stdio) — thin wrappers over the same engine functions as the CLI.
+"""MCP server for proj (stdio) — one tool per CLI command (D1), thin wrappers
+over the same engine functions as the CLI.
 
 Run: `proj-mcp` (registered in pyproject [project.scripts]).
 Every tool takes an optional `root` (absolute project path, = the CLI `--root`);
 default = the current directory (no walking up). Returns human-readable text;
-on validation failure the full error message is returned (agent-readable).
+on validation failure a clean 'error: …' message is returned (D4: ProjError and
+sqlite3.Error alike, no tracebacks).
+
+D2: tool names = `proj_` + the CLI command path (proj_item_add, proj_task_move,
+…); parameters are `id`, not `id_`; `record_type` is OPTIONAL wherever the id
+carries its type (the id decides; pass it only to be explicit). The former
+`proj_update_record` is `proj_update` now (the global `update` is gone; the
+CLI's per-record `update` is the only one left). `proj_verb` stays the generic
+`proj_verb(id, verb, …)` — the one tool whose name does not follow a command
+path (verbs differ per type).
+
+D3: each tool is registered ONCE — FastMCP accepts sync functions, so there is
+no async wrapper with a duplicated docstring. D5: `show`/`list` formatting
+lives in engine/present.py, shared with the CLI.
 
 IDs are `{code}-{digits}` (7 chars, e.g. DEC-0001, T-000001); the suffix is
 DIGITS ONLY — no letter overflow (once the all-digit space is used up, new ids
@@ -21,10 +35,9 @@ from mcp.server import MCPServer
 from proj import scaffold
 from proj.check import check as run_checks
 from proj.core.config import load_config, load_project_env
-from proj.core.db import ProjError, show_date
+from proj.core.db import ProjError
 from proj.core.templates import resolve_record_type
-from proj.engine import item_ops
-from proj.engine import items as items_mod
+from proj.engine import item_ops, present
 from proj.engine import store as rec
 from proj.engine.record import record_for
 from proj.record_types import changelog as cl
@@ -48,31 +61,61 @@ def _cfg(root: str | None, strict: bool = True):
 
 
 def _safe(fn, *args) -> str:
-    """Run a pure tool body; config-discovery failures become clean 'error:' text."""
+    """D4: run a tool body; ProjError (engine) and sqlite3.Error alike become a
+    clean 'error: …' — never a raw traceback."""
     import sqlite3
     try:
         return fn(*args)
     except (ProjError, sqlite3.Error) as e:
         return f"error: {e}"
+    except ValueError as e:
+        return f"error: {e}"
 
 
-def _rtype(record_type: str, reg: dict) -> str | None:
-    """Canonical record_type (name or code, case-insensitive); None if unknown."""
+def _rtype(record_type: str | None, reg: dict) -> str | None:
+    """Canonical record_type (name or code, case-insensitive); None if unknown
+    or not given."""
+    if not record_type:
+        return None
     try:
         return resolve_record_type(record_type, reg)
     except ValueError:
         return None
 
 
-def _fmt_rows(rows: list[dict], status: str | None) -> str:
-    if not rows:
-        return "(no records)" + (f" with status {status!r}" if status else "")
-    return "\n".join(f"{r['id']:<8} {r['status']:<24} {r['title']}" for r in rows)
+def _resolve(root: str | None, record_type: str | None, id_: str) -> tuple:
+    """(cfg, spec, row) for a record id (D2): the id carries the type, so
+    `record_type` is optional — an explicit one must still MATCH the id's type.
+    Raises ValueError on any failure (clean 'error: …' via _safe)."""
+    cfg = _cfg(root)
+    reg = rec.load_registry(cfg.root)
+    if record_type:
+        spec = _rtype(record_type, reg)
+        if spec is None:
+            raise ValueError("unknown record_type (name or code, case-insensitive)")
+        db = rec.open_db(cfg)
+        row = rec.by_id(cfg, reg[spec], db, id_)
+        db.close()
+        if row is None:
+            raise ValueError(f"{spec} {id_} not found")
+        return cfg, reg[spec], row
+    db = rec.open_db(cfg)
+    spec, row = rec.ref_record(cfg, db, id_)
+    db.close()
+    if row is None:
+        raise ValueError(f"{id_} not found in any record_type")
+    return cfg, spec, row
 
 
-# ---- pure tool bodies (tests/test_mcp.py calls these directly) ----------------
+# ---- pure tool bodies (tests/test_mcp.py calls these directly; D3: the SAME
+# function is registered as the MCP tool, so the docstring below IS the tool
+# description — write it for the agent) ------------------------------------------
 
 def proj_init(root: str | None = None, profile: str = "default") -> str:
+    """Scaffold a new project: files, DB tables (lock wins over templates), seed,
+    adopt. root: absolute project path (default: the current directory).
+    profile: default plus additive names (cv, infra, quality, …); the choice is
+    pinned in .proj.lock — repeat inits append new profiles."""
     cfg = _cfg(root, strict=False)
     try:
         created = scaffold.init(cfg, [profile])
@@ -87,9 +130,12 @@ def proj_new(record_type: str, title: str, root: str | None = None,
              supersede: str | None = None, parent: str | None = None,
              related: str | None = None, commit: str | None = None,
              summary: str | None = None) -> str:
-    """Create a record. supersede: comma-separated ids being replaced, same type;
-    related: comma-separated record ids, any type (unordered);
-    parent: parent record id, any type (task only); commit: git commit hash."""
+    """Create a record from its template (DB insert + rendered md).
+    record_type: registered type (decision/task/plan/debt/incident/experiment/…).
+    supersede: ids being replaced, same type, comma-separated.
+    related: related record ids, any type, comma-separated (unordered).
+    parent: parent record id (task only). commit: git commit hash.
+    summary: one-sentence summary."""
     cfg = _cfg(root)
     reg = rec.load_registry(cfg.root)
     record_type = _rtype(record_type, reg)
@@ -115,7 +161,9 @@ def proj_new(record_type: str, title: str, root: str | None = None,
 
 
 def proj_sync(files: str | None = None, root: str | None = None) -> str:
-    """md → DB (validate, normalize) → re-render all md. files: comma-separated paths."""
+    """md → DB (validate, normalize) → re-render all md. files: comma-separated
+    paths (default: all managed dirs). FAIL lines mean the DB was not fully
+    updated."""
     cfg = _cfg(root)
     file_list = [f.strip() for f in (files or "").split(",") if f.strip()] or None
     try:
@@ -128,7 +176,53 @@ def proj_sync(files: str | None = None, root: str | None = None) -> str:
     return "OK — synced and re-rendered"
 
 
+def proj_adopt(files: str | None = None, root: str | None = None) -> str:
+    """Absorb pre-existing md files into the DB (id marker if present, else an
+    id check). files: comma-separated paths (default: all managed dirs)."""
+    cfg = _cfg(root)
+    file_list = [Path(f.strip()) for f in (files or "").split(",") if f.strip()] or None
+    problems, notes = rec.adopt(cfg, file_list)
+    out = [f"FAIL  {p}" for p in problems] + [f"note: {n}" for n in notes]
+    if problems:
+        return "\n".join(out)
+    return "OK — adopted and re-rendered"
+
+
+def proj_render(ref: str | None = None, root: str | None = None) -> str:
+    """Regenerate md from the DB (no md input). ref: comma-separated record ids
+    and/or record_types (default: every record + every view). Unsynced hand
+    edits are ingested first (problems abort before any file is written)."""
+    cfg = _cfg(root)
+    refs = [r.strip() for r in (ref or "").split(",") if r.strip()]
+    try:
+        rec.ensure_synced(cfg)
+        if not refs:
+            return f"Rendered {len(rec.render_all(cfg))} file(s)"
+        reg = rec.load_registry(cfg.root)
+        db = rec.open_db(cfg)
+        out = []
+        try:
+            for r in refs:
+                spec, row = rec.ref_record(cfg, db, r)
+                if row is None:
+                    if r not in reg:
+                        raise ValueError(f"unknown record or record_type {r!r}")
+                    spec, rows = reg[r], db.all(reg[r])
+                else:
+                    rows = [row]
+                for row in rows:
+                    p = rec.file_path(cfg, spec, row)
+                    p.write_text(rec.render_record(spec, row, db, reg), encoding="utf-8")
+                    out.append(f"Rendered {p.relative_to(cfg.root)}")
+        finally:
+            db.close()
+        return "\n".join(out)
+    except (ValueError, rec.ProjError) as e:
+        return f"error: {e}"
+
+
 def proj_check(root: str | None = None) -> str:
+    """Validate DB ↔ lock ↔ templates ↔ md invariants. 'OK' or FAIL lines."""
     cfg = _cfg(root)
     problems = run_checks(cfg)
     if problems:
@@ -136,109 +230,100 @@ def proj_check(root: str | None = None) -> str:
     return "OK"
 
 
+def proj_ls(status: str | None = None, record_type: str | None = None,
+            root: str | None = None) -> str:
+    """List records (from DB), one line each (id, status, title). record_type:
+    restrict to one type (name or code); omitted = every record_type.
+    status: filter (display name, e.g. 'In Progress')."""
+    cfg = _cfg(root)
+    reg = rec.load_registry(cfg.root)
+    names = [n for n in ([record_type] if record_type else list(reg))
+             if _rtype(n, reg) is not None]
+    if record_type and not names:
+        return "error: unknown record_type (name or code, case-insensitive)"
+    rows = [r for n in names for r in record_for(n, reg).list(cfg, status)]
+    return present.list_lines(rows, status)
+
+
 def proj_list(record_type: str, status: str | None = None, root: str | None = None) -> str:
-    cfg = _cfg(root)
-    reg = rec.load_registry(cfg.root)
-    record_type = _rtype(record_type, reg)
-    if record_type is None:
-        return "error: unknown record_type (name or code, case-insensitive)"
-    return _fmt_rows(record_for(record_type, reg).list(cfg, status), status)
+    """List records of one record_type (alias of proj_ls with the type given)."""
+    return proj_ls(status=status, record_type=record_type, root=root)
 
 
-def proj_show(record_type: str, id_: str, root: str | None = None,
-              history: bool = False) -> str:
-    cfg = _cfg(root)
-    reg = rec.load_registry(cfg.root)
-    record_type = _rtype(record_type, reg)
-    if record_type is None:
-        return "error: unknown record_type (name or code, case-insensitive)"
-    spec = reg[record_type]
+def proj_show(id: str, record_type: str | None = None, history: bool = False,
+              as_json: bool = False, root: str | None = None) -> str:
+    """Show one record (from DB); the id carries its type so record_type is
+    optional. history: append the full changelog. as_json: a JSON object
+    (id/type/title/status/created/summary/parent/changelog) instead of text."""
+    try:
+        cfg, spec, row = _resolve(root, record_type, id)
+    except ValueError as e:
+        return f"error: {e}"
     db = rec.open_db(cfg)
-    row = rec.by_id(cfg, spec, db, id_)
-    if row is None:
+    try:
+        text, data = present.show(spec, row, db, history=history)
+    finally:
         db.close()
-        return f"error: {record_type} {id_} not found"
-    lines = [f"id: {row['id']}", f"title: {row['title']}",
-             f"status: {row['status']}", f"created: {show_date(row['created'])}"]
-    if row.get("one_sentence"):
-        lines.append(f"one_sentence: {row['one_sentence']}")
-    if row.get("commit"):
-        lines.append(f"commit: {row['commit']}")
-    if spec.record_type == "task":
-        parent = db.parent_of(row["id"])
-        if parent:
-            lines.append(f"parent: {parent['source']}")
-    if spec.items is not None:
-        state = items_mod.load(db, row["id"], spec)
-        state.intro = items_mod._intro_of(spec, row)
-        rendered = items_mod.render_section(state, spec)
-        if rendered:
-            lines.append("")
-            lines.append(f"{spec.items.section}:")
-            lines.append(rendered)
-    if history:
-        for e in db.logs(row["id"]):
-            lines.append(f"  {show_date(e['date'])}  [{e['category']}] "
-                         f"{rec._log_body(e, spec)}")
-    db.close()
-    return "\n".join(lines)
+    return json.dumps(data, indent=2, ensure_ascii=False) if as_json else text
 
 
-def proj_update_record(record_type: str, id_: str, title: str | None = None,
-                       summary: str | None = None, message: str | None = None,
-                       root: str | None = None) -> str:
-    """Update a record's title / summary. message: optionally append a changelog
-    entry ('Category: text'). title change also renames the md file (id-slug.md)."""
-    cfg = _cfg(root)
-    reg = rec.load_registry(cfg.root)
-    record_type = _rtype(record_type, reg)
-    if record_type is None:
-        return "error: unknown record_type (name or code, case-insensitive)"
+def proj_open(id: str, root: str | None = None) -> str:
+    """Open a record's md file path for the agent to read/edit (no editor).
+    On the next write command (or proj_sync) the edit is ingested into the DB."""
+    try:
+        cfg, spec, row = _resolve(root, None, id)
+    except ValueError as e:
+        return f"error: {e}"
+    return str(rec.file_path(cfg, spec, row).relative_to(cfg.root))
+
+
+def proj_update(id: str, record_type: str | None = None, title: str | None = None,
+                summary: str | None = None, message: str | None = None,
+                root: str | None = None) -> str:
+    """Update a record's title / summary (a title change renames its md file);
+    message: optionally append a changelog entry ('Category: text'). The id
+    carries the type — record_type is optional."""
     if title is None and summary is None and not message:
         return "error: nothing to update — pass title / summary / message"
     try:
-        row = rec.update_record(cfg, record_type, id_,
+        cfg, spec, row = _resolve(root, record_type, id)
+    except ValueError as e:
+        return f"error: {e}"
+    try:
+        row = rec.update_record(cfg, spec.record_type, row["id"],
                                 title=title, summary=summary, message=message)
     except ValueError as e:
         return f"error: {e}"
-    return f"{record_type} {row['id']}: title → {row['title']}"
+    return f"{spec.record_type} {row['id']}: title → {row['title']}"
 
 
-def proj_verb(record_type: str, verb: str, id_: str, title: str | None = None,
-              summary: str | None = None, message: str | None = None,
-              root: str | None = None) -> str:
-    """Run a template verb (a state-machine step) on a record.
-    verb must be one the record_type's template declares (e.g. decision accept,
-    plan activate, task done). `from: Any` verbs work from any status.
+def proj_verb(id: str, verb: str, record_type: str | None = None,
+              title: str | None = None, summary: str | None = None,
+              message: str | None = None, root: str | None = None) -> str:
+    """Run a template verb (a state-machine step) on a record, e.g.
+    `('DEC-0002','accept')`, `('PLN-0001','activate')`, `('T-000001','done')`.
+    The id carries the type — record_type is optional. verb must be one the
+    type's template declares; `from: Any` verbs work from any status.
     title/summary/message: optionally also update them after the step
     (message appends a changelog entry, 'Category: text')."""
-    cfg = _cfg(root)
-    reg = rec.load_registry(cfg.root)
-    record_type = _rtype(record_type, reg)
-    if record_type is None:
-        return "error: unknown record_type (name or code, case-insensitive)"
     try:
-        row = record_for(record_type, reg).transition(cfg, verb, id_)
+        cfg, spec, row = _resolve(root, record_type, id)
+    except ValueError as e:
+        return f"error: {e}"
+    try:
+        row = record_for(spec.record_type, rec.load_registry(cfg.root)).transition(
+            cfg, verb, row["id"])
         if title is not None or summary is not None or message:
-            row = rec.update_record(cfg, record_type, row["id"],
+            row = rec.update_record(cfg, spec.record_type, row["id"],
                                     title=title, summary=summary, message=message)
     except ValueError as e:
         return f"error: {e}"
-    return f"{record_type} {row['id']}: status → {row['status']}"
-
-
-def proj_update(root: str | None = None) -> str:
-    """sync all + re-render every view (TASKLIST.md, CHANGELOG.md, view sections)."""
-    cfg = _cfg(root)
-    problems, notes = rec.sync(cfg, None)
-    out = [f"FAIL  {p}" for p in problems] + [f"note: {n}" for n in notes]
-    if problems:
-        return "\n".join(out)
-    return "OK — updated"
+    return f"{spec.record_type} {row['id']}: status → {row['status']}"
 
 
 def proj_info(root: str | None = None, as_json: bool = False) -> str:
-    """What this directory manages + which verbs change it (for humans and MCP)."""
+    """What this project manages (record_types, counts, statuses) + the verb
+    cheatsheet (which verb moves which record where, with its gate)."""
     cfg = _cfg(root)
     d = rec.info(cfg)
     if as_json:
@@ -247,7 +332,8 @@ def proj_info(root: str | None = None, as_json: bool = False) -> str:
 
 
 def proj_changelog_add(entry: str, version: str | None = None, root: str | None = None) -> str:
-    """Add an entry: 'Category: text' (Added/Changed/Fixed/…; plain text ok)."""
+    """Add a CHANGELOG.md entry: 'Category: text' (Added/Changed/Fixed/…; plain
+    text ok). version: default the Unreleased placeholder."""
     cfg = _cfg(root)
     try:
         cl.add(cfg, entry, version)
@@ -256,17 +342,44 @@ def proj_changelog_add(entry: str, version: str | None = None, root: str | None 
     return "Added entry"
 
 
-def proj_task_move(id_: str, parent: str | None = None, detach: bool = False,
+def proj_changelog_version(name: str | None = None, bump: str | None = None,
+                           root: str | None = None) -> str:
+    """Release a version: move Unreleased into a version (name: the version,
+    e.g. v0.1.0; bump: major | minor | patch from the latest). Exactly one."""
+    cfg = _cfg(root)
+    try:
+        used = cl.version_bump(cfg, name, bump)
+    except ValueError as e:
+        return f"error: {e}"
+    return f"Released {used}"
+
+
+def proj_changelog_release_notes(version: str, root: str | None = None) -> str:
+    """Print one version's CHANGELOG section (for PR/tag bodies)."""
+    cfg = _cfg(root)
+    try:
+        return cl.release_notes(cfg, version).rstrip()
+    except ValueError as e:
+        return f"error: {e}"
+
+
+def proj_changelog_list(root: str | None = None) -> str:
+    """List released versions (newest first): 'vX.Y.Z  date'."""
+    cfg = _cfg(root)
+    return "\n".join(f"{v}  {d}" for v, d in cl.show_versions(cfg)) or "(no versions)"
+
+
+def proj_task_move(id: str, parent: str | None = None, detach: bool = False,
                    root: str | None = None) -> str:
     """Re-home an existing task: parent = the new parent record id (any type),
-    detach = True to remove the parent edge entirely (the task becomes Unparented).
-    Exactly one of parent/detach. Refused when the target is the task itself, one
-    of its own descendants (cycle), or a closed record (gates.tasks state)."""
+    detach = True to remove the parent edge entirely (the task becomes
+    Unparented). Exactly one of parent/detach. Refused when the target is the
+    task itself, one of its own descendants (cycle), or a closed record."""
     cfg = _cfg(root)
     try:
         if bool(parent) == detach:
             return "error: pass exactly one of parent (id) or detach=true"
-        row = taskmod.move(cfg, id_, parent)
+        row = taskmod.move(cfg, id, parent)
         return f"{row['id']}: parent → {parent if parent else 'none (Unparented)'}"
     except ValueError as e:
         return f"error: {e}"
@@ -279,65 +392,69 @@ def proj_task_move(id_: str, parent: str | None = None, detach: bool = False,
 
 def _item_call(fn, *args, **kwargs) -> str:
     """Shared body for the proj_item_* tools: config + ValueError → 'error:' text.
-    `root` travels in kwargs (like every other tool arg). `ls` returns a list (joined
-    here); the other ops return a str (the record's fresh item list)."""
+    `root` travels in kwargs (like every other tool arg). `ls` returns a list
+    (joined here); the other ops return a str (the record's fresh item list)."""
     try:
         result = fn(_cfg(kwargs.pop("root", None)), *args, **kwargs)
         return "\n".join(result) if isinstance(result, list) else result.rstrip()
-    except ValueError as e:
+    except (ValueError, ProjError) as e:
         return f"error: {e}"
 
 
 def proj_item_ls(ref: str | None = None, group: str | None = None, open_only: bool = False,
                  record_type: str | None = None, owner: str | None = None,
-                 overdue: bool = False, root: str | None = None) -> str:
-    """List items as 'ID#n  state  text  [owner]  [due]'. ref: one record id;
-    omitted = every record. open_only: only unclosed items. record_type/owner/
-    overdue: filters (overdue = past-due and still unclosed)."""
+                 overdue: bool = False, as_json: bool = False,
+                 root: str | None = None) -> str:
+    """List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
+    (omit = every record); group / open_only / record_type / owner / overdue
+    filter. as_json: a JSON array of the lines."""
     lines = _item_call(item_ops.ls, ref, group=group, open_only=open_only,
                        record_type=record_type, owner=owner, overdue=overdue, root=root)
-    return lines or "(no items)"
+    if lines.startswith("error:"):
+        return lines
+    lines = [] if lines == "(no items)" else lines.splitlines()
+    if as_json:
+        return json.dumps(lines, indent=2, ensure_ascii=False)
+    return "\n".join(lines) or "(no items)"
 
 
 def proj_item_add(ref: str, text: str, group: str | None = None, after: str | None = None,
                   state: str | None = None, note: str = "", owner: str = "", due: str = "",
                   root: str | None = None) -> str:
-    """Add an item to a record's checklist (auto-numbered; appended at the end of
-    its group). ref: the record id. group: add to group L (default ungrouped).
-    after: insert right after ITEM. state: start in a non-default state.
-    note/owner/due: optional fields (owner/due only where the type enables them).
-    Returns the record's fresh item list."""
+    """Add an item to a record's checklist (auto-numbered, appended to its
+    group). group: the group letter L (default the ungrouped list); after:
+    insert right after ITEM; state/note/owner/due optional. Returns the fresh
+    item list."""
     return _item_call(item_ops.add, ref, text, group=group, after=after, state=state,
                       note=note, owner=owner, due=due, root=root)
 
 
 def proj_item_set(item: str, state: str, note: str | None = None, commit: str = "",
                   root: str | None = None) -> str:
-    """Set an item's state (item = 'ID#n', state = one of the type's checklist
-    states). note: also set the note; commit: a git commit hash. Returns the
-    record's fresh item list. Refused when it would un-close an item on a record
-    in a closed (gates.items) status."""
+    """Set an item's state (item = 'ID#n'). note / commit optional. Returns the
+    fresh item list. Refused when it would un-close an item on a record in a
+    closed (gates.items) status."""
     return _item_call(item_ops.set_state, item, state, note=note, commit=commit, root=root)
 
 
 def proj_item_check(item: str, note: str | None = None, commit: str = "",
                     root: str | None = None) -> str:
-    """Mark an item ('ID#n') closed — the first closed state of its checklist.
-    Returns the record's fresh item list."""
+    """Mark an item ('ID#n') closed (first closed state). Returns the fresh item
+    list."""
     return _item_call(item_ops.check, item, note=note, commit=commit, root=root)
 
 
 def proj_item_uncheck(item: str, root: str | None = None) -> str:
-    """Re-open an item ('ID#n') — back to the first, unclosed state. Refused on a
-    record in a closed (gates.items) status. Returns the fresh item list."""
+    """Re-open an item ('ID#n') (first unclosed state). Returns the fresh item
+    list."""
     return _item_call(item_ops.uncheck, item, root=root)
 
 
 def proj_item_edit(item: str, text: str | None = None, note: str | None = None,
                    owner: str | None = None, due: str | None = None,
                    root: str | None = None) -> str:
-    """Edit an item's ('ID#n') text / note / owner / due; an empty string clears
-    a field. Returns the record's fresh item list."""
+    """Edit an item's ('ID#n') text / note / owner / due (empty string clears).
+    Returns the fresh item list."""
     return _item_call(item_ops.edit, item, text=text, note=note, owner=owner, due=due,
                       root=root)
 
@@ -347,8 +464,8 @@ def proj_item_mv(item: str, group: str | None = None, ungroup: bool = False,
                  root: str | None = None) -> str:
     """Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
     ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
-    first (to the top of its group). Cross-group moves get a fresh number (the
-    old one is void). Returns the fresh item list."""
+    first (top of its group). Cross-group moves get a fresh number. Returns the
+    fresh item list."""
     return _item_call(item_ops.move, item, group=group, ungroup=ungroup, after=after,
                       first=first, root=root)
 
@@ -360,233 +477,42 @@ def proj_item_rm(item: str, root: str | None = None) -> str:
 
 
 def proj_item_group_add(ref: str, title: str, root: str | None = None) -> str:
-    """Add a group to a record's checklist; the tool assigns the next free letter
-    (A-Z, never reused). Returns the fresh item list."""
+    """Add a group; the tool assigns the next free letter (A-Z, never reused).
+    Returns the fresh item list."""
     return _item_call(item_ops.group_add, ref, title, root=root)
 
 
-def proj_item_group_rename(ref: str, letter: str, title: str,
-                           root: str | None = None) -> str:
-    """Rename a group (letters are stable; only the name changes). Returns the
-    fresh item list."""
+def proj_item_group_rename(ref: str, letter: str, title: str, root: str | None = None) -> str:
+    """Rename a group. Returns the fresh item list."""
     return _item_call(item_ops.group_rename, ref, letter, title, root=root)
 
 
 def proj_item_group_rm(ref: str, letter: str, items: str | None = None,
                        root: str | None = None) -> str:
-    """Delete a group. When it still holds items, `items` must be 'ungroup'
-    (fresh ungrouped numbers) or 'delete'."""
+    """Delete a group; `items` = 'ungroup' or 'delete' when it holds items."""
     return _item_call(item_ops.group_rm, ref, letter, items_mode=items, root=root)
 
 
 def proj_item_group_mv(ref: str, letter: str, after: str | None = None,
                        first: bool = False, root: str | None = None) -> str:
-    """Move a group (its items keep their numbers): exactly one of after (group
-    B) / first. Returns the fresh item list."""
+    """Move a group: exactly one of after / first. Returns the fresh item list."""
     return _item_call(item_ops.group_mv, ref, letter, after=after, first=first, root=root)
 
 
-# ---- MCP tools (thin async wrappers; exposed tool names match the CLI verbs) ----
+# ---- D3: register the functions above ONCE (FastMCP accepts sync functions —
+# there is no separate async wrapper with a duplicated docstring) ---------------
 
-@mcp.tool(name="proj_init")
-async def _t_init(root: str | None = None, profile: str = "default") -> str:
-    """Scaffold a new project: files, DB tables (lock wins over templates), seed, adopt.
-    root: absolute project path (default: the current directory).
-    profile: default plus additive names (cv, infra, quality, ...); the choice
-    is pinned in .proj.lock — repeat inits append new profiles."""
-    return _safe(proj_init, root, profile)
-
-
-@mcp.tool(name="proj_new")
-async def _t_new(record_type: str, title: str, root: str | None = None,
-                 supersede: str | None = None, parent: str | None = None,
-                 related: str | None = None, commit: str | None = None,
-                 summary: str | None = None) -> str:
-    """Create a record from its template (DB insert + rendered md).
-    record_type: registered type (decision/task/plan/debt/incident/experiment/…).
-    supersede: ids being replaced, same type, comma-separated.
-    related: related record ids, any type, comma-separated (unordered).
-    parent: parent record id (task only). commit: git commit hash.
-    summary: one-sentence summary."""
-    return _safe(proj_new, record_type, title, root, supersede, parent, related,
-                 commit, summary)
-
-
-@mcp.tool(name="proj_sync")
-async def _t_sync(files: str | None = None, root: str | None = None) -> str:
-    """md → DB (validate, normalize) → re-render all md. files: comma-separated
-    paths (default: all managed dirs). FAIL lines mean the DB was not fully updated."""
-    return _safe(proj_sync, files, root)
-
-
-@mcp.tool(name="proj_check")
-async def _t_check(root: str | None = None) -> str:
-    """Validate DB ↔ lock ↔ templates ↔ md invariants. 'OK' or FAIL lines."""
-    return _safe(proj_check, root)
-
-
-@mcp.tool(name="proj_list")
-async def _t_list(record_type: str, status: str | None = None,
-                  root: str | None = None) -> str:
-    """List records of a record_type (from DB), optionally filtered by status."""
-    return _safe(proj_list, record_type, status, root)
-
-
-@mcp.tool(name="proj_show")
-async def _t_show(record_type: str, id_: str, root: str | None = None,
-                  history: bool = False) -> str:
-    """Show one record (from DB); history: append its full changelog."""
-    return _safe(proj_show, record_type, id_, root, history)
-
-
-@mcp.tool(name="proj_verb")
-async def _t_verb(record_type: str, verb: str, id_: str, title: str | None = None,
-                  summary: str | None = None, message: str | None = None,
-                  root: str | None = None) -> str:
-    """Run a template verb (a state-machine step) on a record, e.g.
-    `('decision','accept','DEC-0002')`, `('plan','activate','PLN-0001')`,
-    `('task','done','T-000001')`. verb must be one the record_type's template
-    declares; title/summary/message optionally also update it after the step."""
-    return _safe(proj_verb, record_type, verb, id_, title, summary, message, root)
-
-
-@mcp.tool(name="proj_update_record")
-async def _t_update_record(record_type: str, id_: str, title: str | None = None,
-                           summary: str | None = None, message: str | None = None,
-                           root: str | None = None) -> str:
-    """Update a record's title / summary (a title change renames its md file);
-    message: optionally append a changelog entry ('Category: text')."""
-    return _safe(proj_update_record, record_type, id_, title, summary, message, root)
-
-
-@mcp.tool(name="proj_update")
-async def _t_update(root: str | None = None) -> str:
-    """sync all + re-render every view (TASKLIST.md, CHANGELOG.md, view sections)."""
-    return _safe(proj_update, root)
-
-
-@mcp.tool(name="proj_info")
-async def _t_info(root: str | None = None, as_json: bool = False) -> str:
-    """What this project manages (record_types, counts, statuses) + verb cheatsheet."""
-    return _safe(proj_info, root, as_json)
-
-
-@mcp.tool(name="proj_changelog_add")
-async def _t_changelog_add(entry: str, version: str | None = None,
-                           root: str | None = None) -> str:
-    """Add a CHANGELOG.md entry: 'Category: text' (Added/Changed/Fixed/…; plain
-    text ok). version: default the Unreleased placeholder."""
-    return _safe(proj_changelog_add, entry, version, root)
-
-
-@mcp.tool(name="proj_task_move")
-async def _t_task_move(id_: str, parent: str | None = None, detach: bool = False,
-                       root: str | None = None) -> str:
-    """Move an existing task under a (possibly new) parent record, or detach it.
-    parent: new parent id (any record type); detach: True to unparent. Exactly
-    one of the two. Refused for itself / its own descendants / closed records."""
-    return _safe(proj_task_move, id_, parent, detach, root)
-
-
-@mcp.tool(name="proj_item_ls")
-async def _t_item_ls(ref: str | None = None, group: str | None = None,
-                     open_only: bool = False, record_type: str | None = None,
-                     owner: str | None = None, overdue: bool = False,
-                     root: str | None = None) -> str:
-    """List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
-    (omit = every record); group / open_only / record_type / owner / overdue
-    filter."""
-    return _safe(proj_item_ls, ref, group, open_only, record_type, owner, overdue, root)
-
-
-@mcp.tool(name="proj_item_add")
-async def _t_item_add(ref: str, text: str, group: str | None = None,
-                      after: str | None = None, state: str | None = None,
-                      note: str = "", owner: str = "", due: str = "",
-                      root: str | None = None) -> str:
-    """Add an item to a record's checklist (auto-numbered, appended to its
-    group). group: the group letter L (default the ungrouped list); after:
-    insert right after ITEM; state/note/owner/due optional. Returns the fresh
-    item list."""
-    return _safe(proj_item_add, ref, text, group, after, state, note, owner, due, root)
-
-
-@mcp.tool(name="proj_item_set")
-async def _t_item_set(item: str, state: str, note: str | None = None,
-                      commit: str = "", root: str | None = None) -> str:
-    """Set an item's state (item = 'ID#n'). note / commit optional. Returns the
-    fresh item list."""
-    return _safe(proj_item_set, item, state, note, commit, root)
-
-
-@mcp.tool(name="proj_item_check")
-async def _t_item_check(item: str, note: str | None = None, commit: str = "",
-                        root: str | None = None) -> str:
-    """Mark an item ('ID#n') closed (first closed state). Returns the fresh item
-    list."""
-    return _safe(proj_item_check, item, note, commit, root)
-
-
-@mcp.tool(name="proj_item_uncheck")
-async def _t_item_uncheck(item: str, root: str | None = None) -> str:
-    """Re-open an item ('ID#n') (first unclosed state). Returns the fresh item
-    list."""
-    return _safe(proj_item_uncheck, item, root)
-
-
-@mcp.tool(name="proj_item_edit")
-async def _t_item_edit(item: str, text: str | None = None, note: str | None = None,
-                       owner: str | None = None, due: str | None = None,
-                       root: str | None = None) -> str:
-    """Edit an item's ('ID#n') text / note / owner / due (empty string clears).
-    Returns the fresh item list."""
-    return _safe(proj_item_edit, item, text, note, owner, due, root)
-
-
-@mcp.tool(name="proj_item_mv")
-async def _t_item_mv(item: str, group: str | None = None, ungroup: bool = False,
-                     after: str | None = None, first: bool = False,
-                     root: str | None = None) -> str:
-    """Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
-    ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
-    first (top of its group). Cross-group moves get a fresh number. Returns the
-    fresh item list."""
-    return _safe(proj_item_mv, item, group, ungroup, after, first, root)
-
-
-@mcp.tool(name="proj_item_rm")
-async def _t_item_rm(item: str, root: str | None = None) -> str:
-    """Remove an item ('ID#A01'); its number is never reused. Returns the fresh
-    item list."""
-    return _safe(proj_item_rm, item, root)
-
-
-@mcp.tool(name="proj_item_group_add")
-async def _t_item_group_add(ref: str, title: str, root: str | None = None) -> str:
-    """Add a group; the tool assigns the next free letter (A-Z, never reused).
-    Returns the fresh item list."""
-    return _safe(proj_item_group_add, ref, title, root)
-
-
-@mcp.tool(name="proj_item_group_rename")
-async def _t_item_group_rename(ref: str, letter: str, title: str,
-                               root: str | None = None) -> str:
-    """Rename a group. Returns the fresh item list."""
-    return _safe(proj_item_group_rename, ref, letter, title, root)
-
-
-@mcp.tool(name="proj_item_group_rm")
-async def _t_item_group_rm(ref: str, letter: str, items: str | None = None,
-                           root: str | None = None) -> str:
-    """Delete a group; `items` = 'ungroup' or 'delete' when it holds items."""
-    return _safe(proj_item_group_rm, ref, letter, items, root)
-
-
-@mcp.tool(name="proj_item_group_mv")
-async def _t_item_group_mv(ref: str, letter: str, after: str | None = None,
-                           first: bool = False, root: str | None = None) -> str:
-    """Move a group: exactly one of after / first. Returns the fresh item list."""
-    return _safe(proj_item_group_mv, ref, letter, after, first, root)
+for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
+            proj_ls, proj_list, proj_show, proj_open, proj_update, proj_verb,
+            proj_info,
+            proj_changelog_add, proj_changelog_version, proj_changelog_release_notes,
+            proj_changelog_list,
+            proj_task_move,
+            proj_item_ls, proj_item_add, proj_item_set, proj_item_check,
+            proj_item_uncheck, proj_item_edit, proj_item_mv, proj_item_rm,
+            proj_item_group_add, proj_item_group_rename, proj_item_group_rm,
+            proj_item_group_mv):
+    mcp.tool(name=_fn.__name__)(_fn)
 
 
 def main():

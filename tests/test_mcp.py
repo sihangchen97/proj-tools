@@ -17,13 +17,17 @@ def test_mcp_init_new_status_check_chain(proj):
     assert "Created" in out and "error" not in out
     task_id = out.split("tasks/")[1][:8]  # docs/tasks/T-000001-...
 
-    out = mcp.proj_show("task", task_id, root=root)
+    # D2: the id carries the type — record_type is optional
+    out = mcp.proj_show(task_id, root=root)
     assert f"id: {task_id}" in out and f"parent: {plan_id}" in out
+    # as_json (C10/D5): the same fields as a JSON object
+    out = mcp.proj_show(task_id, as_json=True, root=root)
+    assert f'"id": "{task_id}"' in out and f'"parent": "{plan_id}"' in out
 
-    out = mcp.proj_verb("task", "start", task_id, root=root)
+    out = mcp.proj_verb(task_id, "start", root=root)
     assert f"task {task_id}: status → In Progress" in out
 
-    out = mcp.proj_verb("plan", "activate", plan_id, root=root)
+    out = mcp.proj_verb(plan_id, "activate", root=root)
     assert "Active" in out and "error" not in out
 
     out = mcp.proj_check(root=root)
@@ -32,23 +36,32 @@ def test_mcp_init_new_status_check_chain(proj):
     out = mcp.proj_info(root=root, as_json=True)
     assert '"plan"' in out
 
+    # D1: the formerly missing tools exist and work
+    assert "docs/plans" in mcp.proj_open(plan_id, root=root)
+    assert "Rendered" in mcp.proj_render(plan_id, root=root)
+    assert "OK" in mcp.proj_adopt(root=root)
+    mcp.proj_changelog_add("Added: ship", root=root)
+    assert "Released v" in mcp.proj_changelog_version(bump="minor", root=root)
+    assert "ship" in mcp.proj_changelog_release_notes("v0.1.0", root=root)
+    assert "v0.1.0" in mcp.proj_changelog_list(root=root)
+
 
 def test_mcp_update_record(proj):
     root = str(proj.root)
-    out = mcp.proj_update_record("decision", "DEC-0001",
-                                title="Renamed", summary="one line",
-                                message="Changed: refined", root=root)
+    # D2: proj_update_record is proj_update now (id first, type optional)
+    out = mcp.proj_update("DEC-0001", title="Renamed", summary="one line",
+                          message="Changed: refined", root=root)
     assert "title → Renamed" in out and "error" not in out
-    assert "error" in mcp.proj_update_record("decision", "DEC-0001", root=root)  # nothing
-    assert "error" in mcp.proj_update_record("decision", "DEC-9999", title="x", root=root)
+    assert "error" in mcp.proj_update("DEC-0001", root=root)  # nothing
+    assert "error" in mcp.proj_update("DEC-9999", title="x", root=root)
     # verb also updates after the step (fresh decision: Draft → Accepted + -c)
     out = mcp.proj_new("decision", "Fresh", root=root)
     did = out.rsplit("/", 1)[1].rsplit("-", 1)[0]  # DEC-0002
     assert did.startswith("DEC-")
-    out = mcp.proj_verb("decision", "accept", did, message="Added: ok", root=root)
+    out = mcp.proj_verb(did, "accept", message="Added: ok", root=root)
     assert "Accepted" in out and "error" not in out
     # a comment renders as the status-at-that-moment emoji + the comment text
-    assert "[Added] ✅ ok" in mcp.proj_show("decision", did, history=True, root=root)
+    assert "[Added] ✅ ok" in mcp.proj_show(did, history=True, root=root)
 
 
 def test_mcp_record_type_code_and_case(proj):
@@ -59,7 +72,9 @@ def test_mcp_record_type_code_and_case(proj):
     out = mcp.proj_new("T", "Via code", root=root)
     assert "Created docs/tasks/T-" in out and "error" not in out
     assert mcp.proj_list("debt", root=root)
-    assert "DEC-" in mcp.proj_show("DEC", "DEC-0001", root=root)
+    # an explicit record_type still works and must MATCH the id's type (D2)
+    assert "DEC-" in mcp.proj_show("DEC-0001", record_type="DEC", root=root)
+    assert "error" in mcp.proj_show("DEC-0001", record_type="task", root=root)
 
 
 def test_mcp_error_paths(proj):
@@ -68,20 +83,22 @@ def test_mcp_error_paths(proj):
     # parent must exist in some record_type
     assert "not found in any record_type" in mcp.proj_new("task", "X", parent="ZZZ", root=root)
     # verb must be one the template declares
-    assert "unknown verb" in mcp.proj_verb("task", "explode", "A", root=root)
-    # unknown record_type for a verb
-    assert "unknown record_type" in mcp.proj_verb("nope", "done", "1", root=root)
+    assert "unknown verb" in mcp.proj_verb("T-000001", "explode", root=root)
+    # unknown record_type for a verb (when given explicitly)
+    assert "unknown record_type" in mcp.proj_verb("1", "done", record_type="nope", root=root)
     # show: nonexistent record
-    assert "not found" in mcp.proj_show("decision", "9999", root=root)
+    assert "not found" in mcp.proj_show("9999", root=root)
     # supersede: same-type required (decision cannot supersede a task)
     mcp.proj_new("task", "X", root=root)
     assert "same type required" in mcp.proj_new("decision", "X2", supersede="T-000001", root=root)
+
 
 def test_parent_rejected_for_non_task(proj):
     """A3: proj_new(parent=...) on a non-task record_type errors (was silently
     ignored before); task still accepts it."""
     out = mcp.proj_new("decision", "X", parent="PLN-0001", root=str(proj.root))
     assert "only supported by task" in out
+
 
 def test_safe_returns_clean_error_for_sqlite_and_projerror(proj):
     """D4: _safe returns 'error:' text for sqlite/ProjError instead of a traceback."""
@@ -97,3 +114,77 @@ def test_safe_returns_clean_error_for_sqlite_and_projerror(proj):
 
     assert _safe(boom_sqlite) == "error: database is locked"
     assert _safe(boom_proj) == "error: gate failed"
+
+
+def test_tools_registered_once_sync(proj):
+    """D1/D3: every CLI command has a tool, registered ONCE (no async
+    duplicate), so the tool set is enumerable from the server itself."""
+    import asyncio
+
+    names = {t.name for t in asyncio.run(mcp.mcp.list_tools())}
+    for expected in ("proj_adopt", "proj_render", "proj_open", "proj_ls",
+                     "proj_update", "proj_changelog_version",
+                     "proj_changelog_release_notes", "proj_changelog_list",
+                     "proj_task_move", "proj_item_group_add"):
+        assert expected in names
+    # no leftover old names
+    assert "proj_update_record" not in names
+    # the bodies are the registered tools themselves (single definition, D3)
+    from proj.mcp import proj_show as show_body
+    assert show_body.__name__ == "proj_show"
+
+
+def test_cli_command_coverage(proj):
+    """D1: every CLI command has an MCP tool (the coverage gate, §6.2 #4).
+    Exceptions are installation/dev-only commands listed below. record_types'
+    shared verbs (new/ls/show/update/verb) map to the generic tools; a
+    type-specific one (task move) maps to proj_<type>_<verb>; item group
+    expands to proj_item_group_<verb>."""
+    import asyncio
+    import typer.main
+
+    from proj.cli import app
+
+    tools = {t.name for t in asyncio.run(mcp.mcp.list_tools())}
+    REGISTRY = {"decision", "task", "plan", "debt", "incident", "experiment", "changelog"}
+
+    # explicit exceptions: install/dev-only (no MCP tool by design)
+    EXCEPTIONS = {"docs", "hooks install", "init --zoo"}
+
+    def is_group(c):
+        return hasattr(c, "commands") and bool(c.commands)
+
+    def expected(path):
+        parts = path.split()
+        if path in EXCEPTIONS:
+            return set()
+        if len(parts) == 1:
+            return {f"proj_{parts[0]}"}
+        if parts[0] == "item" and parts[1] == "group" and len(parts) >= 3:
+            return {f"proj_item_group_{parts[2]}"}
+        if parts[0] == "item":
+            return {f"proj_item_{parts[1]}"}
+        if parts[0] == "changelog":
+            return {f"proj_changelog_{parts[1].replace('-', '_')}"}
+        rt, verb = parts[0], parts[1]
+        if verb in ("new", "ls", "list"):
+            return {f"proj_{verb}"} if verb != "list" else {"proj_ls"}
+        if verb in ("show", "update", "verb"):
+            return {"proj_show"} if verb == "show" else {"proj_update", "proj_verb"}
+        # a type-specific verb (task move, ...)
+        return {f"proj_{rt}_{verb}"}
+
+    def walk(c, prefix=""):
+        for name, sub in sorted(c.commands.items()):
+            path = (prefix + " " + name).strip()
+            if is_group(sub):
+                yield from walk(sub, path)
+            else:
+                yield path
+
+    missing = []
+    for path in walk(typer.main.get_command(app)):
+        for tool in expected(path):
+            if tool not in tools:
+                missing.append((path, tool))
+    assert not missing, f"CLI commands without an MCP tool: {missing}"
