@@ -32,6 +32,30 @@ def test_root_points_at_project(proj, tmp_path, monkeypatch):
     assert "OK" in r.output
 
 
+def test_cheatsheet_options_all_exist(proj, monkeypatch):
+    """A8 (§17.1): every option the `proj info` cheatsheet shows must really
+    exist on the command it documents (the RT sub-commands + lifecycle)."""
+    import re
+
+    from typer.main import get_command
+
+    from proj.cli import _build_record_group
+    from proj.engine.store import CHEATSHEET
+
+    def flags(cmd) -> set[str]:
+        out = {o for p in getattr(cmd, "params", []) for o in p.opts}
+        for sub in getattr(cmd, "commands", {}).values():
+            out |= flags(sub)
+        return out
+
+    monkeypatch.chdir(proj.root)
+    allowed = flags(_build_record_group("task")) | flags(get_command(app).commands["info"])
+    long_opts = set(re.findall(r"--[a-z][a-z0-9-]*", CHEATSHEET))
+    short_opts = {"-" + s for s in re.findall(r"(?<![-\w])-([a-z])", CHEATSHEET)}
+    missing = (long_opts | short_opts) - allowed
+    assert not missing, f"cheatsheet options that don't exist: {sorted(missing)}"
+
+
 def test_record_type_code_and_case(proj, monkeypatch):
     """`proj <record_type>` accepts the code (DEC/T/…) and any casing."""
     monkeypatch.chdir(proj.root)

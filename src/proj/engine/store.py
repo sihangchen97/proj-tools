@@ -869,14 +869,15 @@ def adopt(cfg: ProjConfig, files: list[Path] | None = None):
 # ---- info ----------------------------------------------------------------------
 
 CHEATSHEET = """\
-Ops cheatsheet (RT = a record_type — name or code, case-insensitive; VERB = one from its template):
-  new:        proj RT new TITLE [--field name=value] [--parent N] [-s N]
+Ops cheatsheet (RT = a type — name or code, case-insensitive; VERB = one from its template):
+  new:        proj RT new TITLE [--parent N] [-r ID…] [--supersede ID…] [--commit C]
+              [-s "one-line summary"] [-y]
   change:     proj RT <VERB> ID [-t X] [-s X] [-m "…"]  (state machine + optional
                                                          title/summary/message update)
   edit:       proj RT update ID [-t X] [-s X] [-m "…"]  (update title / summary /
                                                          append a changelog entry)
   md edited:  proj sync | proj adopt (first time, unmanaged files)
-  query:      proj RT list | proj RT show ID [--history]
+  query:      proj RT ls [--status S] [--json] | proj RT show ID [--history] [--json]
   overview:   proj info [--json]"""
 
 
