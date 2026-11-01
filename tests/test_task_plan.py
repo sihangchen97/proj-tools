@@ -108,8 +108,6 @@ def test_task_move_rehomes_and_logs(proj):
     logs = db.logs(row["id"])
     db.close()
     assert any("→ none" in e["message"] for e in logs)
-    tl = (proj.root / "TASKLIST.md").read_text()
-    assert "Unparented" in tl and f"{moved['id']}-" in tl
 
 
 def test_task_move_refuses_cycle_self_missing(proj):
@@ -151,42 +149,24 @@ def test_relations_allow_parent_plus_related(proj):
     assert checkmod.check(proj) == []
 
 
-def test_tasklist_membership_derived(proj):
-    """TASKLIST.md is derived: a Draft plan's tasks are hidden, an Active plan
-    shows while it has unfinished descendants, and a closed record's finished
-    tasks disappear; Unparented only lists unfinished tasks."""
-    _plan(proj).new(proj, "P1")
-    draft_task, _ = taskmod.new(proj, "Under draft plan", parent="PLN-0001")
-    tl = (proj.root / "TASKLIST.md").read_text()
-    assert f"{draft_task['id']}-" not in tl  # Draft plan: hidden
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    tl = (proj.root / "TASKLIST.md").read_text()
-    assert f"{draft_task['id']}-" in tl  # Active plan, unfinished task: shown
-    assert "PLN-0001" in tl
-    taskmod.done(proj, draft_task["id"])
-    tl = (proj.root / "TASKLIST.md").read_text()
-    assert f"{draft_task['id']}-" not in tl  # the only task is finished: gone
-    # Unparented: unfinished only
-    un, _ = taskmod.new(proj, "Ad hoc")
-    doomed, _ = taskmod.new(proj, "Doomed ad hoc")
-    taskmod.fail(proj, doomed["id"])
-    tl = (proj.root / "TASKLIST.md").read_text()
-    assert f"{un['id']}-" in tl and f"{doomed['id']}-" not in tl
-
-
 def test_failed_task_rendered_checked_with_emoji(proj):
     """Terminal statuses render [x]; a non-done terminal status (Failed) gets
-    its status emoji before the link; Done gets none. A record section shows
-    its FULL subtree (finished tasks included, for progress)."""
-    _plan(proj).new(proj, "P1")
+    its status emoji before the link; Done gets none. A record's Tasks block
+    shows its FULL subtree (finished tasks included, for progress)."""
+    plan, _ = _plan(proj).new(proj, "P1")
     _plan(proj).transition(proj, "activate", "PLN-0001")
     un, _ = taskmod.new(proj, "Open one", parent="PLN-0001")
     doomed, _ = taskmod.new(proj, "Doomed one", parent="PLN-0001")
     taskmod.fail(proj, doomed["id"])
     done, _ = taskmod.new(proj, "Done one", parent="PLN-0001")
     taskmod.done(proj, done["id"])
-    tl = (proj.root / "TASKLIST.md").read_text()
-    lines = tl.splitlines()
+    md = (proj.root / "docs" / "plans" / f"PLN-0001-{plan['title'].lower()}.md")
+    from proj.engine.store import file_path, load_registry
+    spec = load_registry(proj.root)["plan"]
+    db = rec.open_db(proj)
+    md = file_path(proj, spec, db.get(spec, "PLN-0001"))
+    db.close()
+    lines = md.read_text().splitlines()
     open_line = next(x for x in lines if f"[{un['id']}-" in x)
     doomed_line = next(x for x in lines if f"[{doomed['id']}-" in x)
     done_line = next(x for x in lines if f"[{done['id']}-" in x)
@@ -284,24 +264,6 @@ def test_plan_tree_rendered_any_depth(proj):
     assert f"[{grand['id']}-" in plan_md  # third level still rendered
     # the per-record Tasks block is flat (stored/auto lines, id order)
     assert plan_md.count("- [") >= 3
-
-
-def test_children_rendered_indented_in_main_tasklist(proj):
-    """A plan section in TASKLIST.md: the sub-task sits two levels below the
-    plan root (1 indent under the section, 2 under the parent task)."""
-    _plan(proj).new(proj, "P1")
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    parent_row, _ = taskmod.new(proj, "T1", parent="PLN-0001")
-    sub_row, _ = taskmod.new(proj, "Substep", parent=parent_row["id"])
-    tl = (proj.root / "TASKLIST.md").read_text()
-    lines = tl.splitlines()
-    plan_line = next(i for i, x in enumerate(lines) if "## " in x and "plan PLN-0001" in x)
-    parent_line = next(i for i, x in enumerate(lines) if parent_row["id"] in x)
-    sub_line = next(i for i, x in enumerate(lines) if sub_row["id"] in x)
-    assert parent_line == plan_line + 2
-    assert lines[parent_line].startswith("  - ")
-    assert sub_line == parent_line + 1
-    assert lines[sub_line].startswith("    - ")
 
 
 def test_summary_roundtrip(proj):

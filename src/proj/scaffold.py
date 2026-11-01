@@ -73,7 +73,7 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     # own profiles/<name>.yaml — those override the bundled ones.
 
     add("CHANGELOG.md", "")      # rendered from DB on first update
-    add("TASKLIST.md", "")       # rendered from DB on first update
+    add("WIP.md", "")           # rendered from DB on first update (replaces TASKLIST.md, W1)
 
     # real files copied from templates/ (user-editable afterwards; never
     # re-created once present)

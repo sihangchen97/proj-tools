@@ -467,7 +467,8 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
     R3: when called from inside a write command, pass that command's connection
     (render reads its UNCOMMITTED writes — a fresh connection would not see them
     under WAL); a standalone render opens and closes its own read connection."""
-    from proj.engine.views import render_changelog_md, render_tasklist_md
+    from proj.engine.views import render_changelog_md
+    from proj.engine.wip import render_wip_md  # WIP.md replaces TASKLIST.md (W1)
     reg = load_registry(cfg.root)
     own_db = db is None
     db = open_db(cfg) if own_db else db
@@ -487,7 +488,7 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
                     continue  # unchanged (B1)
                 p.write_text(text, encoding="utf-8")
                 written.append(p)
-        for view in (render_tasklist_md(cfg, db, reg), render_changelog_md(cfg, db)):
+        for view in (render_wip_md(cfg, db, reg), render_changelog_md(cfg, db)):
             if view is None:
                 continue
             if view.path.exists() and view.path.read_text(encoding="utf-8") == view.text:
@@ -891,7 +892,7 @@ def info(cfg: ProjConfig) -> dict:
         }
     cl = db.cl_entries()
     versions = sorted({e["version"] for e in cl})
-    views = ["TASKLIST.md", "CHANGELOG.md"]
+    views = ["WIP.md", "CHANGELOG.md"]
     if "plan" in record_types:
         views.append("plan 'Task List' sections")
     out = {

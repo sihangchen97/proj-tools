@@ -365,11 +365,13 @@ def ch3() -> None:
               "task", "update", T_ONNX, "-t", "ONNX 导出 + TensorRT 部署 (edge)")
     assert md_of(T_ONNX).endswith("onnx-tensorrt-edge.md"), md_of(T_ONNX)
     REP.ok("改名后 md 文件重命名到新 slug（id 稳定）")
-    # TASKLIST membership is derived: the Active plan (past Draft, with an
-    # unfinished descendant task) shows up automatically
+    # WIP.md replaces TASKLIST.md (W1): it is always rendered (empty shows
+    # the placeholder). The WIP membership story (wip add / auto-enter / sync
+    # write-back) is exercised in its own e2e chapter once the `proj wip`
+    # commands land (PLAN §5).
     run("sync")
-    assert P in read("TASKLIST.md"), read("TASKLIST.md")
-    REP.ok("Active plan 出现在 TASKLIST（推导成员）")
+    assert "WIP" in read("WIP.md"), read("WIP.md")
+    REP.ok("WIP.md 已渲染（取代 TASKLIST.md）")
     # the dataset task shows its sub-task tree (checkbox + hyperlink, indented)
     md = read(md_of(T_DS))
     assert f"[{T_QC}-" in md and "<summary>Tasks</summary>" in md

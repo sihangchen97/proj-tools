@@ -10,7 +10,7 @@ from proj.engine import store as rec
 
 def test_init_creates_expected_files(proj):
     root = proj.root
-    for expected in ["CHANGELOG.md", "TASKLIST.md", "CONTRIBUTING.md",
+    for expected in ["CHANGELOG.md", "WIP.md", "CONTRIBUTING.md",
                      ".proj.lock",
                      "docs/decisions/DEC-0001-record-architecture-decisions.md",
                      ".env.example"]:
