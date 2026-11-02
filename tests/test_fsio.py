@@ -22,6 +22,20 @@ def test_write_atomic_creates_and_writes(tmp_path):
     assert p.read_text(encoding="utf-8") == "hello"
 
 
+def test_write_atomic_preserves_the_target_mode(tmp_path):
+    """mkstemp's temp file is 0600 — the replace must not make an existing
+    0644 md private (regression: every store/docs write ran 0600 after S.2)."""
+    p = tmp_path / "f.md"
+    p.write_text("old", encoding="utf-8")
+    p.chmod(0o644)
+    fsio.write_atomic(p, "new")
+    assert oct(p.stat().st_mode & 0o777) == oct(0o644)
+    # a fresh file lands at 0644 (not 0600)
+    fresh = tmp_path / "fresh.md"
+    fsio.write_atomic(fresh, "x")
+    assert oct(fresh.stat().st_mode & 0o777) == oct(0o644)
+
+
 def test_write_atomic_refuses_to_clobber_a_changed_file(tmp_path):
     p = tmp_path / "f.md"
     p.write_text("original", encoding="utf-8")

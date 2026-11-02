@@ -55,6 +55,14 @@ def write_atomic(path: str | Path, text: str, expect_mtime_ns: int | None = None
                 and mtime_of(path) != expect_mtime_ns):
             raise ProjError(f"{path.name} modified while this command was running "
                            f"- re-run it")
+        # mkstemp creates the temp file 0600; keep the target's own mode (or
+        # 0644 for a fresh file) so the replace does not silently make every
+        # written md private.
+        try:
+            mode = path.stat().st_mode & 0o777
+        except OSError:
+            mode = 0o644
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         with suppress(OSError):
