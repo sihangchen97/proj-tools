@@ -6,7 +6,8 @@
 > 从项目目录启动 client（如 Claude Code 在仓库里）不需要任何配置；从全局配置启动
 > （client cwd ≠ 项目）就给每个 tool 传 `root`，或设 `$PROJ_HOME`。
 > 校验失败不抛错，而是返回 `error: …` 文本（agent 可读）。
-> proj 行为不符合文档 / 出现未预期报错时，用 `proj_bug(text, command=…)` 记录现象和命令（写入项目的 `.proj.bugs`，不入库、不进 git）。
+> proj 行为不符合文档 / 出现未预期报错时，用 `proj_bug(text, command=…)` 记录
+> 现象和命令（写入项目的 `.proj.bugs`，不入库、不进 git）。
 
 ## Tools
 
