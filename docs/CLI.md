@@ -89,15 +89,17 @@ proj task fail <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m 
   父任务先于子任务结束、或仍有未处理的 criterion 都会被拒绝。
 - `task fail`：标记无法完成/放弃（Any → Failed）；Failed 不是 done，不计入 done
   日期，但同样满足父任务的门禁。
-- `--parent` 可指向 plan/experiment 等记录或另一个 task（子任务，任意深度）；
-  无 `--parent` 的任务属于虚拟分组 **Unparented**。已关闭的记录
-  （处于其 `gates` 门禁状态的 plan/task）不能再挂新任务，`task move` 同样拒绝；
-  已终止状态的任务想再开时，其祖先处于门禁状态会被拒绝（防重开）。
-- 任意挂有任务的记录，其 md 在 head 围栏下渲染一个 `<details open>` 的 **Tasks**
-  块，**完全由 DB 生成**（不再保留手写的任务行）：每个任务一行 checkbox+超链接
-  （id-slug 文件名，相对路径），按**任务树深度缩进**展开整棵后代树（不封顶，任意
-  深度，完成的任务也保留以体现进度）；有 summary 的任务在其后以斜体跟一行摘要；
-  带清单的任务行末附 `n/m`（已处理/总数）。改挂用 `proj task move`。
+- `--parent` **只指向另一个 task**（子任务，任意深度）；指向 plan/debt 等非 task
+  记录会报错（改用该记录的清单以 `item add REF … --task <T-…>` 引用它）。
+  无 `--parent` 的任务属于虚拟分组 **Unparented**。已关闭的**任务**
+  （处于其 `gates` 门禁状态的 task）不能再挂新子任务，`task move` 同样拒绝；
+  已终止状态的任务想再开时，其祖先任务处于门禁状态会被拒绝（防重开）。
+- 挂有**子任务**的 task，其 md 在 head 围栏下渲染一个 `<details open>` 的
+  **Tasks** 块，**完全由 DB 生成**（不再保留手写的任务行）：每个子任务一行
+  checkbox+超链接（id-slug 文件名，相对路径），按**任务树深度缩进**展开整棵
+  后代树（不封顶，任意深度，完成的子任务也保留以体现进度）；有 summary 的
+  子任务在其后以斜体跟一行摘要；带清单的子任务行末附 `n/m`（已处理/总数）。
+  改挂用 `proj task move`。
 - 全局 `WIP.md`（取代旧 TASKLIST.md）：正在做/进行中的记录自动登记——记录
   进入其类型首个 `wip` 状态（如 task In Progress、plan Active）即入列，退出
   （如任务 Done/Failed）即移除；也可 `proj wip add/return <ID…>` 手动登记/移出。
@@ -166,12 +168,14 @@ Draft → Active → Pending Review → Shelved
           ↑____________ resume ______|
           Active → Pending Review → Archived
 ```
-- 任务通过 `--parent <plan-id>` 挂到 plan 下（不是 plan 里塞任务）；Draft 的
-  plan 名下的任务不进全局 WIP，`activate` 后自动登记。
-- 每个 plan 的 md 有渲染的 **Tasks** 块（名下整棵任务树，扁平列出）。
-- `review`/`shelve`/`archive` 门禁：整棵后代任务树都终止（Done/Failed）才放行；
-  `archive` 另要求 Success Criteria 清单（`proj item check/set`）全部已处理
-  （`shelve` 暂停不设此门禁）。
+- plan **不再当 task 的 parent**（`--parent` 只 task→task）；它跟踪工作的方式是
+  **Work 清单**（`items:` 节）：`proj item add <plan> "构建数据集" --task <T-…>`
+  把一行 item 引用一个 task。被引用的 task 结束时 item 自动跟着关（Done→done、
+  Failed→failed），未结束前不能手动关掉该行。
+- `review`（Active → Pending Review）只要求 plan 处于 Active，无任务门禁。
+- `archive`（Pending Review → Archived）门禁：plan 的 **Work** 与 **Success
+  Criteria** 两条清单（`proj item check/set`）都必须全部已处理（closed）才放行；
+  `shelve`/`freeze` 暂停/冻结不设此门禁。
 
 ## changelog
 
@@ -198,7 +202,7 @@ proj hooks install
 
 ```
 proj item ls [<REF>] [--group <GROUP>] [--open] [--type <TYPE>] [--owner <OWNER>] [--overdue] [--json]
-proj item add <REF> <TEXT> [--group <GROUP>] [--after <AFTER>] [--state <STATE>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>]
+proj item add <REF> <TEXT> [--group <GROUP>] [--after <AFTER>] [--state <STATE>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>] [--task <T-…>]
 proj item set <ITEM> <STATE> [--note <NOTE>] [--commit <COMMIT>]
 proj item check <ITEM> [--note <NOTE>] [--commit <COMMIT>]
 proj item uncheck <ITEM>
@@ -215,9 +219,13 @@ plan 的 Success Criteria、debt 的 Repayment Plan、decision 的 Confirmation�
 命令会报 `has no items`。
 - `add REF TEXT`：自动编号、追加到其组末尾（`--group L` 指定组、`--after ITEM`
 指定位置、`--state` 起始状态、`--note`/`--owner`/`--due`，后三者需该类型启用对应
-字段）；返回该记录的最新清单。`ls [REF]`：`ID#n  state  text  [owner]  [due]`
-（省 REF = 全部记录；`--group`/`--open`/`--owner`/`--overdue` 过滤，`--type`
-限定类型）。
+字段；**`--task <T-…>`** 引用一个 task，行末渲染 `→ T-…`）。返回该记录的最新
+清单。`ls [REF]`：`ID#n  state  text  [owner]  [due]`（省 REF = 全部记录；
+`--group`/`--open`/`--owner`/`--overdue` 过滤，`--type` 限定类型）。
+- 引用 task 的两种写法：**`→ T-…`（`--task`，结构化）** 有状态联动——被引用的
+task 结束时该 item 自动跟着关，未结束前不能手动关掉；一个 item 最多引用一个
+task。**正文里裸写的 id（如 `见 DEC-0001`）只做链接渲染**（`[文件名](相对路径)`，
+无联动，悬空 id 保持裸文本）；要联动用 `--task`，要多个引用写进正文即可。
 - `set ID#n STATE`：改状态（如 met / missed / done / skipped）；`check ID#n` =
 标记为已处理（该清单第一个 closed 状态）；`uncheck ID#n` = 重开（回到第一个未处理
 状态）；`edit ID#n --text/--note/--owner/--due`（空串清除该字段）。
