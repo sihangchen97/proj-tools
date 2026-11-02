@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -122,10 +123,20 @@ class Report:
         self.mcp_tools.add(name)
 
     def chapter(self, title: str) -> None:
+        _emit("chapter", title)
         print(f"\n\u2500\u2500 {title} \u2500\u2500")
 
 
 REP = Report()
+
+# A12 (PLAN §18.3): record every step as it runs so `emit_sh` can render the
+# reference `scripts/e2e.sh` (the same scenario, `proj` CLI commands only).
+EMIT: list = []           # (kind, payload); kind in cmd ok/fail chapter/section/edit/move/mcp
+_EMIT_ON = True           # --no-emit turns this off
+
+def _emit(kind: str, payload) -> None:
+    if _EMIT_ON:
+        EMIT.append((kind, payload))
 
 # ---- framework -----------------------------------------------------------------
 
@@ -145,10 +156,16 @@ def _recorded_path(args: list[str]) -> str:
     return " ".join(parts[:3]) if parts else "(root)"
 
 
-def run(*args: str, expect: int = 0) -> tuple[int, str]:
-    """Run a proj command (CliRunner in-process or a real subprocess)."""
+def run(*args: str, expect: int = 0, _desc: str | None = None,
+        _kind: str = "ok") -> tuple[int, str]:
+    """Run a proj command (CliRunner in-process or a real subprocess).
+    A12: recorded for e2e.sh (`_kind` "ok"/"fail" pick the sh form, `_desc` the
+    per-step comment; "skip" records nothing — the sandbox init is emitted by
+    emit_sh's header instead)."""
     path = _recorded_path(list(args))
     REP.cmd(path)
+    if _kind != "skip":
+        _emit(_kind, (list(args), _desc))
     if SUBPROCESS:
         env = dict(os.environ)
         env["PROJ_HOME"] = str(SANDBOX)
@@ -176,7 +193,7 @@ def run(*args: str, expect: int = 0) -> tuple[int, str]:
 
 def expect_ok(desc: str, needle: str, *args: str) -> str:
     try:
-        rc, out = run(*args, expect=0)
+        rc, out = run(*args, expect=0, _desc=desc, _kind="ok")
     except AssertionError as e:
         REP.fail(desc, str(e))
         return ""
@@ -189,7 +206,7 @@ def expect_ok(desc: str, needle: str, *args: str) -> str:
 
 def expect_fail(desc: str, *args: str) -> None:
     try:
-        run(*args, expect=0)
+        run(*args, expect=0, _desc=desc, _kind="fail")
         REP.fail(f"{desc} (unexpectedly succeeded)", " ".join(args))
     except AssertionError:
         REP.ok(f"{desc} (rejected)")
@@ -228,8 +245,34 @@ def write_sections(rel: str, sections: dict[str, str]) -> None:
         nxt = re.search(r"\n## |\n<!-- proj:", t[start:])
         stop = start + (nxt.start() if nxt else len(t[start:]))
         t = t[: start] + body.strip() + "\n\n" + t[stop:].lstrip("\n")
+        _emit("section", (rel, name, body.strip()))
     p.write_text(t, encoding="utf-8")
     run("sync")
+
+
+def edit_md(rel: str, old: str, new: str, desc: str | None = None) -> None:
+    """Hand-edit a record md: replace `old` with `new` (one line each). The next
+    write command auto-ingests it (A1) — no explicit sync here (PLAN §18.3: the
+    reference sh shows the direct edit + the follow-up `proj` command)."""
+    p = SANDBOX / rel
+    t = p.read_text(encoding="utf-8")
+    assert old in t, f"{old!r} not in {rel}"
+    p.write_text(t.replace(old, new, 1), encoding="utf-8")
+    _emit("edit", (rel, old, new, desc))
+
+
+def move_md_line(rel: str, frag: str, target: str, desc: str | None = None) -> None:
+    """Hand-move one md line (the one starting with `frag`) to just below the
+    `target` line (a `### ` group heading)."""
+    p = SANDBOX / rel
+    lines = p.read_text(encoding="utf-8").splitlines()
+    line = next((ln for ln in lines if ln.startswith(frag)), None)
+    assert line, f"no line starting {frag!r} in {rel}"
+    assert target in lines, f"{target!r} not in {rel}"
+    lines.remove(line)
+    lines.insert(lines.index(target) + 1, line)
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _emit("move", (rel, frag, target, desc))
 
 
 def mcp_call(tool: str, *args: str, **kw) -> str:
@@ -241,6 +284,7 @@ def mcp_call(tool: str, *args: str, **kw) -> str:
     kw.pop("root", None)
     out = str(fn(root=str(SANDBOX), *args, **kw))
     REP.tool(tool)
+    _emit("mcp", (tool, args, kw))
     return out
 
 
@@ -256,8 +300,8 @@ def reset_sandbox() -> None:
     old = os.getcwd()
     os.chdir(SANDBOX)
     try:
-        run("init")
-        run("hooks", "install")
+        run("init", _kind="skip")
+        run("hooks", "install", _kind="skip")
         REP.cmd("hooks install")
     finally:
         os.chdir(old)
@@ -418,29 +462,24 @@ def ch4() -> None:
               f"note: {T_DS} promoted Draft → In Progress", "item", "check", f"{T_DS}#B01")
     assert "`🚧 In Progress`" in read(md_of(T_DS))
     # hand-edit the record md (the LLM's primary input channel) → sync it back
-    p = SANDBOX / md_of(T_DS)
-    t = p.read_text(encoding="utf-8")
-    t = t.replace("- [ ] #B02 标注质检抽检 ≥ 10%",
-                  "- [x] #B02 标注质检抽检 ≥ 10%（抽 3 板，一致率 96%）")
-    p.write_text(t, encoding="utf-8")
+    edit_md(md_of(T_DS), "- [ ] #B02 标注质检抽检 ≥ 10%",
+            "- [x] #B02 标注质检抽检 ≥ 10%（抽 3 板，一致率 96%）",
+            "勾选 B02 并加备注（抽 3 板）")
     expect_ok("手改记录 md 后 sync（md 为准）", "OK", "sync")
     assert "（抽 3 板，一致率 96%）" in read(md_of(T_DS))
     REP.ok("手改的 item 行（含备注）被 sync 回收进 DB")
     # hand-move a line to ANOTHER group in the md: B02 goes under "A · 采集",
     # which is followed by groups B and C (R1: this used to block every write)
-    lines = p.read_text(encoding="utf-8").splitlines()
-    b02 = next(ln for ln in lines if ln.startswith("- [x] #B02 "))
-    lines.remove(b02)
-    lines.insert(lines.index("### A · 采集") + 1, b02)
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    move_md_line(md_of(T_DS), "- [x] #B02 ", "### A · 采集",
+                 "把 B02 挪到 A · 采集 组")
     expect_ok("在 md 里跨组移动后 sync（B02 → A02，换号）", "#B02 → #A02", "sync")
     assert "- [x] #A02 标注质检抽检" in read(md_of(T_DS))
     expect_ok("跨组移动后的 item 仍在清单里", f"{T_DS}#A02", "item", "ls", T_DS)
     # hand-edit an open item's TEXT, then operate straight away: A1 auto-ingests
     # the edit first (the next write command is the sync)
-    p.write_text(p.read_text(encoding="utf-8").replace(
-        "- [ ] #C01 train/val/test = 7/2/1（按板号分层）",
-        "- [ ] #C01 train/val/test = 8/1/1（按板号哈希重划）"), encoding="utf-8")
+    edit_md(md_of(T_DS), "- [ ] #C01 train/val/test = 7/2/1（按板号分层）",
+            "- [ ] #C01 train/val/test = 8/1/1（按板号哈希重划）",
+            "改 C01 的文本（直接操作，A1 自动 ingest）")
     expect_ok("手改文本后直接操作（A1 自动 ingest）", "- [x]", "item", "check", f"{T_DS}#C01")
     assert "（按板号哈希重划）" in read(md_of(T_DS))
     REP.ok("手改的 item 文本被自动回收进 DB，无需先 sync")
@@ -586,7 +625,153 @@ def ch8() -> None:
               "experiment", "abandon", E2, "-m", "Deprecated: 4-bit 精度掉 9 点，不可用")
 
 
+# ---- A12: render the reference scripts/e2e.sh (PLAN §18.3) ----------------------
+
+def _sh_line(cmd: list) -> str:
+    return " ".join(shlex.quote(a) for a in cmd)
+
+
+# the set_section python, as it must appear in the generated sh (a <<'PY' heredoc)
+_SET_SECTION_PY = r"""
+import sys, re
+f, name = sys.argv[1], sys.argv[2]
+body = sys.stdin.read().strip()
+t = open(f, encoding='utf-8').read()
+m = re.search('^## ' + re.escape(name) + r'[ \t]*\n', t, re.M)
+start = m.end()
+nxt = re.search('\n## |\n<!-- proj:', t[start:])
+stop = start + (nxt.start() if nxt else len(t[start:]))
+open(f, 'w', encoding='utf-8').write(t[:start] + body + '\n\n' + t[stop:].lstrip('\n'))
+"""
+
+
+def emit_sh(steps: list, out: pathlib.Path) -> pathlib.Path:
+    """Render the recorded steps as a human-readable scripts/e2e.sh (PLAN §18.3):
+    the `set_section` helper + the sandbox bootstrap, then per-chapter sections,
+    `shlex`-quoted `proj` commands, expected-fail commands that cannot abort the
+    script, `set_section` heredocs for the md section edits, python one-liners for
+    the line edits / moves, and a comment per MCP call (the sh runs CLI only).
+    Ids and item numbers are literal (the story is deterministic)."""
+    lines: list[str] = [
+        "#!/usr/bin/env bash",
+        "# scripts/e2e.sh — GENERATED by scripts/e2e.py (A12). Do not hand-edit:",
+        "# re-run `pixi run e2e` to refresh it. 同一个场景，只用 `proj` CLI 命令复现（给用户当参考）。",
+        "# 运行: bash scripts/e2e.sh [目录]  （默认 mktemp -d，结束保留并打印路径）；需要 `proj` 在 PATH 上。",
+        "set -u",
+        'dir="${1:-$(mktemp -d)}"',
+        'cd "$dir" || exit 1',
+        "",
+        "# 把一个 ## 节的内容替换成 stdin 的内容:  set_section <file> <节名>",
+        "set_section() {",
+        "  python3 - \"$1\" \"$2\" <<'PY'",
+        *_SET_SECTION_PY.splitlines(),
+        "PY",
+        "}",
+        "",
+        "git init -q",
+        "proj init",
+        "proj hooks install",
+    ]
+    for kind, payload in steps:
+        if kind == "chapter":
+            lines.append("")
+            lines.append("# ── " + payload + " ──")
+        elif kind in ("ok", "fail"):
+            args, desc = payload
+            cmd = _sh_line(args)
+            note = ("  # " + desc) if desc else ""
+            if kind == "ok":
+                lines.append("proj " + cmd + note)
+            else:
+                lines.append('proj ' + cmd + ' && echo "意外成功" || echo "（按预期被拒绝）"' + note)
+        elif kind == "section":
+            rel, name, body = payload
+            if not body:
+                continue  # an empty section (T_TRT): nothing to fill
+            lines.append("# 编辑 " + rel + " 的 ## " + name + " 节，再 proj sync 回收")
+            lines.append("cat <<'EOF' | set_section " + _sh_line([rel, name]))
+            lines.append(body)
+            lines.append("EOF")
+            lines.append("proj sync")
+        elif kind == "edit":
+            rel, old, new, desc = payload
+            lines.append("# 手改 " + rel + "： " + (desc or old))
+            py = ("import sys; f, o, n = sys.argv[1:4]; "
+                  't = open(f, encoding="utf-8").read(); assert o in t; '
+                  'open(f, "w", encoding="utf-8").write(t.replace(o, n, 1))')
+            lines.append("python3 -c '" + py + "' " + _sh_line([rel, old, new]))
+        elif kind == "move":
+            rel, frag, target, desc = payload
+            lines.append("# 在 " + rel + " 里把行 " + frag.strip() + " 挪到 " + target
+                         + "（" + (desc or "换组") + "）")
+            py = ("import sys; f, fr, tg = sys.argv[1:4]; "
+                  'L = open(f, encoding="utf-8").read().splitlines(); '
+                  'ln = next(x for x in L if x.startswith(fr)); L.remove(ln); '
+                  'L.insert(L.index(tg) + 1, ln); '
+                  'open(f, "w", encoding="utf-8").write(chr(10).join(L) + chr(10))')
+            lines.append("python3 -c '" + py + "' " + _sh_line([rel, frag, target]))
+        elif kind == "mcp":
+            tool, args, kw = payload
+            extra = " ".join(k + "=" + _sh_line([str(v)]) for k, v in kw.items())
+            lines.append("# (MCP) " + tool + " " + " ".join(args) + " " + extra
+                         + " — 参考脚本只跑 CLI；MCP 调用见 e2e.py")
+    lines.append("")
+    lines.append('echo "场景完成，项目在: $dir"')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
+def _sh_equivalence() -> int:
+    """PLAN §18.3 等价性检查（只在 e2e-full 里跑，约 100 命令 × 0.25 s）：在临时目录
+    跑生成的 scripts/e2e.sh，比较它和 e2e.py 两次产出的 `proj ls --json` /
+    `proj item ls --json` 是否一致（基准 = 本次 e2e.py 跑完的沙盒 SANDBOX，teardown 之前）。"""
+    sh = REPO / "scripts" / "e2e.sh"
+    if not sh.is_file():
+        print("e2e-full: 跳过等价性检查（scripts/e2e.sh 不存在）")
+        return 0
+    env = dict(os.environ)
+    env["PATH"] = str(REPO / ".pixi" / "envs" / "dev" / "bin") + os.pathsep + env.get("PATH", "")
+    proj = str(REPO / ".pixi" / "envs" / "dev" / "bin" / "proj")
+    print("\ne2e-full: 等价性检查 — 在临时目录跑 scripts/e2e.sh，对比 JSON …")
+    shdir = Path(tempfile.mkdtemp(prefix="proj-e2e-sh-"))
+    try:
+        p = subprocess.run(["bash", str(sh), str(shdir)], cwd=REPO, env=env,
+                           capture_output=True, text=True, timeout=300)
+        if p.returncode != 0:
+            print(f"FAIL: scripts/e2e.sh 退出码 {p.returncode}")
+            for line in p.stdout.splitlines()[-20:]:
+                print(f"    {line}")
+            return 1
+        for label, args in (("proj ls --json", ["ls", "--json"]),
+                            ("proj item ls --json", ["item", "ls", "--json"])):
+            got = subprocess.run([proj, *args], cwd=shdir, env=env,
+                                 capture_output=True, text=True).stdout.strip()
+            want = subprocess.run([proj, *args], cwd=SANDBOX, env=env,
+                                  capture_output=True, text=True).stdout.strip()
+            if got == want:
+                print(f"  ✓ {label} 一致")
+            else:
+                print(f"  FAIL {label} 不一致：")
+                print(f"    sh: {got[:400]}")
+                print(f"    py: {want[:400]}")
+                return 1
+        return 0
+    finally:
+        shutil.rmtree(shdir, ignore_errors=True)
+
+
 def main() -> int:
+    global _EMIT_ON
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--emit-sh", default=str(REPO / "scripts" / "e2e.sh"),
+                    metavar="PATH", help="参考 e2e.sh 写到哪（默认 scripts/e2e.sh）")
+    ap.add_argument("--no-emit", action="store_true", help="不刷新 scripts/e2e.sh")
+    args = ap.parse_args()
+    if args.no_emit:
+        _EMIT_ON = False
+    emit_path = Path(args.emit_sh)
     t0 = time.time()
     setup_sandbox()
     where = f"{SANDBOX}（本地临时目录，结束拷回 .testproj/）" if _TMP_SANDBOX else f"{SANDBOX}（PROJ_E2E_SANDBOX，就地）"
@@ -595,7 +780,15 @@ def main() -> int:
         reset_sandbox()
         for ch in (ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8):
             ch()
-        return _summary()
+        rc = _summary()
+        # A12: refresh the reference e2e.sh after every run (pass OR fail)
+        if _EMIT_ON:
+            emit_sh(EMIT, emit_path)
+            print(f"e2e: 参考脚本已更新 {emit_path}")
+        # PLAN §18.3: equivalence (sh vs e2e.py) only in the slow subprocess run
+        if SUBPROCESS:
+            rc = rc or _sh_equivalence()
+        return rc
     finally:
         teardown()
 
