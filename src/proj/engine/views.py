@@ -188,9 +188,7 @@ def release(cfg: ProjConfig, db, version: str | None = None,
         used = f"v{bump(current.lstrip('v'), bump_level)}"
     else:
         raise ValueError("need --version or --bump")
-    db.conn.execute(
-        "UPDATE changelog_entries SET version = ? WHERE version = ?",
-        (used, cl.unreleased))
+    db.release_cl(used, cl.unreleased)  # X0: the UPDATE moved into Db
     if not entries:
         db.add_cl_entry(used, cl.default_category, f"release {used}",
                         dbmod.utc_now())

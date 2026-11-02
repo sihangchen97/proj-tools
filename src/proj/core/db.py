@@ -93,6 +93,13 @@ def show_date(ts: str) -> str:
 class Db:
     def __init__(self, path: Path):
         self.path = path
+        # X0: change tracking for the current transaction — the record ids
+        # written (any write method) and the rendered views touched
+        # ("wip" / "changelog"); cleared on rollback and at the end of a
+        # committed `with` (the next command starts clean). F6 renders from
+        # this set; C2 feeds events from the _emit hooks (X0: no-op).
+        self.touched: set[str] = set()
+        self.touched_views: set[str] = set()
         # §13.2: WAL needs shared memory and must not be used on network
         # filesystems — fall back to the rollback journal there (one writer at a
         # time; busy_timeout still serializes them).
@@ -185,6 +192,23 @@ class Db:
 
     # ---- records (single table, type column) --------------------------------
 
+    # ---- X0: change tracking + the (C2) event hook -------------------------
+
+    def _emit(self, op: str, record_id: str | None = None, **payload: str) -> None:
+        """X0: the C2 event hook — every write method calls it where it marks
+        the record touched; X0 is a no-op (C2 fills it in to append
+        .proj/events.jsonl, without touching the write methods again)."""
+
+    def _touch(self, record_id: str) -> None:
+        self.touched.add(record_id)
+        self._emit("touched", record_id)
+
+    def _touch_view(self, view: str) -> None:
+        self.touched_views.add(view)
+        self._emit("touched-view", None, view=view)
+
+    # ---- record rows -------------------------------------------------------
+
     def insert(self, spec: RecordTypeSpec, id_: str, title: str,
                status: str, created: str, summary: str = "",
                commit: str = "") -> None:
@@ -192,6 +216,9 @@ class Db:
             "INSERT INTO records (id, type, title, status, summary, \"commit\", "
             "created, sections) VALUES (?,?,?,?,?,?,?,?)",
             (id_, spec.record_type, title, status, summary, commit, created, "{}"))
+        self._touch(id_)
+        self._emit("record.create", id_, type=spec.record_type, title=title,
+                   status=status)
 
     def get(self, spec: RecordTypeSpec, id_: str) -> dict | None:
         row = self.conn.execute(
@@ -208,12 +235,17 @@ class Db:
         self.conn.execute(
             f"UPDATE records SET {assignments} WHERE type=? AND id=?",
             (*cols.values(), spec.record_type, id_))
+        self._touch(id_)
+        self._emit("record.update", id_, type=spec.record_type,
+                   columns=",".join(cols))
 
     def delete(self, spec: RecordTypeSpec, id_: str) -> None:
         self.conn.execute("DELETE FROM record_changelog WHERE record_id = ?", (id_,))
         # relations edges cascade with the record (D8 FK), no manual cleanup
         self.conn.execute("DELETE FROM records WHERE type=? AND id=?",
                           (spec.record_type, id_))
+        self._touch(id_)
+        self._emit("record.delete", id_, type=spec.record_type)
 
     def max_seq(self, spec: RecordTypeSpec) -> int:
         """The largest record number carried by this type's ids (digits only)."""
@@ -242,6 +274,8 @@ class Db:
             "INSERT INTO record_changelog (record_id, date, category, message, "
             "status, actor) VALUES (?,?,?,?,?,?)",
             (record_id, when or utc_now(), category, message, status, reporter()))
+        self._touch(record_id)
+        self._emit("record.log", record_id, category=category, message=message)
 
     def logs(self, record_id: str, limit: int | None = None) -> list[dict]:
         q = ("SELECT date, category, message, status, actor "
@@ -264,6 +298,16 @@ class Db:
             "INSERT INTO changelog_entries (version, category, message, date) "
             "VALUES (?, ?, ?, ?)",
             (version, category, message, when or utc_now()))
+        self._touch_view("changelog")
+
+    def release_cl(self, version: str, unreleased: str) -> None:
+        """X0: move every Unreleased CHANGELOG entry onto a released version
+        (was a bare UPDATE in views.release); touches the changelog view."""
+        self.conn.execute(
+            "UPDATE changelog_entries SET version = ? WHERE version = ?",
+            (version, unreleased))
+        self._touch_view("changelog")
+        self._emit("changelog.release", None, version=version)
 
     def cl_entries(self, version: str | None = None) -> list[dict]:
         if version:
@@ -288,22 +332,38 @@ class Db:
         self.conn.execute(
             "INSERT OR IGNORE INTO relations (source, target, kind) VALUES (?,?,?)",
             (source, target, kind))
+        self._touch(source)
+        self._touch(target)
+        self._emit("relation.add", source, kind=kind, target=target)
 
     def remove_relation(self, source: str, target: str, kind: str) -> None:
         self.conn.execute(
             "DELETE FROM relations WHERE source=? AND target=? AND kind=?",
             (source, target, kind))
+        self._touch(source)
+        self._touch(target)
+        self._emit("relation.remove", source, kind=kind, target=target)
 
     def set_parent(self, child_id: str, parent_id: str | None) -> None:
         """Re-home a task: drop its old parent edge (if any), write the new one
         (None = unparented). One transaction; the unique index forbids a
-        second parent edge in between."""
+        second parent edge in between. Touches the child and the old AND the
+        new parent (X0)."""
+        old = [r[0] for r in self.conn.execute(
+            "SELECT source FROM relations WHERE target=? AND kind='parent'",
+            (child_id,))]
         self.conn.execute(
             "DELETE FROM relations WHERE target=? AND kind='parent'", (child_id,))
         if parent_id is not None:
             self.conn.execute(
                 "INSERT INTO relations (source, target, kind) VALUES (?,?,?)",
                 (parent_id, child_id, "parent"))
+        self._touch(child_id)
+        for old_parent in old:
+            self._touch(old_parent)
+        if parent_id is not None:
+            self._touch(parent_id)
+        self._emit("parent.set", child_id, parent=parent_id or "")
 
     def supersede_of(self, source_id: str) -> list[dict]:
         """Targets this record supersedes (kind=supersede, source=row), id order."""
@@ -396,6 +456,20 @@ class Db:
                  it.get("created") or utc_now(), it.get("closed_at", ""),
                  1 if it.get("deleted") else 0,
                  it.get("section", ""), it.get("task", "")))
+        self._touch(record_id)
+        self._emit("items.save", record_id, count=str(len(rows)))
+
+    def item_set_state(self, record_id: str, no: str, state: str,
+                       closed_at: str) -> None:
+        """X0: flip one checklist item's state (+closed_at) — the single entry
+        for the P3 forward sync (was a bare UPDATE in items.sync_task_ref);
+        runs inside the caller's transaction. `closed_at` is decided by the
+        caller (the CLOSED_STATES list lives in items.py, not here)."""
+        self.conn.execute(
+            "UPDATE items SET state=?, closed_at=? WHERE record_id=? AND no=?",
+            (state, closed_at, record_id, no))
+        self._touch(record_id)
+        self._emit("item.set", record_id, no=no, state=state)
 
     # ---- WIP.md (plans §5): the registered "in progress" list (wip_entries) ----
 
@@ -416,11 +490,25 @@ class Db:
         self.conn.execute(
             "INSERT INTO wip_entries (record_id, pos, added_at, source) VALUES (?,?,?,?)",
             (record_id, pos, utc_now(), source))
+        self._touch(record_id)
+        self._touch_view("wip")
+        self._emit("wip.add", record_id)
         return pos
 
     def wip_remove(self, record_id: str) -> None:
         """Un-register a record; remaining entries keep their pos (gaps allowed)."""
         self.conn.execute("DELETE FROM wip_entries WHERE record_id=?", (record_id,))
+        self._touch(record_id)
+        self._touch_view("wip")
+        self._emit("wip.remove", record_id)
+
+    def rollback(self) -> None:
+        """Roll the open write transaction back and clear X0 change tracking
+        (a failed command leaves neither half-written rows nor a stale `touched`
+        set — the next command starts clean)."""
+        self.conn.rollback()
+        self.touched.clear()
+        self.touched_views.clear()
 
     def begin(self) -> None:
         # R3: open the write transaction (deferred — the exclusive lock is taken
@@ -440,7 +528,7 @@ class Db:
             if exc_type is None:
                 self.conn.commit()
             else:
-                self.conn.rollback()
+                self.rollback()
         except sqlite3.Error:
             # a BEGIN-less (read-only) `with` has nothing to end — close goes on
             pass

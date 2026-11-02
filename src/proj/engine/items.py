@@ -1042,10 +1042,9 @@ def sync_task_ref(db, task_spec, task_id: str, new_status: str,
             "WHERE task=? AND deleted=0", (task_id,)):
         if r["state"] == target:
             continue
-        db.conn.execute(
-            "UPDATE items SET state=?, closed_at=? WHERE record_id=? AND no=?",
-            (target, dbmod.utc_now() if target in CLOSED_STATES else "",
-             r["record_id"], r["no"]))
+        db.item_set_state(  # X0: the UPDATE moved into Db (touched + _emit)
+            r["record_id"], r["no"], target,
+            dbmod.utc_now() if target in CLOSED_STATES else "")
         db.add_log(r["record_id"],
                    f"item #{r['no']} {r['state']} → {target} ({cause})",
                    category="Changed")
