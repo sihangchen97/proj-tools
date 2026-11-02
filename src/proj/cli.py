@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -31,13 +32,13 @@ import typer
 from typer.core import TyperGroup
 from typer.main import get_command as _to_click_command
 
-from proj import scaffold
+from proj import bugs, scaffold
 from proj.check import check as run_checks
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
 from proj.core.templates import _registry_key, resolve_record_type
 from proj.engine import item_ops, present
-from proj.engine import wip as wip_ops
 from proj.engine import store as rec
+from proj.engine import wip as wip_ops
 from proj.engine.record import record_for
 from proj.hooks import install as hooks_install
 from proj.record_types import changelog as cl
@@ -108,6 +109,7 @@ item_app = typer.Typer(add_completion=False,
                        help="Record items (checklists): ls / add / set / check / …")
 wip_app = typer.Typer(add_completion=False,
                       help="WIP.md (what is being worked on): add / return / ls.")
+
 
 # no no_args_is_help: a bare `proj` shows project status (handled in the callback).
 # token_normalize_func: command names (record_types AND subcommands/verbs) are
@@ -836,3 +838,53 @@ def hooks_install_cmd():
     except ValueError as e:
         _fail(str(e))
     typer.echo(f"Installed {hook} — pre-commit now runs `proj check`")
+
+
+# ---- bug reports ----------------------------------------------------------------------------
+
+@app.command()
+def bug(text: str | None = typer.Argument(None,
+            help="report text; '-' reads from stdin; pass 'ls' to list reports"),
+        cmd: str | None = typer.Option(None, "--cmd", help="the command being run"),
+        as_json: bool = typer.Option(False, "--json", help="JSON output for 'ls'"),
+        root: Path | None = typer.Option(None, "--root", help="project root")):
+    """Record a bug in the proj tool itself -> .proj.bugs (B2); `proj bug ls` lists.
+
+    The first argument is interpreted as the subcommand name `ls` (a group's
+    positional would otherwise steal it) — `proj bug ls` / `proj bug ls --json`."""
+    if text is None or text == "ls":
+        recs = bugs.list_bugs(root)
+        if as_json:
+            typer.echo(json.dumps(recs, indent=2, ensure_ascii=False))
+            return
+        if not recs:
+            typer.echo("(no bug reports)")
+            return
+        for r in recs:
+            first = r["body"].splitlines()[0] if r["body"] else ""
+            typer.echo(f"{r['time']} · {r['source']} · {r['reporter']} · {first}")
+        return
+    if text == "-":
+        text = sys.stdin.read()
+    path = bugs.append_bug(text, "cli", cmd=cmd, root=root)
+    typer.echo(f"recorded to {path}")
+
+
+def main():
+    """CLI entry point (pyproject [project.scripts] proj = "proj.cli:main").
+
+    B4: an uncaught, unexpected exception (not a normal ValueError / sqlite3 /
+    typer error) is auto-recorded to .proj.bugs before the process exits
+    non-zero; normal errors just exit non-zero."""
+    try:
+        app()
+    except SystemExit:
+        raise  # typer.Exit (normal errors, clean output) — not a bug
+    except (ValueError, sqlite3.Error):
+        raise typer.Exit(1) from sys.exc_info()[1]  # normal error — no auto-record
+    except Exception as e:
+        prog = os.path.basename(sys.argv[0]) if sys.argv else "proj"
+        path = bugs.auto_record(e, "cli", cmd=" ".join([prog, *sys.argv[1:]]),
+                                root=_ROOT["root"])
+        typer.secho(f"unexpected error — recorded to {path}", fg="red", err=True)
+        raise typer.Exit(1) from e

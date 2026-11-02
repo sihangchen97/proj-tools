@@ -6,6 +6,7 @@
 > 从项目目录启动 client（如 Claude Code 在仓库里）不需要任何配置；从全局配置启动
 > （client cwd ≠ 项目）就给每个 tool 传 `root`，或设 `$PROJ_HOME`。
 > 校验失败不抛错，而是返回 `error: …` 文本（agent 可读）。
+> proj 行为不符合文档 / 出现未预期报错时，用 `proj_bug(text, command=…)` 记录现象和命令（写入项目的 `.proj.bugs`，不入库、不进 git）。
 
 ## Tools
 
@@ -136,4 +137,27 @@ list. Refused when it would un-close an item on a record in a closed
 Remove an item ('ID#nn'; its number is never reused) or a whole group
 ('ID#L00' — when the group still holds items, `items` must be 'ungroup' or
 'delete'). Returns the fresh item list.
+
+### `proj_wip_add`
+
+Register records in WIP.md (the "in progress" list). A record already in
+it is skipped (not an error). Returns the fresh WIP list.
+
+### `proj_wip_return`
+
+Remove records from WIP.md, writing any edited items back into the record
+first. A record not in WIP is an error. Returns what was returned.
+
+### `proj_wip_ls`
+
+The WIP list: ID  status  title  n/m.
+
+### `proj_bug`
+
+Record a bug in the proj tool itself -> .proj.bugs (B2, DB-free). Returns
+the file path it was written to.
+
+### `proj_bug_ls`
+
+List the .proj.bugs records (time · source · reporter · first line).
 

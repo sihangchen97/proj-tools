@@ -150,6 +150,7 @@ def test_cli_command_coverage(proj):
     # `open`: CLI-only (returns the md path for an editor/agent to read — an MCP
     # client already has file access, so there is no MCP equivalent; A5/§9.2).
     EXCEPTIONS = {"docs", "open", "hooks install", "init --zoo"}
+    # A13 (§19.3): `bug` is one capability → proj_bug (its `ls` shares it)
 
     def is_group(c):
         return hasattr(c, "commands") and bool(c.commands)
@@ -159,7 +160,7 @@ def test_cli_command_coverage(proj):
         if path in EXCEPTIONS:
             return set()
         if len(parts) == 1:
-            return {f"proj_{parts[0]}"}
+            return {"proj_bug"} if parts[0] == "bug" else {f"proj_{parts[0]}"}
         # R8: the item MCP tools are merged (4 tools cover every item command —
         # capability, not one tool per command): ls→ls; add / group add→add
         # (new_group); set/check/uncheck/edit/mv / group rename / group mv→

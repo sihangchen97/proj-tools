@@ -26,13 +26,15 @@ all hit the same record.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from mcp.server import MCPServer
 
-from proj import scaffold
+from proj import bugs, scaffold
 from proj.check import check as run_checks
 from proj.core.config import load_config, load_project_env
 from proj.core.db import ProjError
@@ -510,8 +512,40 @@ def proj_item_rm(item: str, items: str | None = None, root: str | None = None) -
     return _item_call(item_ops.remove, item, root=root)
 
 
+def proj_bug(text: str, command: str | None = None, root: str | None = None) -> str:
+    """Record a bug in the proj tool itself -> .proj.bugs (B2, DB-free). Returns
+    the file path it was written to."""
+    path = bugs.append_bug(text, "mcp", cmd=command, root=root)
+    return f"recorded to {path}"
+
+
+def proj_bug_ls(root: str | None = None) -> str:
+    """List the .proj.bugs records (time · source · reporter · first line)."""
+    recs = bugs.list_bugs(root)
+    if not recs:
+        return "(no bug reports)"
+    return "\n".join(
+        f"{r['time']} · {r['source']} · {r['reporter']} · "
+        f"{r['body'].splitlines()[0] if r['body'] else ''}" for r in recs)
+
+
 # ---- D3: register the functions above ONCE (FastMCP accepts sync functions —
 # there is no separate async wrapper with a duplicated docstring) ---------------
+
+# B4: auto-record uncaught (unexpected) exceptions from a tool call — normal
+# errors (ValueError / ProjError / sqlite3.Error) already return "error: …".
+def _record(fn, *a, **k):
+    try:
+        return fn(*a, **k)
+    except (ProjError, sqlite3.Error, ValueError) as e:
+        return f"error: {e}"  # normal error — clean message, no auto-record (B4)
+    except Exception as e:
+        kw = {kk: vv for kk, vv in k.items() if kk != "root"}
+        cmd = " ".join([fn.__name__] + list(map(str, a))
+                       + [f"{kk}={vv!r}" for kk, vv in kw.items()])
+        path = bugs.auto_record(e, "auto", cmd=cmd, root=k.get("root"))
+        return f"error: {e}\nrecorded to {path}"
+
 
 for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
             proj_ls, proj_show, proj_update, proj_verb,
@@ -521,8 +555,16 @@ for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
             proj_task_move,
             proj_item_ls, proj_item_add, proj_item_update, proj_item_rm,
             proj_wip_add, proj_wip_return, proj_wip_ls,
+            proj_bug, proj_bug_ls,
                         ):
-    mcp.tool(name=_fn.__name__)(_fn)
+    def _wrap(*a, **k):
+        # B4: delegate to the original (functools.wraps set __wrapped__=fn, so
+        # this reads it at call time — no loop-variable capture) and auto-record
+        # any uncaught, unexpected exception.
+        return _record(_wrap.__wrapped__, *a, **k)
+
+    functools.wraps(_fn)(_wrap)  # copies name/doc/signature onto the wrapper
+    mcp.tool(name=_fn.__name__)(_wrap)
 
 
 def main():

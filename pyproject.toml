@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-proj = "proj.cli:app"
+proj = "proj.cli:main"
 proj-mcp = "proj.mcp:main"
 
 [tool.hatch.build.targets.wheel]

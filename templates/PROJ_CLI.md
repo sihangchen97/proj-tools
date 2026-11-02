@@ -7,8 +7,10 @@
 > `error: no proj project in <cwd> …`。
 > record_type = 模板注册的任意类型（task/plan/decision/debt/incident/experiment…）；
 > **大小写不敏感**，可用类型名或其 code（`DEC`/`dec`/`Decision` 都 = decision，`T` = task）。
-> **两种命令**：生命周期命令（`proj init`/`proj sync`/…）+ 每个 record_type 的动态子命令
-> `proj <rt> new|list|show|<verb>`（`<verb>` = 该类型模板 `verbs:` 里声明的，运行时生成）。
+> **三种命令**：生命周期命令（`proj init`/`proj sync`/…）；**跨类型**命令
+> `proj show ID` / `proj ls [--type T] [--status S]` / `proj open ID`（id 自带类型，
+> 不用先写类型）；每个 record_type 的动态子命令 `proj <rt> new|ls|show|update|<verb>`
+> （`<verb>` = 该类型模板 `verbs:` 里声明的，运行时生成，帮助从模板推导）。
 
 
 ## 生命周期（顶层命令）
@@ -17,15 +19,20 @@
 proj init [--profile <PROFILES…>] [--zoo]
 proj sync [<FILES>]
 proj adopt [<FILES>]
-proj update
-proj render [--record-type <RECORD_TYPE>] [--id <ID>]
+proj render [<REF>]
+proj show <ID> [--history] [--json]
+proj ls [--status <STATUS>] [--type <TYPE>] [--json]
+proj open <ID>
 proj check
 proj info [--json]
 proj docs
+proj bug [<TEXT>] [--cmd <CMD>] [--json] [--root <ROOT>]
 ```
 
 - **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单向 md→DB，`render` 单向 DB→md。
-- 手写 md 后跑 `proj sync`（或 `proj update`）；只改 DB 后跑 `proj render`。
+- 手写 md 后跑 `proj sync`（不带参数 = 全量 + 渲染全部视图）；只改 DB 后跑 `proj render`。
+- 跨类型：`proj show ID` / `proj ls [--type T]` / `proj open ID`（$EDITOR 打开 md，关闭后自动
+  sync）——id 自带类型（`T-…`/`DEC-…`），不用再写类型；`proj <rt> show/ls` 等价地限定到某类型。
 - 记录的 H1 是 `# <ID>. <标题>`：标题文字**可手改**（编号 id 在文件名 + 首行 marker
   里体现，DB 为准）：`sync` 把新标题
   回收进 DB 并把文件重命名到新 slug（id 不变；changelog 块、`<!-- proj:head … -->`
@@ -33,7 +40,7 @@ proj docs
 - `check` 检查：.proj.lock 模板在、表 schema 匹配模板、md 各 section 与 DB 一致、
   record_type 特有不变量（task：parent/related 存在、无父环）。
 - 裸跑 `proj`（无子命令）：已 init → 项目状态（同 `info`）；未 init → 只有 `init` 可用。
-- 新建默认打开 `$EDITOR`/`$VISUAL`；`-y` 跳过。
+- 新建默认打开 `$EDITOR`/`$VISUAL`；`-y` 跳过（agent/非终端下自动不打开）。
 - 改状态用**模板动词** `proj <rt> <verb> ID`（等价 `record.transition(cfg, verb, id)`）；
   `from: Any` = 任意当前状态都能触发（直达目标，如 `deprecate`/`close`），
   `from: <状态>` = 必须在该状态（如 plan `activate` 只从 Draft）。带门禁的动词
@@ -43,32 +50,29 @@ proj docs
 ## 所有 record 共用的命令
 
 ```
-proj <rt> new [<TITLE>] [-s <SUPERSEDE…>] [--parent <PARENT>] [-r <RELATED…>]     [--commit <COMMIT>] [--summary <SUMMARY>] [-y]
-proj <rt> list [--status <STATUS>]
-proj <rt> show <ID> [--history]
+proj <rt> new [<TITLE>] [-s <SUMMARY>] [--supersede <ID…>] [--parent <PARENT>]     [-r <RELATED…>] [--commit <COMMIT>] [-y]
+proj <rt> ls [--status <STATUS>]
+proj <rt> show <ID> [--history] [--json]
 proj <rt> update <ID> [-t <TITLE>] [-s <SUMMARY>] [-m <MESSAGE>]
-proj <rt> render [id <ID>]
 ```
 
 - 每个 record_type 都有同一组通用子命令（`<rt>` = 类型名或 code，大小写不敏感）；
   类型特有的状态机动词（`task start`/`plan review`/…）在该类型自己的小节里。
-- `new`：`-s`（supersede，同类型、可重复）、`--parent`（仅 task 挂父节点）、
-  `-r`（related，任意类型）、`--commit`（git 提交号）、`-y` 跳过编辑器。
-- `show --history`：该记录的完整 changelog（每条 = 状态 + 可选 message）。
+- `new`：`-s`（一句话摘要）、`--supersede`（同类型、可重复）、`--parent`
+  （仅 task 挂父节点）、`-r`（related，任意类型）、`--commit`（git 提交号）、
+  `-y` 跳过编辑器（agent/非终端下自动不打开）。
+- `show --history`：该记录的完整 changelog（每条 = 状态 + 可选 message）；`--json` 机器可读。
 - `update`：`-t` 改标题（文件随之重命名为新 slug，id 不变）、`-s` 改一句话摘要、
   `-m` 追加一条 changelog（`Category: text`，跟 git 的 `-m` 习惯一致）。
-- `render`：只 DB→md（不带 md 输入）；省略 id = 该类型全部。
+- `ls` 列该类型的记录（一行：id、状态、标题、parent）；`list` 是隐藏别名。
+- `render [REF|TYPE]…` 只 DB→md（不带 md 输入，全局一条）：省略参数 = 全部记录 +
+  全部视图，否则只渲染指定的记录或类型。
 - `task move ID (--parent X | --detach)`：改挂已有任务（两个选项必须且只能给一个）；
   挂在已关闭记录下、挂到自己或自己的后代上都会被拒绝。
 
 ## task
 
 ```
-proj task new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
-proj task list [--status <STATUS>]
-proj task show <ID> [--history]
-proj task update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
-proj task render [id <ID>]
 proj task move <ID> [--parent <PARENT>] [--detach]
 proj task start <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj task done <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -87,10 +91,10 @@ proj task fail <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m 
   （处于其 `gates` 门禁状态的 plan/task）不能再挂新任务，`task move` 同样拒绝；
   已终止状态的任务想再开时，其祖先处于门禁状态会被拒绝（防重开）。
 - 任意挂有任务的记录，其 md 在 head 围栏下渲染一个 `<details open>` 的 **Tasks**
-  块：每个任务一行 checkbox+超链接（id-slug 文件名，相对路径），**扁平列出整棵
-  后代任务树**（深度 0，完成的任务也保留以体现进度）。手写的非链接行原样保留；
-  任务链接行必须指向该记录的后代任务，否则 `sync` 报错且不改数据库
-  （用 `proj task move` 改挂）。
+  块，**完全由 DB 生成**（不再保留手写的任务行）：每个任务一行 checkbox+超链接
+  （id-slug 文件名，相对路径），按**任务树深度缩进**展开整棵后代树（不封顶，任意
+  深度，完成的任务也保留以体现进度）；有 summary 的任务在其后以斜体跟一行摘要；
+  带清单的任务行末附 `n/m`（已处理/总数）。改挂用 `proj task move`。
 - 全局 `TASKLIST.md` 完全自动推导，没有注册命令：第一节 `## Unparented`
   （无 parent 边且未结束的任务，带完整子树）；其后每个非 task 记录各占一节
   （status 图标 + 类型 + ID + 标题，任务树缩进在标题下）——条件是记录已离开
@@ -100,11 +104,6 @@ proj task fail <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m 
 ## debt
 
 ```
-proj debt new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
-proj debt list [--status <STATUS>]
-proj debt show <ID> [--history]
-proj debt update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
-proj debt render [id <ID>]
 proj debt draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj debt open <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj debt progress <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -115,11 +114,6 @@ proj debt waive <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m
 ## decision
 
 ```
-proj decision new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
-proj decision list [--status <STATUS>]
-proj decision show <ID> [--history]
-proj decision update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
-proj decision render [id <ID>]
 proj decision draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj decision propose <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj decision accept <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -128,18 +122,14 @@ proj decision deprecate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--me
 ```
 
 - 状态：`Proposed 🌱 → Accepted ✅ → Deprecated 📛`。
-- `-s`：被替代的决策 id（所有类型通用；写时校验**同类型**，纯 relations 边，
-  不自动改被替代记录的状态——要废弃时手动 `proj decision deprecate`）。
+- `--supersede`：被替代的决策 id（所有类型通用，同类型、可重复；写时校验
+  **同类型**，纯 relations 边，不自动改被替代记录的状态——要废弃时手动
+  `proj decision deprecate`）。
 - 不变量：supersede 链无环。
 
 ## experiment
 
 ```
-proj experiment new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
-proj experiment list [--status <STATUS>]
-proj experiment show <ID> [--history]
-proj experiment update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
-proj experiment render [id <ID>]
 proj experiment draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj experiment propose <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj experiment run <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -150,11 +140,6 @@ proj experiment abandon <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--me
 ## incident
 
 ```
-proj incident new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
-proj incident list [--status <STATUS>]
-proj incident show <ID> [--history]
-proj incident update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
-proj incident render [id <ID>]
 proj incident draft <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj incident open <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj incident mitigate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -165,11 +150,6 @@ proj incident reopen <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--messa
 ## plan
 
 ```
-proj plan new [<TITLE>] [--supersede -s <SUPERSEDE…>] [--parent <PARENT>] [--related -r <RELATED…>] [--commit <COMMIT>] [--summary <SUMMARY>] [--yes -y]
-proj plan list [--status <STATUS>]
-proj plan show <ID> [--history]
-proj plan update <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
-proj plan render [id <ID>]
 proj plan activate <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj plan resume <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
 proj plan review <ID> [--title -t <TITLE>] [--summary -s <SUMMARY>] [--message -m <MESSAGE>]
@@ -214,7 +194,7 @@ proj hooks install
 ## item
 
 ```
-proj item ls [<REF>] [--group <GROUP>] [--open] [--type <TYPE>] [--owner <OWNER>] [--overdue]
+proj item ls [<REF>] [--group <GROUP>] [--open] [--type <TYPE>] [--owner <OWNER>] [--overdue] [--json]
 proj item add <REF> <TEXT> [--group <GROUP>] [--after <AFTER>] [--state <STATE>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>]
 proj item set <ITEM> <STATE> [--note <NOTE>] [--commit <COMMIT>]
 proj item check <ITEM> [--note <NOTE>] [--commit <COMMIT>]
@@ -247,6 +227,14 @@ plan 的 Success Criteria、debt 的 Repayment Plan、decision 的 Confirmation�
 - 操作前 md 必须与 DB 一致，否则报 `unsynced edits`（先 `proj sync`）。处于
 `gates.items` 门禁状态的记录（如 Archived plan）拒绝重开/新增未处理项。
 - 进度：任务带清单时，其行末在 Tasks 块与 `TASKLIST.md` 显示 `n/m`（已处理/总数）。
+
+## wip
+
+```
+proj wip add <IDS>
+proj wip return <IDS>
+proj wip ls
+```
 
 ## 常用工作流
 

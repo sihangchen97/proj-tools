@@ -96,6 +96,19 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     # an empty PROJ_LOGS line documents the available config var
     add(".env", "# project config defaults (D6): OS env > .env > code default\n"
                 "# PROJ_LOGS=\n")
+    # B3: .proj.bugs is append-only and personal — never committed. Idempotent:
+    # a pre-existing .gitignore (or one already listing it) is left as is.
+    gi = cfg.root / ".gitignore"
+    entry = ".proj.bugs"
+    if gi.exists():
+        lines = gi.read_text(encoding="utf-8").splitlines()
+        if entry not in lines:
+            lines.append(entry)
+            gi.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            created.append(".gitignore (updated)")
+    else:
+        gi.write_text(entry + "\n", encoding="utf-8")
+        created.append(".gitignore")
     if zoo:
         copy_tpl("zoo-rule.md", ".roo/rules/proj-tools.md")
 

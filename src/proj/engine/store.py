@@ -944,6 +944,15 @@ Ops cheatsheet (RT = a type — name or code, case-insensitive; VERB = one from 
   overview:   proj info [--json]"""
 
 
+def _bug_count(cfg: ProjConfig):
+    """Number of `.proj.bugs` records, or None when the file does not exist (B).
+    DB-free (a file read) — safe even with a broken database."""
+    from proj import bugs  # lazy
+
+    n = bugs.count(cfg.root)
+    return n if n else None
+
+
 def info(cfg: ProjConfig) -> dict:
     reg = load_registry(cfg.root)
     db = open_db(cfg)
@@ -973,6 +982,7 @@ def info(cfg: ProjConfig) -> dict:
         "changelog": {"entries": len(cl), "versions": versions,
                       "latest": versions[-1] if versions else None},
         "views": views,
+        "bug_reports": _bug_count(cfg),  # B: .proj.bugs (DB-free; None = file absent)
         "cheatsheet": CHEATSHEET.splitlines(),
     }
     db.close()
@@ -994,6 +1004,8 @@ def info_text(d: dict) -> str:
     cl = d["changelog"]
     if cl["entries"]:
         lines.append(f"Changelog: {cl['entries']} entries, latest {cl['latest']}")
+    if d.get("bug_reports"):
+        lines.append(f"Bug reports: {d['bug_reports']} (.proj.bugs)")
     lines.append("Views (rendered, never hand-edit): " + ", ".join(d["views"]))
     lines.append("")
     lines.append(CHEATSHEET)

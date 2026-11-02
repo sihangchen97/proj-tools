@@ -26,6 +26,7 @@ proj open <ID>
 proj check
 proj info [--json]
 proj docs
+proj bug [<TEXT>] [--cmd <CMD>] [--json] [--root <ROOT>]
 ```
 
 - **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单向 md→DB，`render` 单向 DB→md。
@@ -226,6 +227,14 @@ plan 的 Success Criteria、debt 的 Repayment Plan、decision 的 Confirmation�
 - 操作前 md 必须与 DB 一致，否则报 `unsynced edits`（先 `proj sync`）。处于
 `gates.items` 门禁状态的记录（如 Archived plan）拒绝重开/新增未处理项。
 - 进度：任务带清单时，其行末在 Tasks 块与 `TASKLIST.md` 显示 `n/m`（已处理/总数）。
+
+## wip
+
+```
+proj wip add <IDS>
+proj wip return <IDS>
+proj wip ls
+```
 
 ## 常用工作流
 

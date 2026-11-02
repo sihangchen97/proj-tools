@@ -66,6 +66,7 @@ files manually — use the `proj` CLI (or the `proj_*` MCP tools if available).
 - `proj sync` (md → DB → re-render everything)
 - `proj check` (invariants; also runs in pre-commit — fix FAILs before pushing)
 - Add `--json` to `ls` / `show` / `item ls` for machine-readable output.
+- `proj bug "…"` / `proj bug ls` — report a bug in proj itself (`.proj.bugs`, git-ignored); also run when the tool misbehaves vs its docs, recording what you ran.
 
 ## Don't
 

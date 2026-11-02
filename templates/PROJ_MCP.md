@@ -6,15 +6,16 @@
 > 从项目目录启动 client（如 Claude Code 在仓库里）不需要任何配置；从全局配置启动
 > （client cwd ≠ 项目）就给每个 tool 传 `root`，或设 `$PROJ_HOME`。
 > 校验失败不抛错，而是返回 `error: …` 文本（agent 可读）。
+> proj 行为不符合文档 / 出现未预期报错时，用 `proj_bug(text, command=…)` 记录现象和命令（写入项目的 `.proj.bugs`，不入库、不进 git）。
 
 ## Tools
 
 ### `proj_init`
 
-Scaffold a new project: files, DB tables (lock wins over templates), seed, adopt.
-root: absolute project path (default: the current directory).
-profile: default plus additive names (cv, infra, quality, ...); the choice
-is pinned in .proj.lock — repeat inits append new profiles.
+Scaffold a new project: files, DB tables (lock wins over templates), seed,
+adopt. root: absolute project path (default: the current directory).
+profile: default plus additive names (cv, infra, quality, …); the choice is
+pinned in .proj.lock — repeat inits append new profiles.
 
 ### `proj_new`
 
@@ -28,107 +29,135 @@ summary: one-sentence summary.
 ### `proj_sync`
 
 md → DB (validate, normalize) → re-render all md. files: comma-separated
-paths (default: all managed dirs). FAIL lines mean the DB was not fully updated.
+paths (default: all managed dirs). FAIL lines mean the DB was not fully
+updated.
+
+### `proj_adopt`
+
+Absorb pre-existing md files into the DB (id marker if present, else an
+id check). files: comma-separated paths (default: all managed dirs).
+
+### `proj_render`
+
+Regenerate md from the DB (no md input). ref: comma-separated record ids
+and/or record_types (default: every record + every view). Unsynced hand
+edits are ingested first (problems abort before any file is written).
 
 ### `proj_check`
 
 Validate DB ↔ lock ↔ templates ↔ md invariants. 'OK' or FAIL lines.
 
+### `proj_ls`
+
+List records (from DB), one line each (id, status, title). record_type:
+restrict to one type (name or code); omitted = every record_type.
+status: filter (display name, e.g. 'In Progress').
 
 ### `proj_show`
 
-Show one record (from DB); history: append its full changelog.
+Show one record (from DB); the id carries its type so record_type is
+optional. history: append the full changelog. as_json: a JSON object
+(id/type/title/status/created/summary/parent/changelog) instead of text.
+
+### `proj_update`
+
+Update a record's title / summary (a title change renames its md file);
+message: optionally append a changelog entry ('Category: text'). The id
+carries the type — record_type is optional.
 
 ### `proj_verb`
 
 Run a template verb (a state-machine step) on a record, e.g.
-`('decision','accept','DEC-0002')`, `('plan','activate','PLN-0001')`,
-`('task','done','T-000001')`. verb must be one the record_type's template
-declares; title/summary/message optionally also update it after the step.
-
-### `proj_update_record`
-
-Update a record's title / summary (a title change renames its md file);
-message: optionally append a changelog entry ('Category: text').
-
-### `proj_update`
-
-sync all + re-render every view (TASKLIST.md, CHANGELOG.md, view sections).
+`('DEC-0002','accept')`, `('PLN-0001','activate')`, `('T-000001','done')`.
+The id carries the type — record_type is optional. verb must be one the
+type's template declares; `from: Any` verbs work from any status.
+title/summary/message: optionally also update them after the step
+(message appends a changelog entry, 'Category: text').
 
 ### `proj_info`
 
-What this project manages (record_types, counts, statuses) + verb cheatsheet.
+What this project manages (record_types, counts, statuses) + the verb
+cheatsheet (which verb moves which record where, with its gate).
 
 ### `proj_changelog_add`
 
 Add a CHANGELOG.md entry: 'Category: text' (Added/Changed/Fixed/…; plain
 text ok). version: default the Unreleased placeholder.
 
+### `proj_changelog_version`
+
+Release a version: move Unreleased into a version (name: the version,
+e.g. v0.1.0; bump: major | minor | patch from the latest). Exactly one.
+
+### `proj_changelog_release_notes`
+
+Print one version's CHANGELOG section (for PR/tag bodies).
+
+### `proj_changelog_list`
+
+List released versions (newest first): 'vX.Y.Z  date'.
+
 ### `proj_task_move`
 
-Move an existing task under a (possibly new) parent record, or detach it.
-parent: new parent id (any record type); detach: True to unparent. Exactly
-one of the two. Refused for itself / its own descendants / closed records.
+Re-home an existing task: parent = the new parent record id (any type),
+detach = True to remove the parent edge entirely (the task becomes
+Unparented). Exactly one of parent/detach. Refused when the target is the
+task itself, one of its own descendants (cycle), or a closed record.
 
 ### `proj_item_ls`
 
 List items as 'ID#A01  state  text  [owner]  [due]'. ref: one record id
 (omit = every record); group / open_only / record_type / owner / overdue
-filter.
+filter. as_json: a JSON array of objects (ref, record, no, group, state,
+closed, text, note, owner, due).
 
 ### `proj_item_add`
 
 Add an item to a record's checklist (auto-numbered, appended to its
-group). group: the group letter L (default the ungrouped list); after:
-insert right after ITEM; state/note/owner/due optional. Returns the fresh
-item list.
+group), or a whole new group. new_group=true: `text` is the GROUP name —
+the next free letter (A-Z, never reused) is assigned. group: the group
+letter L (default the ungrouped list); after: insert right after ITEM;
+state/note/owner/due optional. Returns the fresh item list.
 
-### `proj_item_set`
+### `proj_item_update`
 
-Set an item's state (item = 'ID#n'). note / commit optional. Returns the
-fresh item list.
-
-### `proj_item_check`
-
-Mark an item ('ID#n') closed (first closed state). Returns the fresh item
-list.
-
-### `proj_item_uncheck`
-
-Re-open an item ('ID#n') (first unclosed state). Returns the fresh item
-list.
-
-### `proj_item_edit`
-
-Edit an item's ('ID#n') text / note / owner / due (empty string clears).
-Returns the fresh item list.
-
-### `proj_item_mv`
-
-Move an item ('ID#A01'): exactly one of group (into L, fresh number) /
-ungroup (to the ungrouped list, fresh number) / after (right after ITEM) /
-first (top of its group). Cross-group moves get a fresh number. Returns the
-fresh item list.
+Change an item or a group of a record's checklist (item = 'ID#nn'; a
+group = 'ID#L00', its X00 row — `text` on a group renames it). Pass only
+the fields to change. state: one of the checklist's states, or 'closed'
+(the first closed state) / 'open' (the first unclosed state); text/note/
+owner/due on an item (an empty string clears a field); commit: a git
+commit hash. Move: exactly one of group (into L, fresh number) / ungroup
+(to the ungrouped list) / after (right after ITEM) / first (top of its
+group) — for a group, after/first moves the group. Returns the fresh item
+list. Refused when it would un-close an item on a record in a closed
+(gates) status.
 
 ### `proj_item_rm`
 
-Remove an item ('ID#A01'); its number is never reused. Returns the fresh
-item list.
+Remove an item ('ID#nn'; its number is never reused) or a whole group
+('ID#L00' — when the group still holds items, `items` must be 'ungroup' or
+'delete'). Returns the fresh item list.
 
-### `proj_item_group_add`
+### `proj_wip_add`
 
-Add a group; the tool assigns the next free letter (A-Z, never reused).
-Returns the fresh item list.
+Register records in WIP.md (the "in progress" list). A record already in
+it is skipped (not an error). Returns the fresh WIP list.
 
-### `proj_item_group_rename`
+### `proj_wip_return`
 
-Rename a group. Returns the fresh item list.
+Remove records from WIP.md, writing any edited items back into the record
+first. A record not in WIP is an error. Returns what was returned.
 
-### `proj_item_group_rm`
+### `proj_wip_ls`
 
-Delete a group; `items` = 'ungroup' or 'delete' when it holds items.
+The WIP list: ID  status  title  n/m.
 
-### `proj_item_group_mv`
+### `proj_bug`
 
-Move a group: exactly one of after / first. Returns the fresh item list.
+Record a bug in the proj tool itself -> .proj.bugs (B2, DB-free). Returns
+the file path it was written to.
+
+### `proj_bug_ls`
+
+List the .proj.bugs records (time · source · reporter · first line).
 
