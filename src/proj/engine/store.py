@@ -56,12 +56,41 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from proj.core import db as dbmod
+from proj.core import fsio
 from proj.core.config import ProjConfig
 from proj.core.db import ProjError
 from proj.core.templates import RecordTypeSpec, load_registry, slugify
+
+
+# ---- S.2: the project write lock (re-entrant) --------------------------------
+# Every write command holds `write_lock` for its whole run — at the CLI entry
+# points (cli.py) and the MCP write tools (mcp.py) — so concurrent writers queue
+# up (fsio.LOCK_TIMEOUT); read commands take none. The engine keeps its own
+# transactions (R3) and only switches file writes to fsio.write_atomic; the lock
+# lives one level up so it is shared by both entry channels. Re-entrant per
+# thread: a nested entry (e.g. an item op re-invoking sync_section) shares ONE
+# acquisition; the outermost exit releases the flock.
+
+_lock_local = threading.local()
+
+
+@contextmanager
+def write_lock(cfg: ProjConfig, cmd: str = ""):
+    key = str(Path(cfg.root).resolve())
+    if getattr(_lock_local, "held", None) == key:
+        yield
+        return
+    with fsio.project_lock(cfg.root, cmd):
+        _lock_local.held = key
+        try:
+            yield
+        finally:
+            _lock_local.held = None
 
 # tool-owned id marker (an html-comment line, on line 1 above the blockquote head)
 # id shape: 1-3 letters + '-' + a fixed-width DIGIT suffix, letters+digits == 7
@@ -438,24 +467,27 @@ def md_drift(cfg: ProjConfig) -> list[str]:
 def ensure_synced(cfg: ProjConfig) -> None:
     """A1 (Q4): before a write command overwrites record files, ingest every
     file with unsynced hand edits (md → DB). No-op when nothing drifted.
-    Problems abort the whole operation — nothing is rendered or half-written."""
-    reg = load_registry(cfg.root)
-    # R3: one write transaction — the hand edits are ingested atomically (or the
-    # whole ingest rolls back when a file is malformed)
-    with open_db(cfg) as db:
-        db.begin()  # R3: one write transaction for the whole command
-        for spec in reg.values():
-            for p in _scan_files(cfg, spec, None):
-                (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
-                if mk != spec.record_type or not u:
-                    continue
-                row = db.get(spec, u)
-                if row is None or not _md_drifts(p, row, spec, db):
-                    continue
-                problems, _ = _ingest_md(cfg, spec, db, p, strict=True)
-                if problems:
-                    raise ProjError("unsynced md edits with problems — fix and retry:\n"
-                                    + "\n".join(f"  {x}" for x in problems))
+    Problems abort the whole operation — nothing is rendered or half-written.
+    S.2: holds the project write lock (re-entrant when nested under a
+    write command that already holds it)."""
+    with write_lock(cfg, "sync"):
+        reg = load_registry(cfg.root)
+        # R3: one write transaction — the hand edits are ingested atomically (or
+        # the whole ingest rolls back when a file is malformed)
+        with open_db(cfg) as db:
+            db.begin()  # R3: one write transaction for the whole command
+            for spec in reg.values():
+                for p in _scan_files(cfg, spec, None):
+                    (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
+                    if mk != spec.record_type or not u:
+                        continue
+                    row = db.get(spec, u)
+                    if row is None or not _md_drifts(p, row, spec, db):
+                        continue
+                    problems, _ = _ingest_md(cfg, spec, db, p, strict=True)
+                    if problems:
+                        raise ProjError("unsynced md edits with problems — fix and retry:\n"
+                                        + "\n".join(f"  {x}" for x in problems))
 
 
 def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
@@ -486,14 +518,14 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
                 text = render_record(spec, row, db, reg, task_rows=task_rows)
                 if p.exists() and p.read_text(encoding="utf-8") == text:
                     continue  # unchanged (B1)
-                p.write_text(text, encoding="utf-8")
+                fsio.write_atomic(p, text)  # S.2: atomic (no half-written file)
                 written.append(p)
         for view in (render_wip_md(cfg, db, reg), render_changelog_md(cfg, db)):
             if view is None:
                 continue
             if view.path.exists() and view.path.read_text(encoding="utf-8") == view.text:
                 continue  # unchanged (B1)
-            view.path.write_text(view.text, encoding="utf-8")
+            fsio.write_atomic(view.path, view.text)  # S.2
             written.append(view.path)
         return written
     finally:
@@ -624,7 +656,7 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
         row = db.get(spec, id_)
         p = file_path(cfg, spec, row)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(render_record(spec, row, db), encoding="utf-8")
+        fsio.write_atomic(p, render_record(spec, row, db))  # S.2: atomic
     render_all(cfg)  # keep views (WIP.md etc.) in sync with the new record
     return row, p
 
@@ -654,7 +686,7 @@ def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
             wipmod.auto_status_wip(db, spec, row["id"], old, status)
         fresh = db.get(spec, row["id"])
         p = file_path(cfg, spec, fresh)
-        p.write_text(render_record(spec, fresh, db), encoding="utf-8")
+        fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic
     render_all(cfg)  # status changes affect rendered views
     return fresh
 
@@ -673,7 +705,7 @@ def add_log(cfg: ProjConfig, record_type: str, id_: str, summary: str,
         db.add_log(row["id"], text, category or cat)
         fresh = db.get(spec, row["id"])
         p = file_path(cfg, spec, fresh)
-        p.write_text(render_record(spec, fresh, db), encoding="utf-8")
+        fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic
 
 
 def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None = None,
@@ -704,7 +736,7 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
         p = file_path(cfg, spec, fresh)
         if p != old_p and old_p.is_file():
             old_p.rename(p)
-        p.write_text(render_record(spec, fresh, db), encoding="utf-8")
+        fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic
     render_all(cfg)
     return fresh
 
@@ -851,47 +883,48 @@ def sync(cfg: ProjConfig, files: list[Path] | None = None):
     WIP.md drifted → conflict (kept as is, the user keeps one side); only WIP.md
     drifted → its item section is written back into the record (the record md's
     items section is then skipped in the ingest, the stored intro preserved);
-    otherwise the record md wins and WIP.md re-renders from the DB."""
-    reg = load_registry(cfg.root)
-    if files:
-        return _sync_files(cfg, reg, files)
-    from proj.engine import wip as wipmod  # lazy: store↔wip cycle
-    with open_db(cfg) as db:  # read-only scan, its own short connection
-        wip_only, conflicts = wipmod.wip_sync_plan(db, reg, cfg)
-    problems = [f"{c}: item section edited in BOTH the record md and WIP.md — "
-                f"keep one side (edit only one, then sync)"
-                for c in conflicts]
-    if problems:
-        return problems, []
-    if not wip_only:
-        return _sync_files(cfg, reg, None)  # nothing to write back: the usual path
-    notes = []
-    # one write transaction: write back the WIP-edited checklists, then ingest the
-    # record mds (skipping the items section of the just-written-back records, so
-    # the stale md list can't clobber what WIP.md just stored)
-    with open_db(cfg) as db:
-        db.begin()  # R3: one write transaction for the whole command
-        for rid, section in wip_only.items():
-            row = dict(db.conn.execute(
-                "SELECT * FROM records WHERE id=?", (rid,)).fetchone())
-            spec = reg[row["type"]]
-            from proj.engine import items as items_mod  # lazy: store↔items cycle
-            pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md")
-            if pr:
-                return pr, []
-            notes += [f"WIP.md: {n}" for n in nt]
-        for spec in reg.values():
-            for p in _scan_files(cfg, spec, None):
-                (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
-                pr, nt = _ingest_md(cfg, spec, db, p, strict=True,
-                                     skip_items=u in wip_only if mk == spec.record_type else False)
-                problems += pr
-                notes += nt
-        if not problems:
-            render_all(cfg, db=db)
-    return problems, notes
-
-
+    otherwise the record md wins and WIP.md re-renders from the DB.
+    S.2: the whole command (scan + write-back + ingest + render) holds
+    # the project write lock."""
+    with write_lock(cfg, "sync"):
+        reg = load_registry(cfg.root)
+        if files:
+            return _sync_files(cfg, reg, files)
+        from proj.engine import wip as wipmod  # lazy: store↔wip cycle
+        with open_db(cfg) as db:  # read-only scan, its own short connection
+            wip_only, conflicts = wipmod.wip_sync_plan(db, reg, cfg)
+        problems = [f"{c}: item section edited in BOTH the record md and WIP.md — "
+                    f"keep one side (edit only one, then sync)"
+                    for c in conflicts]
+        if problems:
+            return problems, []
+        if not wip_only:
+            return _sync_files(cfg, reg, None)  # nothing to write back: the usual path
+        notes = []
+        # one write transaction: write back the WIP-edited checklists, then ingest the
+        # record mds (skipping the items section of the just-written-back records, so
+        # the stale md list can't clobber what WIP.md just stored)
+        with open_db(cfg) as db:
+            db.begin()  # R3: one write transaction for the whole command
+            for rid, section in wip_only.items():
+                row = dict(db.conn.execute(
+                    "SELECT * FROM records WHERE id=?", (rid,)).fetchone())
+                spec = reg[row["type"]]
+                from proj.engine import items as items_mod  # lazy: store↔items cycle
+                pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md")
+                if pr:
+                    return pr, []
+                notes += [f"WIP.md: {n}" for n in nt]
+            for spec in reg.values():
+                for p in _scan_files(cfg, spec, None):
+                    (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
+                    pr, nt = _ingest_md(cfg, spec, db, p, strict=True,
+                                         skip_items=u in wip_only if mk == spec.record_type else False)
+                    problems += pr
+                    notes += nt
+            if not problems:
+                render_all(cfg, db=db)
+        return problems, notes
 def _sync_files(cfg: ProjConfig, reg: dict,
                files: list[Path] | None) -> tuple[list[str], list[str]]:
     """`proj sync` (all files) and `proj sync FILES…` — the record md → DB pass.
@@ -913,20 +946,22 @@ def _sync_files(cfg: ProjConfig, reg: dict,
 
 def adopt(cfg: ProjConfig, files: list[Path] | None = None):
     """Absorb existing md files (id marker if present; otherwise id check).
-    Then render everything. Returns (problems, notes)."""
-    reg = load_registry(cfg.root)
-    problems, notes = [], []
-    # R3: one write transaction — adopt every file, then re-render the views
-    with open_db(cfg) as db:
-        db.begin()  # R3: one write transaction for the whole command
-        for spec in reg.values():
-            for p in _scan_files(cfg, spec, files):
-                pr, nt = _ingest_md(cfg, spec, db, p, strict=False)
-                problems += pr
-                notes += nt
-        if not problems:
-            render_all(cfg, db=db)
-    return problems, notes
+    Then render everything. Returns (problems, notes).
+    S.2: the whole command holds the project write lock."""
+    with write_lock(cfg, "adopt"):
+        reg = load_registry(cfg.root)
+        problems, notes = [], []
+        # R3: one write transaction — adopt every file, then re-render the views
+        with open_db(cfg) as db:
+            db.begin()  # R3: one write transaction for the whole command
+            for spec in reg.values():
+                for p in _scan_files(cfg, spec, files):
+                    pr, nt = _ingest_md(cfg, spec, db, p, strict=False)
+                    problems += pr
+                    notes += nt
+            if not problems:
+                render_all(cfg, db=db)
+        return problems, notes
 
 
 # ---- info ----------------------------------------------------------------------

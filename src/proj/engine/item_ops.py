@@ -81,14 +81,16 @@ class _Ctx:
 @contextmanager
 def _editing(cfg: ProjConfig, ref: str, need_item: bool):
     """The whole op flow (plans/items-design.md §7): resolve ref → refuse on
-    unsynced md → yield _Ctx → (caller computes new state) → ctx.save re-renders."""
-    spec, row, no = _parse_ref(cfg, ref, need_item)
-    rec.ensure_synced(cfg)  # A1: unsynced edits are ingested, never refused
-    db = rec.open_db(cfg)
-    try:
-        yield _Ctx(cfg, spec, db, row, spec.items, _load_state(db, spec, row), no)
-    finally:
-        db.close()
+    unsynced md → yield _Ctx → (caller computes new state) → ctx.save re-renders.
+    S.2: the whole op (incl. the save + re-render) holds the project write lock."""
+    with rec.write_lock(cfg, "item"):
+        spec, row, no = _parse_ref(cfg, ref, need_item)
+        rec.ensure_synced(cfg)  # A1: unsynced edits are ingested, never refused
+        db = rec.open_db(cfg)
+        try:
+            yield _Ctx(cfg, spec, db, row, spec.items, _load_state(db, spec, row), no)
+        finally:
+            db.close()
 
 
 def _parse_after(ctx: _Ctx, s: str) -> str:

@@ -26,6 +26,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import typer
@@ -34,6 +35,7 @@ from typer.main import get_command as _to_click_command
 
 from proj import bugs, scaffold
 from proj.check import check as run_checks
+from proj.core import fsio
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
 from proj.core.templates import _registry_key, resolve_record_type
 from proj.engine import item_ops, present
@@ -155,6 +157,20 @@ def _cfg(strict: bool = True) -> ProjConfig:
         return load_config(_ROOT["root"], strict=strict)
     except FileNotFoundError as e:
         _fail(str(e))
+
+
+@contextmanager
+def _write_lock(strict: bool = True):
+    """S.2: every write command holds the project write lock (fsio.write_atomic
+    covers the file writes); read commands never take it. No project root → no
+    lock (a failing command has nothing to guard)."""
+    try:
+        cfg = _cfg(strict)
+    except FileNotFoundError:
+        yield
+        return
+    with fsio.project_lock(cfg.root, " ".join(["proj", *sys.argv[1:]])):
+        yield
 
 
 def _fail(msg: str) -> None:
