@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from proj import scaffold
@@ -44,3 +46,23 @@ def many_tasks(proj) -> int:
         yield 300
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def _render_verify(tmp_path):
+    """PROJ_RENDER_VERIFY=1 (default OFF, PLAN §28.1 23:50): after every test,
+    the on-disk md must equal a full in-memory render of the DB (tests only)."""
+    yield
+    if not os.environ.get("PROJ_RENDER_VERIFY"):
+        return
+    if not (tmp_path / ".proj" / "lock.yaml").exists():
+        return  # no proj project in this test
+    import render_verify
+
+    from proj.core.config import ProjConfig
+
+    diffs = render_verify.verify(ProjConfig(root=tmp_path))
+    if diffs:
+        for rel, kind, detail in diffs[:5]:
+            print(f"render-verify {kind}: {rel} ({detail})")
+        raise AssertionError(f"disk not in sync with the DB render: {len(diffs)} file(s)")
