@@ -363,7 +363,7 @@ def test_plan_full_when_missing_trailing_newline(tmp_path):
 def test_apply_incremental_equals_full_replay(tmp_path):
     """The core property: a pure append applied incrementally to a cached db
     yields the SAME tables as a full replay of every line on an empty db."""
-    ua, ub, uc = _uuid(), _uuid(), _uuid()
+    ua, ub = _uuid(), _uuid()
     mk = [_create(ua, "task", "T-000001", "a", 1_000, "alex"),
           ev.make("item.add", actor="alex", at=2_000, seq=1, rec=ua,
                   item=_uuid(), no="001", section="Acceptance Criteria",
