@@ -520,7 +520,9 @@ def test_refused_for_unknown_record_or_item(proj):
 def test_edit_clears_and_validates(proj):
     row, _ = taskmod.new(proj, "T")
     ops.add(proj, row["id"], "a", note="n", owner="o", due="2026-12-31")
-    out = ops.edit(proj, f"{row['id']}#001", text="b", note="", owner="", due="")
+    # S.3: clearing the owner (o → "") is a hand-over — it needs reassign=True
+    out = ops.edit(proj, f"{row['id']}#001", text="b", note="", owner="", due="",
+                   reassign=True)
     assert "- [ ] #001 b" in out
     with pytest.raises(ValueError, match="valid date"):
         ops.edit(proj, f"{row['id']}#001", due="not-a-date")

@@ -704,11 +704,17 @@ def item_edit(item: str,
               text: str | None = typer.Option(None, "--text", help="new item text (empty clears)"),
               note: str | None = typer.Option(None, "--note", help="new note (empty clears)"),
               owner: str | None = typer.Option(None, "--owner", help="new owner (empty clears)"),
-              due: str | None = typer.Option(None, "--due", help="new due date (empty clears)")):
-    """Edit an item's text / note / owner / due (pass an empty string to clear a field)."""
+              due: str | None = typer.Option(None, "--due", help="new due date (empty clears)"),
+              reassign: bool = typer.Option(
+                  False, "--reassign",
+                  help="hand the item to a different owner (or clear it); "
+                       "refused without this when the item is owned")):
+    """Edit an item's text / note / owner / due (pass an empty string to clear a
+    field). S.3: changing or clearing an owned item's owner needs --reassign."""
     cfg = _cfg()
     try:
-        typer.echo(item_ops.edit(cfg, item, text=text, note=note, owner=owner, due=due).rstrip())
+        typer.echo(item_ops.edit(cfg, item, text=text, note=note, owner=owner, due=due,
+                                 reassign=reassign).rstrip())
     except ValueError as e:
         _fail(str(e))
 

@@ -462,15 +462,17 @@ def proj_item_add(ref: str, text: str, group: str | None = None,
 
 def proj_item_update(item: str, state: str | None = None, text: str | None = None,
                      note: str | None = None, owner: str | None = None, due: str | None = None,
-                     commit: str = "", group: str | None = None, ungroup: bool = False,
-                     after: str | None = None, first: bool = False,
+                     commit: str = "", reassign: bool = False, group: str | None = None,
+                     ungroup: bool = False, after: str | None = None, first: bool = False,
                      root: str | None = None) -> str:
     """Change an item or a group of a record's checklist (item = 'ID#nn'; a
     group = 'ID#L00', its X00 row — `text` on a group renames it). Pass only
     the fields to change. state: one of the checklist's states, or 'closed'
     (the first closed state) / 'open' (the first unclosed state); text/note/
     owner/due on an item (an empty string clears a field); commit: a git
-    commit hash. Move: exactly one of group (into L, fresh number) / ungroup
+    commit hash. reassign: hand the item to a different owner (or clear the
+    owner) — required by S.3 when the item is owned and the owner changes.
+    Move: exactly one of group (into L, fresh number) / ungroup
     (to the ungrouped list) / after (right after ITEM) / first (top of its
     group) — for a group, after/first moves the group. Returns the fresh item
     list. Refused when it would un-close an item on a record in a closed
@@ -494,7 +496,7 @@ def proj_item_update(item: str, state: str | None = None, text: str | None = Non
                               root=root)
         if any(v is not None for v in (text, note, owner, due)):
             return _item_call(item_ops.edit, item, text=text, note=note, owner=owner,
-                              due=due, root=root)
+                              due=due, reassign=reassign, root=root)
         if group is not None or ungroup or after is not None or first:
             return _item_call(item_ops.move, item, group=group, ungroup=ungroup,
                               after=after, first=first, root=root)

@@ -47,7 +47,9 @@ files manually — use the `proj` CLI (or the `proj_*` MCP tools if available).
   `proj item add <ID> "what you will do" --owner <you>` for new work, or
   `proj item edit <ID>#A01 --owner <you>` for an existing item.
   Use the same name every time (your agent name, e.g. `alex`).
-- **Don't take an item someone else owns**; ask, or add your own item.
+- **Don't take an item someone else owns**; ask, or add your own item. Once
+  agreed, hand it over with `proj item edit <ID>#A01 --owner <you> --reassign`
+  (the owner change is logged in the record's changelog).
 - **Your open work**: `proj item ls --owner <you> --open`.
 - **What is in progress**: `WIP.md` / `proj wip ls`. Records join WIP
   automatically when they start (e.g. a task going In Progress) and leave when

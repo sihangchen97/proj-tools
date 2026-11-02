@@ -791,7 +791,13 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         # skip_items: WIP.md just wrote this record's checklist back — the record
         # md's (possibly stale) list must not clobber it.
         if spec.items is not None and not skip_items:
+            # S.3: a hand-edited owner is a deliberate hand-over — accepted, but
+            # named in the notes (`item #A01 owner alex → billy`)
+            from proj.engine import item_ops as ops_mod  # lazy: store↔item_ops
             from proj.engine import items as items_mod  # lazy: store↔items cycle
+            notes += ops_mod.sync_owner_notes(
+                db, spec, db.get(spec, u),
+                raw_sections.get(spec.items.section.lower(), ""))
             problems, n = items_mod.sync_section(
                 db, spec, db.get(spec, u),
                 raw_sections.get(spec.items.section.lower(), ""),
@@ -901,7 +907,11 @@ def sync(cfg: ProjConfig, files: list[Path] | None = None):
                 row = dict(db.conn.execute(
                     "SELECT * FROM records WHERE id=?", (rid,)).fetchone())
                 spec = reg[row["type"]]
+                from proj.engine import item_ops as ops_mod  # lazy: store↔item_ops
                 from proj.engine import items as items_mod  # lazy: store↔items cycle
+                # S.3: a hand-edited owner in WIP.md is a hand-over too (a note)
+                notes += [f"WIP.md: {n}" for n in
+                          ops_mod.sync_owner_notes(db, spec, row, section)]
                 pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md")
                 if pr:
                     return pr, []

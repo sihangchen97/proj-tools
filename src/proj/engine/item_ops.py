@@ -143,11 +143,43 @@ def uncheck(cfg: ProjConfig, ref: str) -> str:
 
 
 def edit(cfg: ProjConfig, ref: str, text: str | None = None, note: str | None = None,
-         owner: str | None = None, due: str | None = None) -> str:
+         owner: str | None = None, due: str | None = None,
+         reassign: bool = False) -> str:
     with _editing(cfg, ref, need_item=True) as c:
+        # S.3: handing an item to a DIFFERENT owner (or clearing the owner) is
+        # refused by default — the current owner keeps it unless the taker
+        # passes --reassign. First claim (no owner yet) and re-asserting the
+        # same owner are plain edits.
+        if owner is not None:
+            old = c.state.by_no(c.no)
+            if old is not None and old.owner and old.owner != owner and not reassign:
+                raise items.ItemsError(
+                    f"#{c.no} is owned by {old.owner} — pass --reassign to hand it over")
         new, notes = items.edit(c.state, c.it, c.no, text=text, note=note,
                                 owner=owner, due=due)
-        return c.save(new, notes)
+        out = c.save(new, notes)
+        if owner is not None and reassign:
+            nxt = new.by_no(c.no)
+            if (old is not None and nxt is not None
+                    and old.owner and old.owner != nxt.owner):
+                # the generic `item #no edited` line (diff_log) does not name
+                # the hand-over — S.3 wants the owner change logged explicitly
+                c.db.add_log(c.row["id"],
+                             f"item #{c.no} owner {old.owner} → {nxt.owner or '(cleared)'}",
+                             category="Changed")
+        return out
+
+
+def sync_owner_notes(db, spec, row: dict, section_md: str) -> list[str]:
+    """S.3: the md's items section names a DIFFERENT owner than the DB — a
+    human hand-over (edit the file by hand / WIP.md). Sync accepts it (a
+    direct edit is deliberate), but the note names it: `item #A01 owner
+    alex → billy` (the changelog gets the generic `edited` line)."""
+    stored = {i.no: i.owner for i in items.load(db, row["id"], spec).live()}
+    parsed = items.parse_section(section_md, spec)
+    return [f"item #{it.no} owner {stored[it.no]} → {it.owner or '(cleared)'}"
+            for it in items._all_items(parsed)
+            if it.no in stored and stored[it.no] and stored[it.no] != it.owner]
 
 
 def move(cfg: ProjConfig, ref: str, group: str | None = None, ungroup: bool = False,
