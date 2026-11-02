@@ -99,7 +99,7 @@ def check(cfg: ProjConfig) -> list[str]:
     expected = wipmod.render_wip_md(cfg, db, reg).text
     wip_path = cfg.root / wipmod.WIP_FILE
     if not wip_path.is_file():
-        problems.append(f"WIP.md missing — run `proj render`")
+        problems.append("WIP.md missing — run `proj render`")
     elif wip_path.read_text(encoding="utf-8") != expected:
         problems.append("WIP.md differs from the DB render — run `proj sync`")
     for entry in db.wip_all():

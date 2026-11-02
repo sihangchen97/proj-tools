@@ -14,7 +14,6 @@ the same shape as the record md's checklist — so sync can hand it back to
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from proj.core.config import ProjConfig
 from proj.core.templates import RecordTypeSpec
@@ -127,8 +126,8 @@ def entry_items_text(wip_text: str, record_id: str) -> str:
     if not body:
         return ""
     lines = body.splitlines()
-    start = next((i for i, l in enumerate(lines)
-                  if l.startswith("- [") or l.startswith("### ")), None)
+    start = next((i for i, line in enumerate(lines)
+                  if line.startswith("- [") or line.startswith("### ")), None)
     if start is None:
         return ""
     out: list[str] = []
@@ -149,7 +148,8 @@ def _changed(db, spec: RecordTypeSpec, record_id: str, md_section: str) -> bool:
     section to the stored rows; the intro is not part of WIP.md)."""
     from proj.engine import items as items_mod  # lazy
     state = items_mod.load(db, record_id, spec)
-    return items_mod.normalize(md_section) != items_mod.normalize(items_mod.render_section(state, spec))
+    return items_mod.normalize(md_section) != items_mod.normalize(
+        items_mod.render_section(state, spec))
 
 
 def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> tuple[dict, list]:

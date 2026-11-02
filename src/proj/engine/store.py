@@ -892,7 +892,8 @@ def sync(cfg: ProjConfig, files: list[Path] | None = None):
     return problems, notes
 
 
-def _sync_files(cfg: ProjConfig, reg: dict, files: list[Path] | None) -> tuple[list[str], list[str]]:
+def _sync_files(cfg: ProjConfig, reg: dict,
+               files: list[Path] | None) -> tuple[list[str], list[str]]:
     """`proj sync` (all files) and `proj sync FILES…` — the record md → DB pass.
     No WIP write-back: this is the path sync reaches when WIP.md has no pending
     edits (or files are given explicitly, which never spans WIP.md)."""

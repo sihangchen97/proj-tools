@@ -28,5 +28,5 @@ def test_slugify_symbols_only_falls_back_to_id():
     # a title with no letters/digits → "" (the caller uses the id alone,
     # e.g. T-000001.md) — never a dangling trailing '-'
     assert slugify("####") == ""
-    assert slugify("（）·——") == ""
+    assert slugify("（）·——") == ""  # noqa: RUF001 全角括号是测试目标
     assert slugify("") == ""
