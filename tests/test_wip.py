@@ -381,5 +381,5 @@ def test_b2_wip_writeback_targets_the_wip_checklist(proj):
     for verb in ("activate", "review", "shelve"):
         plan.transition(proj, verb, pid)
     assert _item_state(proj, pid, "001") == "done"   # the Work item was closed
-    assert _item_state(proj, pid, "002") == "todo"   # Success Criteria untouched
+    assert _item_state(proj, pid, "002") == "open"   # Success Criteria untouched
     assert not _has(proj, pid)                        # left WIP on entering terminal

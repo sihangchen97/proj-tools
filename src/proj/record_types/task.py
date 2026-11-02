@@ -37,33 +37,46 @@ class Task(Record):
     def new(self, cfg: ProjConfig, title: str, parent: str | None = None,
             summary: str = "", commit: str = "",
             related: list[str] | None = None):
-        row, p = super().new(cfg, title, summary=summary, commit=commit)
+        # B1: the parent (exists + is-a-task + not-closed) is validated BEFORE
+        # any row is created, and the related refs are pre-validated by
+        # record.new/_create_row (in the row's transaction) — a bad ref raises
+        # with nothing in the DB, so no orphan task row or md. The parent edge
+        # then lands in its own transaction.
         if parent:
-            self._check_parent_ref(cfg, parent)
-            canonical = rec.canonical_id(cfg, parent)
+            canonical = self._check_parent_for_new(cfg, parent)
+        row, p = super().new(cfg, title, summary=summary, commit=commit,
+                             related=related)
+        if parent:
             # R3: the parent edge + its log line land in ONE transaction
             with rec.open_db(cfg) as db:
                 db.begin()  # R3: one write transaction for the whole command
-                # re-open restriction: never parent a fresh task under a closed
-                # ancestor (its state is in that ancestor's gates.tasks)
-                p_spec, p_row = rec.ref_record(cfg, db, canonical)
-                if p_spec is not None and p_spec.record_type != "task":
-                    raise ValueError(
-                        f"parent {canonical} must be a task (got a {p_spec.record_type}) "
-                        f"— to attach it to a {p_spec.record_type}, reference that "
-                        f"{p_spec.record_type} from one of ITS checklists instead")
-                if p_row is not None and p_row["status"] in p_spec.gates_tasks:
-                    raise ValueError(
-                        f"parent {canonical} is {p_row['status']!r} (a closed state) "
-                        f"— move it out of that state first, or attach elsewhere")
-                # kind=parent: source=parent, target=this task (single parent);
-                # the edge's FK requires both ids to exist (D8)
                 db.add_relation(canonical, row["id"], "parent")
                 db.add_log(row["id"], f"parent: {canonical}", "Added")
             rec.render_all(cfg)
-        if related:
-            row = self.add_related(cfg, row["id"], related)
         return row, p
+
+    def _check_parent_for_new(self, cfg: ProjConfig, parent: str) -> str:
+        """B1: validate a task's parent BEFORE the row is created — it exists
+        (any record_type), is a task, and is not in a closed (gates.tasks) state.
+        Returns the canonical parent id. Raises ValueError before anything is
+        written, so a refused new leaves no orphan row or md."""
+        reg = rec.load_registry(cfg.root)
+        with rec.open_db(cfg) as db:
+            p_spec, p_row = rec.ref_record(cfg, db, parent)
+            if p_row is None:
+                raise ValueError(
+                    f"parent {parent!r} not found (types: {', '.join(reg)}) "
+                    f"— create it first or drop --parent")
+            if p_spec.record_type != "task":
+                raise ValueError(
+                    f"parent {p_row['id']} must be a task (got a {p_spec.record_type}) "
+                    f"— to attach it to a {p_spec.record_type}, reference that "
+                    f"{p_spec.record_type} from one of ITS checklists instead")
+            if p_row["status"] in p_spec.gates_tasks:
+                raise ValueError(
+                    f"parent {p_row['id']} is {p_row['status']!r} (a closed state) "
+                    f"— move it out of that state first, or attach elsewhere")
+        return rec.canonical_id(cfg, parent)
 
     # done/fail go through the base-class verbs (task.yaml declares them); the
     # descendant-task gate lives in Record.validate_transition (gates.tasks)

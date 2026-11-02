@@ -46,7 +46,7 @@ def _progress(row: dict, spec: RecordTypeSpec, db) -> str:
     WITHOUT checklist items, its terminal/total sub-tasks."""
     from proj.engine import items as items_mod  # lazy: wip↔items cycle
     if spec.wip_items is not None:
-        live = items_mod.load(db, row["id"], spec).live()
+        live = items_mod.load(db, row["id"], spec.wip_items).live()
         items = [i for i in live if not i.is_group]
         if items:
             closed = [i for i in items if i.state in closed_states(spec)]
@@ -78,9 +78,13 @@ def entry_lines(row: dict, spec: RecordTypeSpec, cfg: ProjConfig,
     if row.get("summary"):
         lines += [f"_{row['summary'].strip()}_", ""]
     if spec.wip_items is not None:
-        state = items_mod.load(db, row["id"], spec)
-        state.intro = items_mod._intro_of(spec, row)
-        sec = items_mod.render_section(state, spec)
+        # B2: the entry shows the record's WIP checklist (its `wip: true` one) —
+        # the same one _changed / the write-back ingest; rendering the primary
+        # instead would make every re-render drift.
+        it = spec.wip_items
+        state = items_mod.load(db, row["id"], it)
+        state.intro = items_mod._intro_of(it, row)
+        sec = items_mod.render_section(state, it)
         if sec.strip():
             lines += sec.splitlines()
     return lines
@@ -199,19 +203,22 @@ def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> t
 
 
 def wip_writeback(db, registry: dict[str, RecordTypeSpec],
-                  cfg: ProjConfig) -> tuple[list[str], list[str]]:
-    """Ingest WIP.md's pending checklist edits into the DB (the WIP.md-side
-    half of `sync`'s two-way merge; B2: the write-back targets each record's
-    WIP checklist, `it=spec.wip_items`, never the primary). Caller must hold
-    the transaction. Both-sides conflicts are reported as problems (nothing is
-    written); returns (problems, notes). No-op when WIP.md matches the DB."""
+                  cfg: ProjConfig) -> tuple[list[str], list[str], set[str]]:
+    """Ingest WIP.md's pending checklist edits into the DB (the WIP.md-side half
+    of `sync`'s two-way merge; B2: the write-back targets each record's WIP
+    checklist, `it=spec.wip_items`, never the primary). Caller must hold the
+    transaction. Returns (problems, notes, written-ids) — the caller skips the
+    record md's items section for those records (the stale md must not clobber
+    what WIP.md just stored). Both-sides conflicts abort with problems."""
     from proj.engine import item_ops as ops_mod  # lazy: wip↔item_ops cycle
     from proj.engine import items as items_mod  # lazy
     wip_only, conflicts = wip_sync_plan(db, registry, cfg)
     if conflicts:
-        return ([f"{c}: item section edited in BOTH the record md and WIP.md \u2014 "
-                 f"keep one side (edit only one, then sync)" for c in conflicts], [])
+        problems = [f"{c}: item section edited in BOTH the record md and WIP.md \u2014 "
+                    f"keep one side (edit only one, then sync)" for c in conflicts]
+        return problems, [], set()
     notes: list[str] = []
+    written: set[str] = set()
     for rid, section in wip_only.items():
         row = _record_by_id(db, rid)
         spec = registry[row["type"]]
@@ -221,9 +228,10 @@ def wip_writeback(db, registry: dict[str, RecordTypeSpec],
         notes += [f"WIP.md: {n}" for n in ops_mod.sync_owner_notes(db, it, row, section)]
         pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md", it=it)
         if pr:
-            return pr, []
+            return pr, [], set()
         notes += [f"WIP.md: {n}" for n in nt]
-    return [], notes
+        written.add(rid)
+    return [], notes, written
 
 
 def auto_status_wip(db, spec: RecordTypeSpec, record_id: str, old: str, to: str) -> None:

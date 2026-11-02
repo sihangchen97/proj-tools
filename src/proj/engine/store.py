@@ -483,6 +483,22 @@ def ensure_synced(cfg: ProjConfig) -> None:
         # the whole ingest rolls back when a file is malformed)
         with open_db(cfg) as db:
             db.begin()  # R3: one write transaction for the whole command
+            # B2: WIP.md is the second edit entry for a record's checklist — ingest
+            # its pending edits FIRST (same two-way merge as `sync`), so a write
+            # command's re-render can't clobber an unsynced WIP.md edit (e.g. a
+            # non-terminal status switch re-rendering before the terminal one).
+            from proj.engine import wip as wipmod  # lazy: store↔wip cycle
+            problems, _notes, written = wipmod.wip_writeback(db, reg, cfg)
+            if problems:
+                raise ProjError("WIP.md ingest problems — fix and retry:\n"
+                                + "\n".join(f"  {x}" for x in problems))
+            if written:
+                # B2: the write-back just stored WIP.md's edits in the DB —
+                # re-render the views so WIP.md's DISK state matches the DB.
+                # Without this, the same command's auto-return (auto_status_wip)
+                # or a later non-terminal render would read the STALE WIP.md and
+                # write the pre-edit checklist back, clobbering the user's edit.
+                render_all(cfg, db=db)
             for spec in reg.values():
                 for p in _scan_files(cfg, spec, None):
                     (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
@@ -491,7 +507,11 @@ def ensure_synced(cfg: ProjConfig) -> None:
                     row = db.get(spec, u)
                     if row is None or not _md_drifts(p, row, spec, db):
                         continue
-                    problems, _ = _ingest_md(cfg, spec, db, p, strict=True)
+                    # the checklist was just written back from WIP.md: the stale
+                    # md list must not clobber it in this same ingest
+                    skip = u in written
+                    problems, _ = _ingest_md(cfg, spec, db, p, strict=True,
+                                             skip_items=skip)
                     if problems:
                         raise ProjError("unsynced md edits with problems — fix and retry:\n"
                                         + "\n".join(f"  {x}" for x in problems))
