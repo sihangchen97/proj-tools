@@ -393,18 +393,12 @@ def proj_wip_return(ids: list[str], root: str | None = None) -> str:
         return f"error: {e}"
 
 
-def proj_wip_ls(root: str | None = None) -> str:
-    """The WIP list: ID  status  title  n/m."""
+def proj_wip_ls(owner: str | None = None, root: str | None = None) -> str:
+    """The WIP list: ID  status  title  n/m. owner: only WIP entries that carry
+    an OPEN item owned by that person (those items are listed)."""
     cfg = _cfg(root)
     try:
-        rows = wipmod.wip_ls(cfg)
-        if not rows:
-            return "(no records in WIP)"
-        w = max(len(r["id"]) for r in rows)
-        s = max(len(r["status"]) for r in rows)
-        return "\n".join(f"{r['id']:<{w}}  {r['status']:<{s}}  {r['title']}"
-                         + (f"  {r['progress']}" if r["progress"] else "")
-                         for r in rows)
+        return wipmod.format_wip_ls(wipmod.wip_ls(cfg, owner), owner)
     except (ValueError, ProjError) as e:
         return f"error: {e}"
 

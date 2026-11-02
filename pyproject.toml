@@ -72,3 +72,5 @@ lint = { cmd = "ruff check src tests", default-environment = "dev" }
 e2e = { cmd = "python scripts/e2e.py", default-environment = "dev" }
 # 同一套情境，每条命令启动真实的 proj 子进程（覆盖真实入口，较慢）
 e2e-full = { cmd = "python scripts/e2e.py", env = { PROJ_E2E_SUBPROCESS = "1" }, default-environment = "dev" }
+# 性能基准（PLAN §26.1）：本地 50/300/1000 条记录；BENCH_NFS_DIR=/vol/… 加 NFS 列
+bench = { cmd = "python scripts/bench.py", default-environment = "dev" }

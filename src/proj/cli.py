@@ -837,18 +837,14 @@ def wip_return_cmd(ids: list[str] = typer.Argument(..., help="one or more record
 
 
 @wip_app.command("ls")
-def wip_ls_cmd():
-    """The WIP list: ID  status  title  n/m."""
+def wip_ls_cmd(owner: str | None = typer.Option(
+        None, "--owner",
+        help="only WIP entries that carry an OPEN item owned by this person "
+             "(lists those items)")):
+    """The WIP list: ID  status  title  n/m. --owner filters to entries with an
+    open item owned by that person and lists them."""
     cfg = _cfg()
-    rows = wip_ops.wip_ls(cfg)
-    if not rows:
-        typer.echo("(no records in WIP)")
-        return
-    w = max(len(r["id"]) for r in rows)
-    s = max(len(r["status"]) for r in rows)
-    for r in rows:
-        typer.echo(f"{r['id']:<{w}}  {r['status']:<{s}}  {r['title']}"
-                   + (f"  {r['progress']}" if r["progress"] else ""))
+    typer.echo(wip_ops.format_wip_ls(wip_ops.wip_ls(cfg, owner), owner))
 
 
 # ---- hooks ------------------------------------------------------------------------------

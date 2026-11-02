@@ -269,8 +269,12 @@ def wip_return(cfg, record_ids: list[str]) -> tuple[list[str], list[str]]:
     return returned, notes
 
 
-def wip_ls(cfg) -> list[dict]:
-    """The WIP list (id, status, title, closed/total) for `proj wip ls`."""
+def wip_ls(cfg, owner: str | None = None) -> list[dict]:
+    """The WIP list (id, status, title, closed/total) for `proj wip ls`.
+    With `owner` (D8 / §20): only the entries whose WIP checklist has an OPEN
+    item owned by that person, each carrying those items (`no`/`state`/`text`/
+    `due`) — the per-WIP version of `item ls --owner --open`."""
+    from proj.engine import items as items_mod  # lazy: wip↔items cycle
     from proj.engine import store as rec  # lazy
     with rec.open_db(cfg) as db:
         reg = rec.load_registry(cfg.root)
@@ -280,10 +284,37 @@ def wip_ls(cfg) -> list[dict]:
             if row is None:
                 continue
             spec = reg[row["type"]]
-            out.append({"id": row["id"], "status": row["status"], "type": row["type"],
-                        "title": row["title"], "progress": _progress(row, spec, db),
-                        "source": entry["source"]})
+            d = {"id": row["id"], "status": row["status"], "type": row["type"],
+                 "title": row["title"], "progress": _progress(row, spec, db),
+                 "source": entry["source"], "owner_items": []}
+            if owner is not None and spec.wip_items is not None:
+                mine = [i for i in items_mod.load(db, row["id"], spec).live()
+                        if not i.is_group and i.owner == owner
+                        and i.state not in closed_states(spec)]
+                d["owner_items"] = [{"no": i.no, "state": i.state, "text": i.text,
+                                     "due": i.due} for i in mine]
+                if not mine:  # only list entries that actually carry an open item
+                    continue
+            out.append(d)
         return out
+
+
+def format_wip_ls(rows: list[dict], owner: str | None = None) -> str:
+    """The WIP list as text (shared by the CLI and the MCP). With `owner`, the
+    matching open items are listed under their entry (`  #no state text [due]`)."""
+    if not rows:
+        return "(no records in WIP)"
+    lines = []
+    w = max(len(r["id"]) for r in rows)
+    s = max(len(r["status"]) for r in rows)
+    for r in rows:
+        lines.append(f"{r['id']:<{w}}  {r['status']:<{s}}  {r['title']}"
+                     + (f"  {r['progress']}" if r["progress"] else ""))
+        for it in r.get("owner_items", []):
+            st = "x" if it["state"] in ("done", "failed", "dropped") else " "
+            lines.append(f"    [{st}] #{it['no']} {it['text']}"
+                         + (f"  (due {it['due']})" if it["due"] else ""))
+    return "\n".join(lines)
 
 
 def _sync_items(db, spec: RecordTypeSpec, row: dict, md_section: str,

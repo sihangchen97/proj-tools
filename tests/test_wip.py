@@ -329,3 +329,29 @@ def test_wip_pos_append_and_holes(proj):
     pos = {e["record_id"]: e["pos"] for e in db.wip_all()}
     db.close()
     assert pos[c["id"]] > pos[b["id"]]  # c appended after b despite the hole
+
+
+# ---- D8: wip ls --owner (§20) -------------------------------------------------
+
+def test_wip_ls_owner_filters_and_lists_items(proj):
+    """`wip ls --owner X`: only the WIP entries that carry an OPEN item owned by
+    X, with those items listed under their entry. The owner field on the WIP
+    checklist (task = Acceptance Criteria) is what filters — not a record field."""
+    a, _ = taskmod.new(proj, "Feat A")
+    b, _ = taskmod.new(proj, "Feat B")
+    wipmod.wip_add(proj, [a["id"], b["id"]])
+    item_ops.add(proj, a["id"], "step for alex", owner="alex")
+    item_ops.add(proj, a["id"], "step for billy", owner="billy")
+    item_ops.add(proj, b["id"], "step for cindy", owner="cindy")
+    item_ops.check(proj, f"{a['id']}#001")  # alex's item closed: no longer "open"
+    assert wipmod.wip_ls(proj, "alex") == []  # nothing open left for alex
+    # an open item: a different owner shows up
+    rows = wipmod.wip_ls(proj, "billy")
+    assert len(rows) == 1 and rows[0]["id"] == a["id"]
+    assert rows[0]["owner_items"] == [{"no": "002", "state": "open",
+                                       "text": "step for billy", "due": ""}]
+    out = wipmod.format_wip_ls(rows, "billy")
+    assert a["id"] in out and "#002 step for billy" in out
+    assert b["id"] not in out  # the other entry is filtered out
+    # the plain `wip ls` lists both entries (no owner filter)
+    assert len(wipmod.wip_ls(proj)) == 2
