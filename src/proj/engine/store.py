@@ -29,8 +29,9 @@ md file shape (rendered by the engine):
 
     <details><summary>Task list</summary>  <- the attached-task tree, right below the
     - [x] T-000001 Title                  <-   head fence and BEFORE the user-owned
-    </details>                            <-   sections; rendered for ANY record that
-                                         <-   parents tasks (kind=parent edges),
+    </details>                            <-   sections; rendered for a TASK that
+                                         <-   parents tasks (kind=parent edges,
+                                         <-   task→task only since K2),
                                          <-   collapsed by default
 
     ## Context                             <- user-owned content (the only
@@ -45,7 +46,8 @@ the text is the target's full filename, the path relative to this record's own
 file (same dir → bare filename, across dirs → ../dir/filename); one ref = one
 line, several = a bare key line + `> - item` list. The attached-task tree
 (children via the kind=parent relation, any depth, fully expanded) renders
-right below the head fence for ANY record that parents tasks. The id marker
+right below the head fence for a TASK that parents tasks (K2: parent edges
+are task→task only; a plan references its work via the Work checklist). The id marker
 comment sits
 on line 1, above the block.
 
@@ -187,7 +189,8 @@ def canonical_id(cfg: ProjConfig, ref: str) -> str:
 def ref_record(cfg: ProjConfig, db: dbmod.Db, ref: str):
     """(spec, row) for a ref across every record_type (None, None when no match).
     An exact canonical id wins; a bare number ("1") is widened to each type's
-    id form (a task's parent may point at a plan) — an ambiguous bare number
+    id form (a task's parent must be a task since K2; other types are
+    referenced via checklists) — an ambiguous bare number
     raises: pass the canonical id (e.g. DEC-0001)."""
     reg = load_registry(cfg.root)
     for spec in reg.values():
@@ -245,7 +248,8 @@ def _link_value(value: str, db: dbmod.Db, registry: dict,
     → bare filename, across dirs → ../target-dir/filename). Dangling ids
     fall back to plain text.
     One id → a single string; several → a list (the head inlines it on the
-    key line). Resolves across any record_type (parent→plan)."""
+    key line). Resolves across any record_type (a task's parent edge is
+    task→task since K2)."""
     root = Path(db.path).parent
     src_file = file_path(ProjConfig(root), spec, row)
     ids = [x for x in value.replace(",", " ").split() if x]
@@ -331,8 +335,9 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     # target's full filename); the one-sentence summary is an italic line
     # below the block (shown only when set — never a "Summary:" label).
     # The attached-task tree (direct children via relations, at most 2
-    # levels) renders for ANY record that parents tasks, right below the
-    # head fence (replaces the old contain_task gate + subtask head row).
+    # levels) renders for a TASK that parents tasks, right below the head
+    # fence (K2: parent edges are task→task only — see below; a plan
+    # references work via its Work checklist instead).
     reg = registry if registry is not None else load_registry(Path(db.path).parent)
     fm = {
         "status": f"`{spec.status_display(row['status'])}`",
