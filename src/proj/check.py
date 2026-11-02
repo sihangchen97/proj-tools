@@ -126,5 +126,14 @@ def check(cfg: ProjConfig) -> list[str]:
         if rows:
             problems.extend(record_for(spec).check_rows(rows, db, reg))
 
+    # the event log (git collab E7): only checked when the file exists —
+    # projects that have not started recording events are healthy without it.
+    # S.10 moves the file into .proj/; until then it sits next to the DB.
+    events_path = cfg.root / "events.jsonl"
+    if events_path.is_file():
+        from proj import events  # lazy: events has no import cycle, kept late
+        for msg in events.validate(events_path):
+            problems.append(f"events.jsonl: {msg}")
+
     db.close()
     return problems

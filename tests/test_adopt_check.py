@@ -140,3 +140,26 @@ def test_check_detects_schema_mismatch(proj):
     proj.db_path.unlink()
     scaffold.init(proj, ["default"])
     assert not any("does not match" in p for p in checkmod.check(proj))
+
+
+def test_check_ignores_missing_events_log(proj):
+    """No events.jsonl yet (pre-S.10 recording): check stays healthy about it."""
+    assert not any("events.jsonl" in p for p in checkmod.check(proj))
+
+
+def test_check_validates_events_log(proj):
+    path = proj.root / "events.jsonl"
+    path.write_text("not a json line\n", encoding="utf-8")
+    problems = checkmod.check(proj)
+    assert any("events.jsonl" in p and "line 1" in p for p in problems)
+    path.unlink()
+
+
+def test_check_accepts_well_formed_events_log(proj):
+    from proj import events
+    path = proj.root / "events.jsonl"
+    ev = events.make("log", actor="alice", at=1, seq=1, rec="T-000001",
+                     category="Added", text="created")
+    path.write_text(events.to_line(ev), encoding="utf-8")
+    assert not any("events.jsonl" in p for p in checkmod.check(proj))
+    path.unlink()
