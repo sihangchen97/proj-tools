@@ -105,7 +105,15 @@ class TwoClones:
     b: Clone
 
     def push(self, c: Clone) -> None:
-        _git("push", "origin", "HEAD", cwd=c.path)
+        """push; if the remote moved meanwhile (the other clone pushed first),
+        merge it in and push again — the design's everyday flow is `git pull`
+        (a union merge of the append-only log), NOT a rebase (rebase replays the
+        log onto a moving base, which the union-merge model does not do)."""
+        try:
+            _git("push", "origin", "HEAD", cwd=c.path)
+        except RuntimeError:
+            _git("pull", "origin", "HEAD", "--no-rebase", cwd=c.path)
+            _git("push", "origin", "HEAD", cwd=c.path)
 
     def pull(self, c: Clone) -> None:
         _git("pull", "origin", "HEAD", "--no-rebase", cwd=c.path)

@@ -37,6 +37,13 @@ MERGE_DRIVER_NAME = "proj: keep ours, re-render after merge"
 #: post-checkout: skip a plain file checkout (identical head, $1=1 $2=$3) —
 #: the guard must run BEFORE the exec below, so it is its own template
 _CHECKOUT_GUARD = '[ "$1" = 1 ] && [ "$2" = "$3" ] && exit 0\n'
+#: post-checkout also fires on EVERY step of a `git pull --rebase`: the sync
+#: there would replay+re-render a half-rebased tree and the cache write races
+#: the rebase (it can even abort it). Skip mid-rebase — post-rewrite runs once
+#: when the rebase finishes. (C7, 2026-11-03: `git pull --rebase` in a collab
+#: project aborted; the everyday flow is `git pull` (merge), which this keeps.)
+_REBASE_GUARD = ('if [ -d "$(git rev-parse --git-dir)/rebase-merge" ] || '\
+                 '[ -d "$(git rev-parse --git-dir)/rebase-apply" ]; then exit 0; fi\n')
 
 #: {desc}/{guard}/{cmd}/{name} are filled at import; {proj} (doubled here, so
 #: import-time .format() leaves a literal {proj}) is filled at install() with
@@ -54,13 +61,16 @@ echo "proj: hook target not found, skipping ({name})"
 PRE_COMMIT = _HOOK.format(desc="runs governance checks on every commit",
                           guard="", cmd="check", name="pre-commit")
 #: the sync hooks: after a merge / a branch checkout / a rebase-rewrite the
-#: working tree carries the merged event log — replay + re-render (E4; the
-#: replay half lands with C3, `proj sync` is the stable entry point)
-POST_SYNC = _HOOK.format(desc="replays the merged event log and re-renders",
-                         guard="", cmd="sync --quiet", name="post sync")
-POST_CHECKOUT = _HOOK.format(desc="replays the merged event log and re-renders",
-                             guard=_CHECKOUT_GUARD, cmd="sync --quiet",
-                             name="post checkout")
+#: working tree carries the merged event log — rebuild the cache from it and
+#: re-render (E4). C4: the md is a PROJECTION of the log, so a hook-driven
+#: sync must NEVER ingest (the union-merged md would be re-read and re-create
+#: records the log already built — duplicates). `--rerender` does exactly the
+#: rebuild-from-log + force re-render, no ingest.
+POST_SYNC = _HOOK.format(desc="rebuilds the cache from the merged log and re-renders",
+                         guard="", cmd="sync --rerender --quiet", name="post sync")
+POST_CHECKOUT = _HOOK.format(desc="rebuilds the cache from the merged log and re-renders",
+                             guard=_CHECKOUT_GUARD + _REBASE_GUARD,
+                             cmd="sync --rerender --quiet", name="post checkout")
 
 POST_HOOKS = {  # git hook name -> script
     "post-merge": POST_SYNC,

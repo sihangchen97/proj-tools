@@ -29,19 +29,15 @@ WAIT_C2C4 = pytest.mark.xfail(
 WAIT_C5 = pytest.mark.xfail(
     strict=True, reason="needs C5 (refuse write commands mid-merge/rebase)")
 
-
 @pytest.fixture(scope="module")
 def proj_binary() -> str:
     return ch._find_proj()
 
-
 def _task_titles(cl: ch.Clone) -> list[str]:
     return [r["title"] for r in json.loads(cl.run("task", "ls", "--json"))]
 
-
 def _task_ids(cl: ch.Clone) -> list[str]:
     return [r["id"] for r in json.loads(cl.run("task", "ls", "--json"))]
-
 
 def _new_task_id(cl: ch.Clone, title: str) -> str:
     out = cl.run("task", "new", title, "-y")
@@ -52,7 +48,6 @@ def _new_task_id(cl: ch.Clone, title: str) -> str:
     m = re.search(r"([A-Z]+-\d+)-", line)
     assert m, line
     return m.group(1)
-
 
 def test_harness_builds_two_identical_clones(tmp_path, proj_binary):
     """The harness itself (already holds): bare repo, two clones, each a
@@ -70,8 +65,6 @@ def test_harness_builds_two_identical_clones(tmp_path, proj_binary):
         # hooks are best-effort here (E4 in progress); the scenarios push/pull
         # manually and do not need them, so neither value is a failure
 
-
-@WAIT_C2C4
 def test_disjoint_tasks_merge_and_rebuild(tmp_path, proj_binary):
     """§10.1: both add different tasks → both DBs list all of them after the
     merge (C4: a write command in B rebuilds the DB from the pulled log)."""
@@ -88,7 +81,6 @@ def test_disjoint_tasks_merge_and_rebuild(tmp_path, proj_binary):
     assert not t.merge_conflict()
     assert sorted(_task_titles(a)) == sorted(_task_titles(b))
     assert {tid_a, tid_b} <= set(_task_ids(a))
-
 
 @WAIT_C2C4
 def test_disjoint_sections_merge(tmp_path, proj_binary):
@@ -114,7 +106,6 @@ def test_disjoint_sections_merge(tmp_path, proj_binary):
     assert "A 的备选" in md_b and "B 的后果" in md_b
     assert md_a == md_b
 
-
 @WAIT_C2C4
 def test_same_field_lww_keeps_later_and_reports(tmp_path, proj_binary):
     """§10.3: both change the same task title → the merge keeps exactly one
@@ -137,8 +128,6 @@ def test_same_field_lww_keeps_later_and_reports(tmp_path, proj_binary):
     md_b = next(b.path.rglob(f"{tid}-*.md")).read_text(encoding="utf-8")
     assert ("标题 A" in md_b) ^ ("标题 B" in md_b)  # exactly one wins
 
-
-@WAIT_C2C4
 def test_disjoint_checklists_and_wip_merge(tmp_path, proj_binary):
     """§10.4: both check different items on the same record + both add
     different records to WIP.md → the union keeps everything."""
@@ -163,7 +152,6 @@ def test_disjoint_checklists_and_wip_merge(tmp_path, proj_binary):
     listing = a.run("item", "ls", tid)
     assert "步骤一" in listing and "步骤二" in listing
 
-
 # ---------------------------------------------------------------------------
 # §10 + C7 追加场景 (2026-11-03 00:10): merge-order independence,
 # trailing newline, merge-in-progress refusal, rebase == merge, cache rebuild.
@@ -177,12 +165,10 @@ def _states_equal(t) -> None:
     assert sa == sb, "the two sides differ after the merge"
     assert sa["md"], "no md data found"
 
-
 def _event_line(op, at, actor, seq, rec="", **payload) -> str:
     """One canonical events.jsonl line (the same writer C2 will use)."""
     from proj.events import make, to_line
     return to_line(make(op, actor=actor, at=at, seq=seq, rec=rec, **payload))
-
 
 # ---- §10.1 / C7 merge-order independence -----------------------------------
 
@@ -210,8 +196,6 @@ def test_id_collision_renumbers_and_both_sides_agree(tmp_path):
     assert sorted(_task_ids(a)) == sorted(_task_ids(b))
     _states_equal(t)
 
-
-@WAIT_C2C4
 def test_merge_order_is_irrelevant(tmp_path):
     """C7: A merges B first vs B merges A first → byte-identical results
     (proj ls --json, item ls --json, every md) on both sides."""
@@ -228,10 +212,8 @@ def test_merge_order_is_irrelevant(tmp_path):
     sa, sb = a.state(), b.state()
     assert sa == sb, "A-first merge: the sides differ"
 
-
 # ---- §10.2 field-level merge -----------------------------------------------
 
-@WAIT_C2C4
 def test_disjoint_fields_both_survive(tmp_path):
     """§10.4: A changes the title, B changes the summary of the same task →
     both changes survive (field-level, not whole-record LWW)."""
@@ -256,7 +238,6 @@ def test_disjoint_fields_both_survive(tmp_path):
     assert not t.merge_conflict()
     final = next(b.path.rglob(f"{tid}-*.md")).read_text(encoding="utf-8")
     assert "新标题" in final and "B 写的摘要" in final
-
 
 # ---- §10.5 item number collision -------------------------------------------
 
@@ -283,7 +264,6 @@ def test_item_number_collision_renumbers(tmp_path):
     assert "A 新" in listing and "B 新" in listing
     _states_equal(t)
 
-
 # ---- §10.6 gate violation survives the merge -------------------------------
 
 @WAIT_C2C4
@@ -309,7 +289,6 @@ def test_closed_plan_plus_new_item_reports_gate_violation(tmp_path):
     assert not t.merge_conflict()
     out = b.run("check", expect=1)
     assert "gate" in out.lower() or pid in out
-
 
 # ---- §10.7 delete (tombstone) vs modify ------------------------------------
 
@@ -339,10 +318,8 @@ def test_tombstone_vs_modify_replays_in_order(tmp_path):
     assert "改过的文本" not in listing.split("B 修改", 1)[0] or "会变的项" in listing
     _states_equal(t)
 
-
 # ---- C7 rebase == merge ----------------------------------------------------
 
-@WAIT_C2C4
 def test_rebase_equals_merge(tmp_path):
     """C7: the same divergent edits produced by a rebase and by a merge give
     byte-identical results (two independent harness runs)."""
@@ -361,7 +338,6 @@ def test_rebase_equals_merge(tmp_path):
         assert not t.merge_conflict()
         return a.state()
     assert make_side("rebase") == make_side("merge")
-
 
 # ---- C7 write refused while a merge is in progress -------------------------
 
@@ -410,7 +386,6 @@ def test_write_refused_while_merge_in_progress(tmp_path):
         # unblocked once the merge is aborted
         b.run("task", "new", "可以成", "-y")
 
-
 # ---- C7 cache rebuild after deletion ---------------------------------------
 
 def test_cache_deleted_rebuilds_identical(tmp_path):
@@ -433,7 +408,6 @@ def test_cache_deleted_rebuilds_identical(tmp_path):
     assert b.ls_json() == a.ls_json()
     _states_equal(t)
 
-
 # ---- C7 events.jsonl must end with a newline (holds TODAY) ------------------
 
 def test_events_file_without_trailing_newline_fails_check(tmp_path):
@@ -451,7 +425,6 @@ def test_events_file_without_trailing_newline_fails_check(tmp_path):
         encoding="utf-8")
     out = c.run("check", expect=1)
     assert "does not end with a newline" in out
-
 
 # ---- design §10: a clone without hooks -------------------------------------
 
@@ -471,10 +444,8 @@ def test_clone_without_hooks_auto_replays(tmp_path):
     assert set(_task_ids(a)) == set(_task_ids(b))
     _states_equal(t)
 
-
 # ---- C7 (optional) random two-clone test ------------------------------------
 
-@WAIT_C2C4
 def test_random_ops_both_merge_orders_agree(tmp_path):
     """C7 (optional): 20 seed-driven ops per side (new task / add item),
     merged → byte-identical. The seed is fixed so a failure is reproducible.

@@ -298,6 +298,11 @@ class Db:
                                     rec=self._rec_uuid(record_id) if record_id else "",
                                     **payload))
 
+    def meta_delete(self, key: str) -> None:
+        """Delete one meta key (C4: `proj sync` consumes ev:notifications)."""
+        self.conn.execute("DELETE FROM meta WHERE key=?", (key,))
+        self.conn.commit()
+
     def _flush_events(self) -> None:
         """C2.3: before the DB commit, append every accumulated event with ONE
         os.write (O_APPEND — a crash never interleaves lines, the file always

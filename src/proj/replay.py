@@ -18,6 +18,7 @@ the columns, one extra write per create/item.add persists the uuid.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import time
@@ -465,11 +466,12 @@ def rebuild_cache(cache_path, event_path,
         os.replace(tmp, p)  # atomic: readers see either the old or the new cache
     except Exception:
         if db is not None:
-            try: db.close()
-            except Exception: pass
+            with contextlib.suppress(Exception):
+                db.close()
         for suffix in ("", "-wal", "-shm"):
             f = p.parent / (tmp.name + suffix)
-            if f.exists(): f.unlink()
+            if f.exists():
+                f.unlink()
         raise
     return res
 
@@ -479,7 +481,6 @@ def apply_and_store(db, res: ReplayResult, event_path) -> None:
     fresh bookkeeping over the now-longer file) into the EXISTING cache, plus
     any notifications the appended lines surfaced (so `proj sync` reports them)."""
     m = commit_meta(db, event_path)
-    m["ev:uuids"] = dict(res.ids)
     if res.renamed or res.overwrites or res.diagnostics:
         m["ev:notifications"] = json.dumps(
             {"renamed": res.renamed, "overwrites": res.overwrites,

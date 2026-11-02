@@ -426,31 +426,67 @@ def init(profiles: list[str] = typer.Option(
         typer.echo("Nothing to create — everything already exists.")
 
 
+def _replay_notices(cfg: ProjConfig) -> list[str]:
+    """C4: print and CONSUME the merge-surfaced notifications a full rebuild
+    or incremental apply stored in meta (ev:notifications) — renumbering (G2),
+    LWW overwrites (G5), replay diagnostics (G3). A merge surfaces them once;
+    the first `proj sync` after it reports them, then clears the meta so a
+    later sync doesn't repeat them."""
+    from proj import replay as rp
+    from proj.core import db as dbmod
+    conn = dbmod.Db(cfg.db_path)
+    try:
+        raw = rp.load_meta(conn).get("ev:notifications")
+        if not raw:
+            return []
+        n = json.loads(raw)
+        lines: list[str] = []
+        for r in n.get("renamed", []):
+            if "item" in r:  # item renumbering (G2)
+                lines.append(f"renumbered item {r['record']} #{r['proposed']} "
+                             f"→ #{r['actual']} (the number was taken — update your references)")
+            else:  # record renumbering (G2)
+                lines.append(f"renumbered {r['proposed']} → {r['actual']} "
+                             f"(the id was taken by another record — update your references)")
+        for o in n.get("overwrites", []):
+            lines.append(f"overwritten {o['record']}.{o['field']}: kept "
+                         f"{o['kept_by']}'s value, dropped {o['overwritten_by']}'s (LWW)")
+        lines += [f"replay: {d}" for d in n.get("diagnostics", [])]
+        conn.meta_delete("ev:notifications")
+        return lines
+    finally:
+        conn.close()
+
+
 @app.command()
 def sync(files: list[Path] = typer.Argument(
         None, help="Files (default: all managed dirs)"),
          rerender: bool = typer.Option(
             False, "--rerender",
             help="Skip the ingest: overwrite every md with the rendered state "
-                 "(the replay result) as-is — use after a merge without the "
-                 "proj-render driver (conflict markers)."),
+                 "(the replay result) as-is — the C4 hooks use it: after a merge "
+                 "the md is a stale projection, so the cache is rebuilt from the "
+                 "merged event log and every md re-rendered, no ingest."),
          quiet: bool = typer.Option(
             False, "--quiet",
             help="No echo output — the post-merge / post-checkout / post-rewrite "
-                 "hooks run `sync --quiet` (the work still happens, incl. "
-                 "renumber/overwrite notices).")):
+                 "hooks run `sync --rerender --quiet` (rebuild + re-render still "
+                 "happen, incl. renumber/overwrite notices).")):
     """Bring the md files and the DB in line: every hand edit is checked and
     stored, then the tool-owned parts of every file are regenerated. No file
     argument = everything."""
     cfg = _cfg()
     if rerender:
-        # C5: no ingest — the md (possibly conflict-laced) is thrown away and
-        # every file is overwritten by the rendered state as-is
+        # C4: no ingest — the cache is (re)built from the merged event log and
+        # every md is overwritten by the rendered state as-is (the log is the
+        # source of truth; ingesting the merged md would re-create records)
         try:
             written = rec.render_all(cfg, force=True)
         except ValueError as e:
             _fail(str(e))
         typer.echo(f"OK — {len(written)} file(s) re-rendered")
+        for line in _replay_notices(cfg):
+            typer.echo(f"note: {line}")
         return
     try:
         problems, notes = rec.sync(cfg, list(files) if files else None)
@@ -459,6 +495,8 @@ def sync(files: list[Path] = typer.Argument(
     _print_problems(problems, notes)
     if problems:
         raise typer.Exit(1)
+    for line in _replay_notices(cfg):
+        typer.echo(f"note: {line}")
     if not quiet:
         typer.echo("OK — synced and re-rendered")
 

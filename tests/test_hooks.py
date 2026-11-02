@@ -46,9 +46,9 @@ def test_install_writes_all_four_hooks(git_project):
     hooks.install(git_project)
     hooks_dir = git_project.root / ".git" / "hooks"
     for name, cmd in (("pre-commit", "check"),
-                      ("post-merge", "sync --quiet"),
-                      ("post-checkout", "sync --quiet"),
-                      ("post-rewrite", "sync --quiet")):
+                      ("post-merge", "sync --rerender --quiet"),
+                      ("post-checkout", "sync --rerender --quiet"),
+                      ("post-rewrite", "sync --rerender --quiet")):
         body = (hooks_dir / name).read_text(encoding="utf-8")
         assert "proj hooks install" in body, name
         assert cmd in body, name
