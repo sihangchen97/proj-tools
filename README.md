@@ -32,8 +32,8 @@ proj decision new "Use pixi"        # opens $EDITOR on docs/decisions/DEC-0002-*
 proj sync                           # after editing md: md → DB → re-render md
 proj task new "Data pipeline"       # docs/tasks/T-000001-*.md
 proj plan new "Ship v1"
-proj task new "Baseline" --parent 1   # attaches to the plan (its Task List)
-proj plan activate 1                # its tasks appear in TASKLIST.md
+proj task new "Baseline" --parent 1   # attaches to the plan (its Tasks block)
+proj plan activate 1                # auto-registered in WIP.md (its task list)
 # ... edit steps, check boxes ...
 proj sync
 proj task done A                    # requires every step + sub-task checked
@@ -61,8 +61,8 @@ proj check                          # invariants; also runs in pre-commit hook
 - **UUIDs live only in the DB**; each md carries them as an invisible first
   line `<!-- proj:<record_type> <uuid> -->` for cross-validation (uuid → id must
   match the filename prefix).
-- **Rendered views, never hand-edit**: `TASKLIST.md`, `CHANGELOG.md`, the
-  `Task List` section of plans.
+- **Rendered views, never hand-edit**: `WIP.md`, `CHANGELOG.md`, and each
+  record's `Tasks` block (its task tree, generated under the head fence).
 - **Ownership rules on conflict** (sync): section content + title → md wins
   (a changed title renames the file to the new slug);
   id/uuid/created/status/fields/changelog → DB wins.
@@ -97,10 +97,10 @@ Tasks are independent records; `task.parent` (a template field, any record type)
 links them to a plan, a parent task (sub-task), or an experiment. No file
 moving; children are resolved at render time.
 
-- `parent` empty → task in the global `TASKLIST.md`
-- `parent` = an **Active** plan → task also promoted into `TASKLIST.md`, and
-  drawn in that plan's `Task List` section with its sub-task tree
-- `parent` = any other record → task parked in that record's `Task List` section
+- `parent` empty → task shown under `## Unparented` in `WIP.md`
+- `parent` = an **Active** plan → task auto-registered in `WIP.md`, and drawn
+  in that plan's `Tasks` block with its sub-task tree
+- `parent` = any other record → task drawn in that record's `Tasks` block
 
 State machine: `Draft →(activate) Active →(review: all tasks Done)
 Pending review →(shelve) Shelved →(resume) Active`;

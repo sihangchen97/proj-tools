@@ -159,11 +159,11 @@ f"""- **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单�
   （id-slug 文件名，相对路径），按**任务树深度缩进**展开整棵后代树（不封顶，任意
   深度，完成的任务也保留以体现进度）；有 summary 的任务在其后以斜体跟一行摘要；
   带清单的任务行末附 `n/m`（已处理/总数）。改挂用 `proj task move`。
-- 全局 `TASKLIST.md` 完全自动推导，没有注册命令：第一节 `## Unparented`
-  （无 parent 边且未结束的任务，带完整子树）；其后每个非 task 记录各占一节
-  （status 图标 + 类型 + ID + 标题，任务树缩进在标题下）——条件是记录已离开
-  第一个状态、未终止、且名下有至少一个未结束的后代任务；全部为空时显示
-  `_no open tasks_`。""",
+- 全局 `WIP.md`（取代旧 TASKLIST.md）：正在做/进行中的记录自动登记——记录
+  进入其类型首个 `wip` 状态（如 task In Progress、plan Active）即入列，退出
+  （如任务 Done/Failed）即移除；也可 `proj wip add/return <ID…>` 手动登记/移出。
+  每条含记录的状态、标题与清单项（直接在这里勾清单 = 改记录，`proj sync` 写回）；
+  无 parent 的任务归在 `## Unparented` 一节。""",
     "plan":
 """\
 ```
@@ -172,7 +172,7 @@ Draft → Active → Pending Review → Shelved
           Active → Pending Review → Archived
 ```
 - 任务通过 `--parent <plan-id>` 挂到 plan 下（不是 plan 里塞任务）；Draft 的
-  plan 名下的任务不进全局 TASKLIST，`activate` 后自动进入。
+  plan 名下的任务不进全局 WIP，`activate` 后自动登记。
 - 每个 plan 的 md 有渲染的 **Tasks** 块（名下整棵任务树，扁平列出）。
 - `review`/`shelve`/`archive` 门禁：整棵后代任务树都终止（Done/Failed）才放行；
   `archive` 另要求 Success Criteria 清单（`proj item check/set`）全部已处理
@@ -199,11 +199,18 @@ plan 的 Success Criteria、debt 的 Repayment Plan、decision 的 Confirmation�
 （有成员须 `--ungroup-items`/`--delete-items`）；`group mv REF L --after B/--first`。
 - 操作前 md 必须与 DB 一致，否则报 `unsynced edits`（先 `proj sync`）。处于
 `gates.items` 门禁状态的记录（如 Archived plan）拒绝重开/新增未处理项。
-- 进度：任务带清单时，其行末在 Tasks 块与 `TASKLIST.md` 显示 `n/m`（已处理/总数）。""",
+- 进度：任务带清单时，其行末在 Tasks 块与 `WIP.md` 显示 `n/m`（已处理/总数）。""",
     "changelog":
     """- category / unreleased 名 / 文件名全在 `profiles/changelog.yaml`（每项目一份）。
 - `version [NAME]` 或 `--bump major|minor|patch`（基于最新版本号）。
 - `release-notes V` 打印某版本的段落（贴 PR / tag body）。""",
+    "wip":
+"""- 全局 `WIP.md`（取代旧 TASKLIST.md）：正在做/进行中的记录自动登记——记录进入
+  其类型首个 `wip` 状态（如 task In Progress、plan Active）即入列，退出（如任务
+  Done/Failed）即移除。也可 `proj wip add <ID…>` / `return <ID…>` 手动登记/移出
+  （`ls` 列当前 WIP）。
+- 每条含状态 + 标题，清单项直接列在条目下（含分组）：在 WIP.md 里直接勾清单 =
+  改记录，下次 `proj sync` 写回 DB（记录 md 也改了就冲突，提示二选一）。""",
     "hooks": "装 `.git/hooks/pre-commit`：提交前跑 `proj check`，不过则拒。",
 }
 

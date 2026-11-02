@@ -3,8 +3,8 @@ code: EXP
 dir: docs/experiments
 numbered: 4
 # 无 contain_task：任务挂接靠 relations 的 parent 边（proj task new --parent），
-# 有子任务就在 head 下渲染任务树；全局 TASKLIST.md 的成员自动推导（实验离开
-# Draft 且名下有未结束的后代任务时出现），无需注册
+# 有子任务就在 head 下渲染任务树；WIP.md 的成员自动推导（进入 wip.enter
+# 状态即入列，退出即移除），无需注册
 # 无 features:（supersede 是纯 relation，所有类型通用）
 # 无 fields:（commit 是 records 表的通用列，所有类型可用 --commit）
 wip:

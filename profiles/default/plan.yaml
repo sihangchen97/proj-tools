@@ -3,8 +3,8 @@ code: PLN
 dir: docs/plans
 numbered: 4
 # 无 contain_task：任务挂接靠 relations 的 parent 边（proj task new --parent），
-# 有子任务就在 head 下渲染任务树（任意深度、全展开）；全局 TASKLIST.md 的成员
-# 自动推导：plan 离开 Draft 且名下有未结束的后代任务时就出现，无需注册
+# 有子任务就在 head 下渲染任务树（任意深度、全展开）；WIP.md 的成员自动
+# 推导：plan 进入 wip.enter 状态（Active）即入列，退出即移除，无需注册
 # 无 features:（supersede 是纯 relation，所有类型通用）
 # 门禁（由 Record.validate_transition 统一实现）：
 # gates.tasks — 进入 Pending Review / Shelved / Archived 前，整棵后代任务树必须
@@ -36,8 +36,8 @@ verbs:
 # （Shelved/Archived 是并列的终态；Shelved 可 resume 回 Active 或 freeze 冻结成 Archived）
 # done: true 的状态进入即算"已完成"（记录 created/done 的首个日期）
 status-allowed:
-  - {name: Draft, emoji: ✏️}               # 起草中，任务暂不入主 TASKLIST
-  - {name: Active, emoji: 🚧}              # 执行中，任务提升到主 TASKLIST
+  - {name: Draft, emoji: ✏️}               # 起草中，暂不登记进 WIP.md
+  - {name: Active, emoji: 🚧}              # 执行中，自动登记进 WIP.md（顶层 wip.enter）
   - {name: Pending Review, emoji: 🔍}      # 任务全部 Done，等待评审
   - {name: Shelved, emoji: 📦, done: true} # 评审暂缓，可 resume 回 Active
   - {name: Archived, emoji: 🗄️, done: true} # 已归档，终态

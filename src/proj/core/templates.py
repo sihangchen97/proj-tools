@@ -21,7 +21,7 @@ A profile file declares a record_type's table schema and behavior:
       items: [Done]      # entering these statuses: every item must be closed (phase 2)
     sections:            # body headings, in render order
       - {name: Context, hint: ...}
-      - {name: Task List, type: task}   # view section: engine-rendered task tree
+      # no task section needed: records parenting tasks auto-render a Tasks block
     # render toggles — which generated views this record_type has
     # (the per-record changelog table's row count is the PROJ_LOGS env var)
     render:

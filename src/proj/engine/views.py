@@ -1,5 +1,5 @@
-"""Rendered views (generated — never hand-edited): TASKLIST.md, CHANGELOG.md,
-and per-record view sections (e.g. plan's Task List)."""
+"""Rendered views (generated — never hand-edited): WIP.md, CHANGELOG.md,
+and the per-record Tasks block (a record's task tree from the DB)."""
 from __future__ import annotations
 
 import os
@@ -10,8 +10,6 @@ from pathlib import Path
 from proj.core import db as dbmod  # utc_now / show_date (D10)
 from proj.core.config import ProjConfig
 from proj.core.templates import ChangelogSpec, RecordTypeSpec, load_changelog_spec
-
-SYM = {"Draft": "○", "In Progress": "◐", "Failed": "✗", "Done": "✓"}
 
 
 @dataclass
@@ -30,32 +28,6 @@ def status_legend(spec: RecordTypeSpec) -> list[str]:
     return ["_" + " · ".join(f"{spec.emojify(s)} {s}" for s in spec.status_allowed) + "_"]
 
 
-def _item_expansion(r: dict, registry: dict | None, db, depth: int) -> list[str]:
-    """The task's OWN item checklist (its `items:` section, plain-text lines
-    interleaved) indented under the task line (depth+1) — a full expansion
-    (top-level items + sub-items + text), so the list shows progress. [] when the
-    task has no items."""
-    tspec = registry.get("task") if registry else None
-    if tspec is None or tspec.items is None or db is None:
-        return []
-    from proj.engine import items as items_mod  # lazy: views↔items cycle
-    state = items_mod.load(db, r["id"], tspec)
-    state.intro = items_mod._intro_of(tspec, r)
-    sec = items_mod.render_section(state, tspec)
-    if not sec:
-        return []
-    pad = "  " * (depth + 1)
-    # group headings would break the outer structure: render them as bold lines
-    out = []
-    for line in sec.splitlines():
-        m = re.match(r"^### ([A-Z]) · (.+)$", line)
-        if m:
-            out.append(f"{pad}**{m.group(1)} · {m.group(2)}**")
-        else:
-            out.append(f"{pad}{line}" if line.strip() else "")
-    return out
-
-
 def _task_line(r: dict, depth: int, registry: dict | None,
                record_dir: Path | None, task_dir: Path | None,
                db=None, summary: str = "") -> str:
@@ -63,9 +35,8 @@ def _task_line(r: dict, depth: int, registry: dict | None,
     `record_dir` — the dir the containing view sits in); `[x]` when the task is
     in a TERMINAL status (Done or Failed — both are finished), else `[ ]`;
     a non-done terminal status (Failed) gets its status emoji before the link;
-    the task's one-line summary (if any) trails the link in *italic* (Q5). The
-    task's item checklist (if any) is expanded under the line by the caller
-    (`_item_expansion`, TASKLIST only). `task_dir` is the tasks' abs dir."""
+    the task's one-line summary (if any) trails the link in *italic* (Q5).
+    `task_dir` is the tasks' abs dir."""
     tspec = registry.get("task") if registry else None
     if tspec is not None and record_dir is not None and task_dir is not None:
         from proj.engine.store import slugify  # lazy: views↔store cycle
@@ -84,44 +55,6 @@ def _task_line(r: dict, depth: int, registry: dict | None,
         emoji = f"{tspec.emojify(r['status'])} " if tspec is not None else f"{r['status']} "
     pad = "  " * depth
     return f"{pad}- [{box}] {emoji}{label}  "
-
-
-def task_tree_lines(rows: list[dict], parent_key: str, db,
-                    depth: int = 0, on_path: set[str] | None = None,
-                    registry: dict | None = None, record_dir: Path | None = None,
-                    task_dir: Path | None = None) -> list[str]:
-    """Render the tasks parented at parent_key ("" = top-level) as a tree:
-    each task as a checkbox + hyperlink, its sub-tasks (kind=parent edge,
-    source=parent) indented — at any depth (no 2-level cap; the whole task
-    tree is shown expanded). Children keep id order. A task already on the
-    ancestor chain is skipped (cycle guard).
-
-    Each task line is a checkbox + hyperlink: `- [x] [T-000001-slug](../tasks/…)`
-    — `[x]` when the task is in a done status, `[ ]` otherwise; the link text
-    is the task's full filename (id-slug, same convention as the head refs) and
-    the path is relative to `record_dir` (the containing record's own dir, or the
-    project root for TASKLIST.md); without registry/record_dir it falls back to
-    plain text."""
-    on_path = set() if on_path is None else on_path
-    lines: list[str] = []
-    if parent_key:
-        kids = {c["target"] for c in db.children_of(parent_key)}
-    else:
-        # top level: tasks with no parent edge at all
-        kids = {t["id"] for t in rows if not db.parent_of(t["id"])}
-    for r in rows:
-        if r["id"] not in kids:
-            continue
-        if r["id"] in on_path:  # cycle guard
-            continue
-        child_path = on_path | {r["id"]}
-        # trailing two spaces = markdown hard break: every tree line stays on
-        # its own line in any renderer (checkbox + hyperlink + sub-tasks)
-        lines.append(_task_line(r, depth, registry, record_dir, task_dir, db))
-        lines += _item_expansion(r, registry, db, depth)
-        lines += task_tree_lines(rows, r["id"], db, depth + 1, child_path,
-                                 registry, record_dir, task_dir)
-    return lines
 
 
 def render_tasks_block(task_rows: list[dict], db, task_spec: RecordTypeSpec,
@@ -149,75 +82,6 @@ def render_tasks_block(task_rows: list[dict], db, task_spec: RecordTypeSpec,
 
     emit(root_id, 0)
     return out
-
-
-def render_tasklist_md(cfg: ProjConfig, db, registry: dict[str, RecordTypeSpec]) -> View | None:
-    """The global TASKLIST.md — membership is DERIVED, nothing is registered:
-
-    1. `## Unparented`: every task with no parent edge AND not in a terminal
-       status, each with its full task tree (the section is omitted when there
-       is nothing to show).
-    2. then one section per NON-task record that (a) is not in its type's first
-       status (usually Draft) and not in its terminal statuses, and (b) has at
-       least one non-terminal descendant task — in registry type order, then id.
-
-    Every section lists its record's full task tree (finished tasks included,
-    so the list doubles as a progress record). The per-record Tasks block
-    (right under the head fence) is independent of this list."""
-    task_spec = registry.get("task")
-    if task_spec is None:
-        return None
-    tasks = db.all(task_spec)
-    lines = ["# Tasklist", ""]
-    body: list[str] = []
-
-    def root_heading(r: dict, spec: RecordTypeSpec) -> str:
-        """A `##` section heading for one tree root: emoji + `type ID` + title."""
-        return f"## {spec.emojify(r['status'])} {spec.record_type} {r['id']} {r['title']}"
-
-    def tree(root: str | None) -> list[str]:
-        return task_tree_lines(tasks, root, db, depth=1,
-                               registry=registry, record_dir=cfg.root,
-                               task_dir=cfg.root / task_spec.dir)
-
-    # 1) Unparented: tasks with no parent edge and not yet finished
-    unparented = [t for t in tasks
-                  if not db.parent_of(t["id"])
-                  and t["status"] not in task_spec.status_terminal]
-    if unparented:
-        body += ["## Unparented", ""]
-        for t in unparented:
-            body += [_task_line(t, 0, registry, cfg.root, cfg.root / task_spec.dir, db)]
-            body += _item_expansion(t, registry, db, 0)
-            body += task_tree_lines(tasks, t["id"], db, depth=1,
-                                    registry=registry, record_dir=cfg.root,
-                                    task_dir=cfg.root / task_spec.dir)
-        body.append("")
-
-    # 2) non-task records: past the first status, not terminal, with a
-    #    non-terminal descendant task
-    for record_type, spec in registry.items():
-        if record_type == "task" or not spec.status_allowed:
-            continue
-        for row in db.all(spec):
-            if row["status"] in spec.status_terminal:
-                continue
-            if row["status"] == spec.status_allowed[0]:
-                continue  # not started yet (usually Draft): its tasks stay hidden
-            if not any(t["id"] in db.descendants_of(row["id"])
-                       and t["status"] not in task_spec.status_terminal
-                       for t in tasks):
-                continue
-            body += [root_heading(row, spec), ""]
-            body += tree(row["id"])
-            body.append("")
-
-    lines += body or ["_no open tasks_"]
-    lines += ["", "_Rendered by `proj update` — never hand-edit. "
-              "A record shows up while it is past its first status and has an "
-              "unfinished descendant task; tasks with no parent sit under "
-              "`Unparented`. Edit task files under `docs/tasks/` instead._"]
-    return View(cfg.root / "TASKLIST.md", "\n".join(lines) + "\n")
 
 
 # ---- global CHANGELOG.md -------------------------------------------------------

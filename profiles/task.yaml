@@ -3,9 +3,9 @@ code: T
 dir: docs/tasks
 numbered: 6
 # 无 contain_task：任务挂接靠 relations 的 parent 边（proj task new --parent），
-# 任何记录有子任务就在 head 下渲染任务树（任意深度、全展开）；全局 TASKLIST.md
-# 的成员自动推导（无 parent 边且未结束的任务 → Unparented；记录名下有未结束的
-# 后代任务 → 该记录一节），无需注册
+# 任何记录有子任务就在 head 下渲染任务树（任意深度、全展开）；WIP.md 的成员
+# 自动推导：进入 wip.enter 状态（In Progress）即入列，退出即移除；无 parent
+# 边的任务归 Unparented 一节，无需注册
 # 无 features: / 无 fields:（parent/related/supersede 全走 relations 表）
 # 无 render: 段（toc 已删，A5/Q6；changelog 表行数走环境变量 PROJ_LOGS）
 # task 单独管理（在外层 profiles/，不在 default/）
@@ -70,7 +70,7 @@ sections:
       Unresolved questions, blockers and decisions needed — one per line,
       plain text (no checkboxes), each naming who/what can unblock it, e.g.
       "Need DB credentials for staging (ask ops)". These lines are shown in the
-      parent's task tree and TASKLIST.md, so keep them short. Delete a line
+      parent's task tree and WIP.md, so keep them short. Delete a line
       once resolved and record the answer in Notes.
   - name: Notes
     hint: >-

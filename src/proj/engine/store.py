@@ -625,7 +625,7 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
         p = file_path(cfg, spec, row)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(render_record(spec, row, db), encoding="utf-8")
-    render_all(cfg)  # keep views (TASKLIST etc.) in sync with the new record
+    render_all(cfg)  # keep views (WIP.md etc.) in sync with the new record
     return row, p
 
 
@@ -972,8 +972,6 @@ def info(cfg: ProjConfig) -> dict:
     cl = db.cl_entries()
     versions = sorted({e["version"] for e in cl})
     views = ["WIP.md", "CHANGELOG.md"]
-    if "plan" in record_types:
-        views.append("plan 'Task List' sections")
     out = {
         "root": str(cfg.root),
         "journal_mode": "DELETE (rollback journal — network filesystem)" if db.network_fs
