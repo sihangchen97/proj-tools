@@ -14,6 +14,38 @@ commands (`init`, `new`, `sync`, `render`, `update`, `<rt> <verb>`, …) at the 
 never write test data into root-level `tasks/`, `docs/plans/`, `docs/decisions/`. Full-project
 experiments go in the `.testproj/` sandbox (e2e) or pytest `tmp_path` (from `.roo/rules/testing.md`).
 
+## Several agents share ONE working tree — rules (mandatory)
+
+Several agents (main agent, alex, billy, …) edit this checkout **at the same time**. Anything that
+rewrites the working tree destroys other agents' uncommitted work (2026-11-03: a `git checkout HEAD --
+<file>` during "diagnosis" wiped another agent's in-flight edits in 4 files).
+
+1. **Forbidden git commands** (they touch other agents' files): `git checkout -- <path>` / `git checkout
+   <branch>` / `git switch`, `git restore`, `git reset` (any form), `git stash` (any form), `git clean`,
+   `git rebase`, `git merge`, `git pull`, `git commit -a` / `--amend`, `git add -A` / `git add .` /
+   `git add -u`, `git rm` on files you don't own. No new branches or worktrees.
+2. **Allowed**: `git status`, `git diff`, `git log`, `git show`, `git blame`, `git show HEAD:<path> >
+   /tmp/…` (read an old version into a scratch file), `git add <your own paths>` + `git commit`.
+3. **Own your files.** Edit only the files assigned to you in `plans/PLAN.md` (§28 table / §28.1 log).
+   `src/proj/core/db.py` and `src/proj/engine/store.py` have one holder at a time ("占用"); hand over with a
+   §28.1 line "<name> 释放 db.py / store.py（commit）". Need someone else's file? Ask in §28.1 — don't edit it.
+4. **Diagnose read-only.** To see whether HEAD (without others' in-flight edits) is broken, export a
+   clean copy and test there: `git archive HEAD | tar -x -C /tmp/<you>-check` and run with
+   `PYTHONPATH=/tmp/<you>-check/src`. Never "reset to HEAD" in the shared tree to find out.
+5. **Others' failures are not yours to fix.** If a test fails in a file you don't own, record it in §28.1
+   (file, test, error) and verify your own change on a clean export (rule 4).
+6. **Commit only your own changes.** `git add <explicit paths>`, then `git diff --cached --stat` must
+   list only your files before `git commit`. Never commit another agent's in-flight edits.
+7. **Edit, don't overwrite.** Re-read a file right before editing it; use small edits, never rewrite a
+   whole existing file (2026-11-02: a full-file write wiped an untracked `items.py`). Before touching an
+   untracked file, copy it to `/tmp`.
+8. **Generated files** (`docs/CLI.md`, `docs/MCP.md`, `templates/PROJ_*.md`, `scripts/e2e.sh`) only via
+   `pixi run docs` / `pixi run e2e`.
+9. **If you broke something**: stop — no further git commands to "repair" it; record in §28.1 exactly
+   what you ran and on which files, and tell the owner. The owner recovers.
+10. **The plan files**: append to `plans/PLAN.md` §28.1 only at the bottom, never edit others' entries;
+    restructuring `plans/*.md` is done by Claude (the design owner) only.
+
 ## Commands
 
 ```bash
