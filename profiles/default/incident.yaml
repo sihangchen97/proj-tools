@@ -23,10 +23,6 @@ gates:
 items:
   section: Action Items
   noun: action
-  states:
-    - {name: open}
-    - {name: done, emoji: ✅, closed: true}
-    - {name: dropped, emoji: 🚫, closed: true}
   fields: [owner, due]
 # status 按时间顺序排列：Draft → Open → Mitigated → Closed
 # （Mitigated = 已止血/服务恢复，复盘与 Action Items 未完成；Closed = 复盘完成）

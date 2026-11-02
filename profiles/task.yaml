@@ -21,7 +21,6 @@ gates:
 items:
   section: Acceptance Criteria
   noun: criterion
-  states: [{name: todo}, {name: done, closed: true}]
   fields: [owner, due]
   promote: {from: [Draft], to: In Progress}
 wip:

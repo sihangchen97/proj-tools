@@ -24,10 +24,6 @@ gates:
 items:
   section: Repayment Plan
   noun: step
-  states:
-    - {name: todo}
-    - {name: done, emoji: ✅, closed: true}
-    - {name: skipped, emoji: ⏭️, closed: true}
   fields: [owner, due]
   promote: {from: [Draft, Open], to: In Progress}
 # status 按时间顺序排列：Draft → Open → In Progress → Repaid | Waived

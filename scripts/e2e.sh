@@ -415,7 +415,7 @@ proj sync
 proj debt open DEB-0002
 proj debt progress DEB-0002
 proj item add DEB-0002 '恢复随机种子'  # Repayment Plan 步骤
-proj item set 'DEB-0002#001' skipped --note 'v1 阶段保持复现性，v2 再放开'  # skipped 步骤（带备注）
+proj item set 'DEB-0002#001' dropped --note 'v1 阶段保持复现性，v2 再放开'  # dropped 步骤（带备注）
 proj debt waive DEB-0002 -m 'Deprecated: 复现性优先，留到 v2 一并处理'  # Waived 不需要门禁
 proj debt progress DEB-0001
 proj item check 'DEB-0001#001'
@@ -449,11 +449,11 @@ cat <<'EOF' | set_section 'docs/experiments/EXP-0001-mosaic-增强与小缺陷�
 EOF
 proj sync
 proj sync
-proj item set 'EXP-0001#001' met --note '小目标 +5.6pt（41.2→46.8）'  # criterion set met（带证据）
-proj item set 'EXP-0001#002' inconclusive --note '-0.3pt 在噪声区间内'  # criterion set inconclusive（证据不足）
-proj item add EXP-0001 '训练时间不超过 baseline +10%'  # 第 3 条 criterion（仍 pending）
+proj item set 'EXP-0001#001' done --note '小目标 +5.6pt（41.2→46.8）'  # criterion set done（带证据）
+proj item set 'EXP-0001#002' dropped --note '-0.3pt 在噪声区间内'  # criterion set dropped（证据不足）
+proj item add EXP-0001 '训练时间不超过 baseline +10%'  # 第 3 条 criterion（仍 open）
 proj experiment close EXP-0001 && echo "意外成功" || echo "（按预期被拒绝）"  # close 被拒：criterion 未全部 evaluated（gates.items）
-proj item set 'EXP-0001#003' met --note +4%
+proj item set 'EXP-0001#003' done --note +4%
 # 编辑 docs/experiments/EXP-0001-mosaic-增强与小缺陷召回率.md 的 ## Conclusion 节，再 proj sync 回收
 cat <<'EOF' | set_section 'docs/experiments/EXP-0001-mosaic-增强与小缺陷召回率.md' Conclusion
 mosaic 保留在训练管线（小目标收益）；< 32px 召回的进一步改进转交 T_ONNX 边缘端方案（更大输入分辨率）评估。

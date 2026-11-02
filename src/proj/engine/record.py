@@ -171,7 +171,7 @@ class Record:
                 raise ValueError(
                     f"{self.record_type} {row['id']}: {len(un)} unclosed {self.spec.items.noun}(s) "
                     f"block {verb} (need a closed state: "
-                    f"{', '.join(s.name for s in self.spec.items.states if s.closed)}):\n  "
+                    f"{', '.join(items_mod.CLOSED_STATES)}):\n  "
                     + "\n  ".join(un))
         if to_s not in self.spec.gates_tasks:
             return

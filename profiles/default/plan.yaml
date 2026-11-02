@@ -18,10 +18,6 @@ gates:
 items:
   section: Success Criteria
   noun: criterion
-  states:
-    - {name: pending}
-    - {name: met, emoji: ✅, closed: true}
-    - {name: missed, emoji: ❌, closed: true}
 # 状态机 verbs（from 是具体状态，非 Any）：每个状态都有进入它的动词
 wip:
   enter: [Active]

@@ -8,21 +8,13 @@ and set_state's no-change rule.
 """
 import pytest
 
-from proj.core.templates import ItemsSpec, ItemState
+from proj.core.templates import ItemsSpec
 from proj.engine import items as it
 
-# a task-style checklist: one todo state, three done states (two with emoji)
-TASK = ItemsSpec(
-    section="Acceptance Criteria",
-    states=[ItemState("todo"), ItemState("done", "✅", closed=True),
-            ItemState("met", "✅", closed=True),
-            ItemState("skipped", "⏭️", closed=True)],
-    fields=["owner", "due"])
-PLAN = ItemsSpec(
-    section="Success Criteria",
-    states=[ItemState("pending"),
-            ItemState("met", "✅", closed=True),
-            ItemState("missed", "❌", closed=True)])
+# P4: item states are GLOBAL (open/done/failed/dropped) — the spec no longer
+# declares states. TASK carries the owner/due fields, PLAN does not.
+TASK = ItemsSpec(section="Acceptance Criteria", fields=["owner", "due"])
+PLAN = ItemsSpec(section="Success Criteria")
 
 
 def _state(rows=()):
@@ -152,8 +144,15 @@ def test_emoji_conflict_is_problem():
 
 def test_checked_without_emoji_assigns_note():
     p = it.parse_section("- [x] #001 x\n", PLAN)
-    assert p.ungrouped[0].state == "met"
+    assert p.ungrouped[0].state == "done"
     assert p.ungrouped[0].note == it.NOTE_ASSIGNED
+
+
+def test_emoji_pins_global_state():
+    assert it.parse_section("- [x] #001 ❌ x\n", PLAN).ungrouped[0].state == "failed"
+    assert it.parse_section("- [x] #001 🚫 x\n", PLAN).ungrouped[0].state == "dropped"
+    assert it.parse_section("- [x] #001 ✅ x\n", PLAN).ungrouped[0].state == "done"
+    assert it.parse_section("- [ ] #001 x\n", PLAN).ungrouped[0].state == "open"
 
 
 @pytest.mark.parametrize("md, frag", [
@@ -224,13 +223,17 @@ def test_add_group_after_first():
 
 
 def test_set_state_no_change_no_notes():
-    st = _state([it.Item("001", text="a", state="met")])
-    new, notes = it.set_state(st, PLAN, "001", "met")
+    st = _state([it.Item("001", text="a", state="done")])
+    new, notes = it.set_state(st, PLAN, "001", "done")
     assert notes == []
-    assert new is not st and [r.state for r in new.rows] == ["met"]
-    new, notes = it.set_state(st, PLAN, "001", "missed")
+    assert new is not st and [r.state for r in new.rows] == ["done"]
+    new, notes = it.set_state(st, PLAN, "001", "failed")
     assert new.by_no("001").closed_at
-    assert notes == ["item #001 missed"]
+    assert notes == ["item #001 failed"]
+    # uncheck to open is silent (no closed-state note)
+    new, notes = it.set_state(st, PLAN, "001", "open")
+    assert new.by_no("001").state == "open" and not new.by_no("001").closed_at
+    assert notes == []
 
 
 def test_edit_clears():
@@ -284,7 +287,7 @@ def test_group_rm_nonempty_needs_choice():
 def test_diff_log_outputs():
     old = _state([it.Item("001", text="a"), it.Item("002", text="b"),
                   it.Item("A00", text="G")])
-    new = _state([it.Item("001", text="a", state="met"),
+    new = _state([it.Item("001", text="a", state="done"),
                   it.Item("002", text="b", deleted=True),
                   it.Item("A00", text="G2"),
                   it.Item("B00", text="H")])
@@ -305,7 +308,7 @@ def test_diff_log_group_removed_once():
 
 
 def test_group_notes_wording():
-    st = _state([it.Item("001", text="a", state="pending")])
+    st = _state([it.Item("001", text="a", state="open")])
     st, notes = it.group_add(st, PLAN, "Backend")
     assert notes == ["group A added: Backend"]
     st, notes = it.group_rename(st, PLAN, "a", "API")
@@ -319,7 +322,7 @@ def test_group_notes_wording():
 
 
 def test_apply_md_group_notes():
-    st = _state([it.Item("001", text="a", state="pending"),
+    st = _state([it.Item("001", text="a", state="open"),
                  it.Item("A00", text="G"), it.Item("B00", text="H")])
     md = "- [ ] #001 a\n\n### A · G2\n\n### New\n"
     _, notes = it.apply_md(st, it.parse_section(md, PLAN), PLAN)

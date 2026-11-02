@@ -562,7 +562,7 @@ def ch4() -> None:
     move_md_line(md_of(T_DS), "- [x] #B02 ", "### A · 采集",
                  "把 B02 挪到 A · 采集 组")
     expect_ok("在 md 里跨组移动后 sync（B02 → A02，换号）", "#B02 → #A02", "sync")
-    assert "- [x] #A02 标注质检抽检" in read(md_of(T_DS))
+    assert "- [x] #A02 ✅ 标注质检抽检" in read(md_of(T_DS))
     expect_ok("跨组移动后的 item 仍在清单里", f"{T_DS}#A02", "item", "ls", T_DS)
     # hand-edit an open item's TEXT, then operate straight away: A1 auto-ingests
     # the edit first (the next write command is the sync)
@@ -682,7 +682,7 @@ def ch7() -> None:
     run("debt", "open", DEB2)
     run("debt", "progress", DEB2)
     expect_ok("Repayment Plan 步骤", "#001", "item", "add", DEB2, "恢复随机种子")
-    expect_ok("skipped 步骤（带备注）", "⏭", "item", "set", f"{DEB2}#001", "skipped",
+    expect_ok("dropped 步骤（带备注）", "🚫", "item", "set", f"{DEB2}#001", "dropped",
               "--note", "v1 阶段保持复现性，v2 再放开")
     expect_ok("Waived 不需要门禁", "→ Waived", "debt", "waive", DEB2,
               "-m", "Deprecated: 复现性优先，留到 v2 一并处理")
@@ -716,15 +716,15 @@ def ch8() -> None:
         "Results": "mosaic 臂：小缺陷召回 41.2% → 46.8%（+5.6pt）；整体 mAP 0.871 → 0.868（-0.3pt）。",
         "Analysis": "提升来自 < 64px 档；< 32px 档仅 +2.1pt，mosaic 对极小目标作用有限。",
     })
-    expect_ok("criterion set met（带证据）", "✅",
-              "item", "set", f"{E}#001", "met", "--note", "小目标 +5.6pt（41.2→46.8）")
-    expect_ok("criterion set inconclusive（证据不足）", "❔",
-              "item", "set", f"{E}#002", "inconclusive", "--note", "-0.3pt 在噪声区间内")
-    expect_ok("第 3 条 criterion（仍 pending）", "#003",
+    expect_ok("criterion set done（带证据）", "✅",
+              "item", "set", f"{E}#001", "done", "--note", "小目标 +5.6pt（41.2→46.8）")
+    expect_ok("criterion set dropped（证据不足）", "🚫",
+              "item", "set", f"{E}#002", "dropped", "--note", "-0.3pt 在噪声区间内")
+    expect_ok("第 3 条 criterion（仍 open）", "#003",
               "item", "add", E, "训练时间不超过 baseline +10%")
     expect_fail("close 被拒：criterion 未全部 evaluated（gates.items）",
                 "experiment", "close", E)
-    run("item", "set", f"{E}#003", "met", "--note", "+4%")
+    run("item", "set", f"{E}#003", "done", "--note", "+4%")
     write_sections(md_of(E), {
         "Conclusion": "mosaic 保留在训练管线（小目标收益）；< 32px 召回的进一步改进"
                       "转交 T_ONNX 边缘端方案（更大输入分辨率）评估。",

@@ -28,13 +28,23 @@ from datetime import date
 
 from proj.core import db as dbmod
 from proj.core.db import ProjError
-from proj.core.templates import ItemsSpec, ItemState, RecordTypeSpec
+from proj.core.templates import ItemsSpec, RecordTypeSpec
 
 UNGROUPED_CAP = 999               # '001'..'999'
 GROUP_CAP = 99                    # 'A01'..'A99'; 'A00' is the group itself
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 NOTE_SEP = " — "                  # the separator before a note in an item line
 NOTE_ASSIGNED = "state assigned from the checkbox (no emoji)"
+
+# P4 (PLAN §10.3): item states are GLOBAL — one fixed set for every checklist,
+# defined here (the profile no longer declares `states:`).
+OPEN = "open"          # `[ ]`   unprocessed (the default)
+DONE = "done"          # `[x] ✅` done / met / confirmed
+FAILED = "failed"      # `[x] ❌` failed / missed / violated
+DROPPED = "dropped"    # `[x] 🚫` not doing / n-a / inconclusive (reason in note)
+ITEM_STATES = [OPEN, DONE, FAILED, DROPPED]
+CLOSED_STATES = [DONE, FAILED, DROPPED]   # the closed half (the gate passes)
+STATE_EMOJI = {DONE: "✅", FAILED: "❌", DROPPED: "🚫"}   # open shows no emoji
 
 
 class ItemsError(ProjError):
@@ -217,24 +227,15 @@ def _tomb(no: str, text: str) -> Item:
 
 # ---- render (plans/items-design.md §4.1) -----------------------------------
 
-def _state_of(spec: ItemsSpec, name: str) -> ItemState | None:
-    return next((s for s in spec.states if s.name == name), None)
-
-
-def _show_emoji(spec: ItemsSpec, state_name: str) -> str:
-    """'EMOJI ' when the state shows one (it has an emoji and its closed group
-    holds more than one state); '' otherwise."""
-    st = _state_of(spec, state_name)
-    if st is None or not st.emoji:
-        return ""
-    sibs = [s for s in spec.states if s.closed == st.closed]
-    return f"{st.emoji} " if len(sibs) > 1 else ""
+def _show_emoji(state_name: str) -> str:
+    """'EMOJI ' for a closed state (it always shows one); '' for open."""
+    e = STATE_EMOJI.get(state_name)
+    return f"{e} " if e else ""
 
 
 def render_item_line(item: Item, spec) -> str:
-    spec = _spec(spec)
-    box = "x" if item.state in spec.closed_states else " "
-    line = f"- [{box}] #{item.no} {_show_emoji(spec, item.state)}{item.text}"
+    box = "x" if item.state in CLOSED_STATES else " "
+    line = f"- [{box}] #{item.no} {_show_emoji(item.state)}{item.text}"
     if item.note:
         line += f"{NOTE_SEP}{item.note}"
     if item.owner:
@@ -330,24 +331,18 @@ def _all_items(p: Parsed) -> list[PItem]:
     return [*p.ungrouped, *[i for g in p.groups for i in g.items]]
 
 
-def _resolve_state(it: PItem, spec: ItemsSpec) -> None:
-    unclosed = [s for s in spec.states if not s.closed]
-    closed = [s for s in spec.states if s.closed]
+def _resolve_state(it: PItem) -> None:
+    """Global states (P4): an emoji pins done/failed/dropped; a bare `[x]` is
+    `done` (flagged NOTE_ASSIGNED); an unchecked box is `open`."""
     m = EMOJI_RE.match(it.text)
-    if m and any(s.emoji == m.group(1) for s in spec.states):
-        st = next(s for s in spec.states if s.emoji == m.group(1))
+    if m and m.group(1) in STATE_EMOJI.values():
+        it.state = next(n for n, e in STATE_EMOJI.items() if e == m.group(1))
         it.text = m.group(2)
-        it.state = st.name
         it.from_emoji = True
         return
-    if it.checked:
-        if not closed:
-            return
-        it.state = closed[0].name
-        if not it.note and len(closed) > 1:
-            it.note = NOTE_ASSIGNED
-    else:
-        it.state = unclosed[0].name if unclosed else ""
+    it.state = DONE if it.checked else OPEN
+    if it.checked and not it.note and not it.from_emoji:
+        it.note = NOTE_ASSIGNED
 
 
 def _trailer(cur: PItem | PGroup, buf: list[str]) -> None:
@@ -428,13 +423,11 @@ def parse_section(text: str, spec) -> Parsed:
         _trailer(cur, buf)
     p.intro = "\n".join(intro)
     for it in _all_items(p):
-        _resolve_state(it, spec)
-        st = _state_of(spec, it.state)
-        if it.from_emoji and st is not None and st.closed != it.checked:
+        _resolve_state(it)
+        if it.from_emoji and not it.checked:
             p.problems.append(
-                f"line {it.line!r}: the emoji says {it.state} "
-                f"({'closed' if st.closed else 'unclosed'}) but the checkbox "
-                f"is {'checked' if it.checked else 'unchecked'}")
+                f"line {it.line!r}: the emoji says {it.state} (closed) but the "
+                f"checkbox is unchecked")
     return p
 
 
@@ -462,9 +455,6 @@ def _validate_item(item: Item, spec: ItemsSpec) -> None:
         except ValueError:
             raise ItemsError(
                 f"due {item.due!r} is not a valid date (YYYY-MM-DD)") from None
-    if item.state and _state_of(spec, item.state) is None:
-        raise ItemsError(f"state {item.state!r} is not in this checklist "
-                         f"({', '.join(s.name for s in spec.states)})")
 
 
 def _live_no(state: ItemsState, no: str) -> Item:
@@ -512,11 +502,11 @@ def add(state: ItemsState, spec, text: str, *, group: str | None = None,
         if group_of(a.no) != letter:
             raise ItemsError(f"#{a.no} is in group {group_of(a.no) or '∅'} — "
                              f"an --after item must share the target group")
-    if state_name and _state_of(spec, state_name) is None:
-        raise ItemsError(f"state {state_name!r} is not in this checklist "
-                         f"({', '.join(s.name for s in spec.states)})")
+    if state_name and state_name not in ITEM_STATES:
+        raise ItemsError(f"state {state_name!r} is not a valid item state "
+                         f"({', '.join(ITEM_STATES)})")
     it = _new_item(new.next_no(letter), text.strip(),
-                   state=state_name or _first_unclosed(spec), note=note,
+                   state=state_name or OPEN, note=note,
                    owner=owner, due=due)
     _validate_item(it, spec)
     if a is not None:
@@ -526,9 +516,10 @@ def add(state: ItemsState, spec, text: str, *, group: str | None = None,
     return new, [f"new item #{it.no} ({it.text})"]
 
 
-def _first_unclosed(spec: ItemsSpec) -> str:
-    unclosed = [s for s in spec.states if not s.closed]
-    return unclosed[0].name if unclosed else ""
+def _valid_state(name: str) -> None:
+    if name and name not in ITEM_STATES:
+        raise ItemsError(f"state {name!r} is not a valid item state "
+                         f"({', '.join(ITEM_STATES)})")
 
 
 def set_state(state: ItemsState, spec, no: str, state_name: str,
@@ -539,9 +530,7 @@ def set_state(state: ItemsState, spec, no: str, state_name: str,
     no = norm_no(no)
     new = _clone(state)
     it = _live_no(new, no)
-    if _state_of(spec, state_name) is None:
-        raise ItemsError(f"state {state_name!r} is not in this checklist "
-                         f"({', '.join(s.name for s in spec.states)})")
+    _valid_state(state_name)
     if it.state == state_name and note is None and not commit:
         return new, []
     it.state = state_name
@@ -550,9 +539,10 @@ def set_state(state: ItemsState, spec, no: str, state_name: str,
     if commit:
         it.commit = commit
     _validate_item(it, spec)
-    was_closed = it.state in spec.closed_states
+    was_closed = it.state in CLOSED_STATES
     it.closed_at = dbmod.utc_now() if was_closed else ""
-    notes = [f"item #{no} {state_name}"] if was_closed or state_name else []
+    # a note only when the item moves to a closed state (open = uncheck: silent)
+    notes = [f"item #{no} {state_name}"] if was_closed else []
     if note is not None or commit:
         notes.append(f"item #{no} edited")
     return new, notes
@@ -828,18 +818,16 @@ def diff_log(old: ItemsState, new: ItemsState, notes: list[str]
 def progress(state: ItemsState, spec) -> tuple[int, int]:
     """(closed, total) — the n/m of a task row (all groups counted).
     `spec`: the ItemsSpec or its RecordTypeSpec."""
-    spec = _spec(spec)
     items = [i for i in state.live() if not i.is_group]
-    closed = sum(1 for i in items if i.state in spec.closed_states)
+    closed = sum(1 for i in items if i.state in CLOSED_STATES)
     return closed, len(items)
 
 
 def open_items(state: ItemsState, spec) -> list[str]:
     """The unclosed items as '#no text' — the gates.items message.
     `spec`: the ItemsSpec or its RecordTypeSpec."""
-    spec = _spec(spec)
     return [f"#{i.no} {i.text}" for i in state.live()
-            if not i.is_group and i.state not in spec.closed_states]
+            if not i.is_group and i.state not in CLOSED_STATES]
 
 
 def load(db, record_id: str, spec) -> ItemsState:
@@ -976,7 +964,7 @@ def apply_md(state: ItemsState, parsed: Parsed, spec
     for it, grp in ordered:
         if it.no is None:
             row = _new_item(new.next_no(grp), it.text,
-                            state=it.state or _first_unclosed(spec),
+                            state=it.state or OPEN,
                             note=it.note, owner=it.owner, due=it.due,
                             trailer=it.trailer)
             _validate_item(row, spec)
@@ -1004,7 +992,7 @@ def apply_md(state: ItemsState, parsed: Parsed, spec
         row.trailer = it.trailer
         if it.state and row.state != it.state:
             row.state = it.state
-            row.closed_at = dbmod.utc_now() if it.state in spec.closed_states \
+            row.closed_at = dbmod.utc_now() if it.state in CLOSED_STATES \
                 else ""
         _validate_item(row, spec)
         live.append(row)

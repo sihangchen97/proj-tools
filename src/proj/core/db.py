@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 import yaml
 
-from proj.core.templates import ItemsSpec, ItemState, RecordTypeSpec
+from proj.core.templates import ItemsSpec, RecordTypeSpec
 
 SCHEMA_VERSION = 7
 LOCK_FILE = ".proj.lock"
@@ -529,13 +529,13 @@ def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
 
 
 def _items_from_lock(d) -> ItemsSpec | None:
-    """The `items:` block back from the lock (None when the lock predates it)."""
+    """The `items:` block back from the lock (None when the lock predates it).
+    A pre-P4 lock still carries `states` — ignored: item states are global."""
     if not d:
         return None
     return ItemsSpec(
         section=d["section"],
         noun=d.get("noun", "item"),
-        states=[ItemState(**s) for s in d.get("states", [])],
         fields=list(d.get("fields", [])),
         promote_from=list(d.get("promote_from", [])),
         promote_to=d.get("promote_to", ""),

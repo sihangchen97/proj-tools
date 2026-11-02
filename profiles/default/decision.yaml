@@ -20,10 +20,6 @@ verbs:
 items:
   section: Confirmation
   noun: check
-  states:
-    - {name: pending}
-    - {name: confirmed, emoji: ✅, closed: true}
-    - {name: violated, emoji: ❌, closed: true}
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Proposed, emoji: 🌱}        # 提案中，等待讨论/评审

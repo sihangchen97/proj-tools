@@ -106,7 +106,7 @@ trailer under one
     assert db_item(proj, row["id"], "A01")["owner"] == "o"  # the tool assigned group A
     sec = _section(p, "Acceptance Criteria")
     assert "### A · Backend" in sec
-    assert "- [x] #001 a" in sec and "trailer under one" in sec
+    assert "#001 ✅ a" in sec and "trailer under one" in sec
     assert "- [ ] #A01 sub · owner: o" in sec
 
 
@@ -152,7 +152,7 @@ def test_sync_new_auto_numbered_and_changelog(proj):
     db = rec.open_db(proj)
     logs = db.logs(row["id"])
     db.close()
-    assert i["text"] == "a" and i["state"] == "todo"
+    assert i["text"] == "a" and i["state"] == "open"
     assert any(e["message"] == "item #001: a" and e["category"] == "Added" for e in logs)
     assert "- [ ] #001 a" in _section(p, "Acceptance Criteria")  # re-rendered
 
@@ -210,10 +210,10 @@ def test_sync_checked_without_emoji_defaults_and_notes(proj):
     _write_section(p, "Success Criteria", "- [x] #001 c1")
     problems, _ = rec.sync(proj)
     assert problems == []
-    assert db_item(proj, row, "001")["state"] == "met"
+    assert db_item(proj, row, "001")["state"] == "done"
     assert db_item(proj, row, "001")["note"] == it.NOTE_ASSIGNED
     i = db_item(proj, row, "001")
-    assert i["state"] == "met"
+    assert i["state"] == "done"
 
 
 @pytest.mark.parametrize(
@@ -278,7 +278,7 @@ def test_plan_archive_gate_and_shelve_without_gate(proj):
     _plan(proj).transition(proj, "review", row)  # gates.tasks empty → passes
     with pytest.raises(ValueError, match="unclosed criterion"):
         _plan(proj).transition(proj, "archive", row)
-    ops.set_state(proj, f"{row}#001", "met")
+    ops.set_state(proj, f"{row}#001", "done")
     assert _plan(proj).transition(proj, "archive", row)["status"] == "Archived"
     # shelve: no items gate (a pause does not require the list done)
     p2 = _new(proj, "plan", "P2")
@@ -307,8 +307,8 @@ def test_decision_accept_without_gate(proj):
     row = _new(proj, "decision", "D")
     _dec(proj).transition(proj, "accept", row)
     ops.add(proj, row, "check")
-    ops.set_state(proj, f"{row}#001", "violated")
-    # no gates.items: a violated check never blocks the state machine
+    ops.set_state(proj, f"{row}#001", "failed")
+    # no items gate on decision: a failed check never blocks the state machine
     assert _dec(proj).transition(proj, "accept", row)["status"] == "Accepted"
     assert checkmod.check(proj) == []
 
@@ -318,13 +318,13 @@ def test_check_flags_gated_record_with_unclosed_items(proj):
     _plan(proj).transition(proj, "activate", row)
     ops.add(proj, row, "c1")
     _plan(proj).transition(proj, "review", row)
-    ops.set_state(proj, f"{row}#001", "met")
+    ops.set_state(proj, f"{row}#001", "done")
     _plan(proj).transition(proj, "archive", row)
     # hand-set an unclosed item on the archived record (bypassing the ops)
     db = rec.open_db(proj)
     rows = db.items_load(row)
     now = dbmod.utc_now()
-    rows.append({"no": "002", "text": "late", "state": "pending", "note": "",
+    rows.append({"no": "002", "text": "late", "state": "open", "note": "",
                  "owner": "", "due": "", "created": now, "closed_at": "",
                  "commit": "", "trailer": "", "deleted": 0})
     db.items_save(row, rows)
@@ -340,7 +340,7 @@ def test_reopen_restricted_on_archived_plan(proj):
     _plan(proj).transition(proj, "activate", row)
     ops.add(proj, row, "c1")
     _plan(proj).transition(proj, "review", row)
-    ops.set_state(proj, f"{row}#001", "met")
+    ops.set_state(proj, f"{row}#001", "done")
     _plan(proj).transition(proj, "archive", row)
     with pytest.raises(ValueError, match="requires all items closed"):
         ops.uncheck(proj, f"{row}#001")
@@ -351,7 +351,7 @@ def test_reopen_restricted_on_archived_plan(proj):
     _write_section(p, "Success Criteria", "- [ ] #001 c1")
     problems, _ = rec.sync(proj)
     assert any("requires all items closed" in x for x in problems)
-    assert db_item(proj, row, "001")["state"] == "met"
+    assert db_item(proj, row, "001")["state"] == "done"
     rec.render_all(proj)  # re-render restores the refused md
     assert "#001 ✅ c1" in _section(p, "Success Criteria")
 
@@ -396,7 +396,7 @@ def test_ops_auto_sync_unsynced_md(proj):
                                        "- [ ] #002 b\n- [ ] #002 dup"))  # duplicate → problem
     with pytest.raises(ValueError, match="unsynced md edits"):
         ops.set_state(proj, f"{row['id']}#001", "done")
-    assert db_item(proj, row["id"], "001")["state"] == "todo"  # untouched
+    assert db_item(proj, row["id"], "001")["state"] == "open"  # untouched
 
 
 def test_add_group_and_after(proj):
@@ -495,12 +495,12 @@ def test_ls_filters_and_refs(proj):
     ops.add(proj, row["id"], "b", owner="o2")
     ops.check(proj, f"{row['id']}#001")
     assert ops.ls(proj) == [f"T-000001#001  done  a  o1  {yesterday}",
-                            "T-000001#002  todo  b  o2"]
-    assert ops.ls(proj, open_only=True) == ["T-000001#002  todo  b  o2"]
-    assert ops.ls(proj, owner="o2") == ["T-000001#002  todo  b  o2"]
+                            "T-000001#002  open  b  o2"]
+    assert ops.ls(proj, open_only=True) == ["T-000001#002  open  b  o2"]
+    assert ops.ls(proj, owner="o2") == ["T-000001#002  open  b  o2"]
     assert ops.ls(proj, overdue=True) == []  # the overdue item is closed
     ops.add(proj, row["id"], "c", due=yesterday)
-    assert ops.ls(proj, overdue=True) == [f"T-000001#003  todo  c  {yesterday}"]
+    assert ops.ls(proj, overdue=True) == [f"T-000001#003  open  c  {yesterday}"]
     assert ops.ls(proj, record_type="task")
     with pytest.raises(ValueError, match="unknown record_type"):
         ops.ls(proj, record_type="nope")
@@ -547,24 +547,16 @@ sections:
 
 
 def test_profile_items_validation(proj):
-    ok = BASE + ("items:\n  section: List\n  states: [{name: a}, "
-                 "{name: b, emoji: X, closed: true}]\n")
+    # P4: item states are global — `states:` is rejected, section must exist
+    ok = BASE + "items:\n  section: List\n  fields: [owner]\n"
     spec = tmpl.parse_template(ok)
     assert spec.items is not None and spec.items.section == "List"
-    assert [s.name for s in spec.items.states] == ["a", "b"]
-    # a missing/duplicate emoji is only an error when its group has >1 state
+    assert spec.items.closed_states == ["done", "failed", "dropped"]
     with pytest.raises(ValueError, match="not a section"):
-        tmpl.parse_template(
-            BASE + "items:\n  section: Nope\n  states: [{name: a}, {name: b, closed: true}]\n")
-    with pytest.raises(ValueError, match="first state"):
-        tmpl.parse_template(
-            BASE + "items:\n  section: List\n  states: [{name: a, closed: true}, {name: b}]\n")
-    with pytest.raises(ValueError, match="unique"):
-        tmpl.parse_template(BASE + ("items:\n  section: List\n  states: [{name: a}, "
-                                   "{name: b, emoji: X, closed: true}, "
-                                   "{name: c, emoji: X, closed: true}]\n"))
-    with pytest.raises(ValueError, match="gates\\.items"):
-        tmpl.parse_template(BASE + "gates:\n  items: [Closed]\n")
+        tmpl.parse_template(BASE + "items:\n  section: Nope\n")
+    with pytest.raises(ValueError, match="states is gone"):
+        tmpl.parse_template(BASE + ("items:\n  section: List\n  states: "
+                                   "[{name: a}, {name: b, closed: true}]\n"))
 
 
 # ---- lock roundtrip ---------------------------------------------------------------
@@ -593,7 +585,7 @@ def test_adopt_parses_items_as_new(proj):
     problems, _notes = rec.adopt(proj)
     assert problems == []
     rows = db_items(proj, "DEB-0001")
-    assert [i["state"] for i in rows] == ["todo", "done"]
+    assert [i["state"] for i in rows] == ["open", "done"]
     assert [i["no"] for i in rows] == ["001", "002"]
 
 
@@ -613,7 +605,7 @@ def test_command_output_reports_notes(proj):
     ops.add(proj, row["id"], "a")
     out = ops.check(proj, f"{row['id']}#001")
     assert f"note: {row['id']} promoted Draft → In Progress" in out.splitlines()
-    assert "- [x] #001 a" in out
+    assert "- [x] #001 ✅ a" in out
     ops.group_add(proj, row["id"], "G")
     out = ops.move(proj, f"{row['id']}#001", group="A")
     assert "note: item #001 → #A01" in out

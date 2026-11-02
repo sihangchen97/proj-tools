@@ -64,31 +64,22 @@ class ChangelogSpec:
 
 
 @dataclass
-class ItemState:
-    """One state of a record's item checklist: `name` (required), optional
-    `emoji` (shown before the text when its group holds more than one state),
-    `closed` (group: todo=False, done=True)."""
-
-    name: str
-    emoji: str = ""
-    closed: bool = False
-
-
-@dataclass
 class ItemsSpec:
-    """The `items:` block: a record's structured checklist (one `##` section)."""
+    """The `items:` block: a record's structured checklist (one `##` section).
+    Item states are global (PLAN §10.3 P4): open/done/failed/dropped, defined
+    in engine.items — the profile no longer declares `states:`."""
 
     section: str
     noun: str = "item"
-    states: list[ItemState] = field(default_factory=list)
     fields: list[str] = field(default_factory=list)   # subset of {owner, due}
     promote_from: list[str] = field(default_factory=list)
     promote_to: str = ""
 
     @property
     def closed_states(self) -> list[str]:
-        """The names of the closed states (the 'done' half of the checklist)."""
-        return [s.name for s in self.states if s.closed]
+        """The closed item states (P4, global): done / failed / dropped."""
+        from proj.engine.items import CLOSED_STATES  # lazy: templates<->items
+        return list(CLOSED_STATES)
 
 
 @dataclass
@@ -252,15 +243,15 @@ def _parse_items(record_type: str, data) -> ItemsSpec | None:
         return None
     if not isinstance(data, dict) or not data.get("section"):
         raise ValueError(f"template {record_type!r}: items: needs a section: key")
-    states = [ItemState(str(s["name"]), str(s.get("emoji", "")), bool(s.get("closed", False)))
-              if isinstance(s, dict) else ItemState(str(s))
-              for s in data.get("states", [])]
+    if "states" in data:
+        raise ValueError(
+            f"template {record_type!r}: items.states is gone (P4) — item states "
+            f"are global (open/done/failed/dropped)")
     fields = [str(f) for f in data.get("fields", [])]
     promote = data.get("promote") or {}
     return ItemsSpec(
         section=str(data["section"]),
         noun=str(data.get("noun", "item")),
-        states=states,
         fields=fields,
         promote_from=[str(s) for s in promote.get("from", [])],
         promote_to=str(promote.get("to", "")),
@@ -268,36 +259,14 @@ def _parse_items(record_type: str, data) -> ItemsSpec | None:
 
 
 def _validate_items(spec: RecordTypeSpec) -> None:
-    """The items: rules (plan §2.1): known section, ≥2 states, first not closed,
-    ≥1 closed, unique names, per-group emoji rule, known fields, promote statuses."""
+    """The items: rules (plan §2.1): known section, known fields, promote
+    statuses. (Item states are global since P4 — no per-checklist `states:`.)"""
     rt = spec.record_type
     it = spec.items
     if it is None:
         return
     if it.section not in [s.name for s in spec.sections]:
         raise ValueError(f"template {rt!r}: items.section {it.section!r} is not a section")
-    if len(it.states) < 2:
-        raise ValueError(f"template {rt!r}: items.states needs at least 2 states")
-    if it.states[0].closed:
-        raise ValueError(f"template {rt!r}: items.states first state must not be closed")
-    if not any(s.closed for s in it.states):
-        raise ValueError(f"template {rt!r}: items.states needs at least one closed state")
-    names = [s.name for s in it.states]
-    dup = [n for n in set(names) if names.count(n) > 1]
-    if dup:
-        raise ValueError(f"template {rt!r}: items.states names not unique: {dup}")
-    for closed in (False, True):
-        group = [s for s in it.states if s.closed is closed]
-        if len(group) > 1:
-            missing = [s.name for s in group if not s.emoji]
-            if missing:
-                raise ValueError(
-                    f"template {rt!r}: items.states group needs unique emoji "
-                    f"when it holds several states — missing for {missing}")
-            emojis = [s.emoji for s in group if s.emoji]
-            dup_e = [e for e in set(emojis) if emojis.count(e) > 1]
-            if dup_e:
-                raise ValueError(f"template {rt!r}: items.states emoji not unique: {dup_e}")
     bad_fields = [f for f in it.fields if f not in ("owner", "due")]
     if bad_fields:
         raise ValueError(f"template {rt!r}: items.fields only owner/due allowed (got {bad_fields})")

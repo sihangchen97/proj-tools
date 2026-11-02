@@ -29,8 +29,9 @@ FOOTER = ("_Rendered by `proj update` — never hand-edit the headings, metadata
 
 
 def closed_states(spec: RecordTypeSpec) -> set[str]:
-    """The names of a checklist's closed states (the 'done' half)."""
-    return {s.name for s in spec.items.states if s.closed} if spec.items else set()
+    """The closed item states (P4, global: done/failed/dropped)."""
+    from proj.engine.items import CLOSED_STATES  # lazy: wip<->items cycle
+    return set(CLOSED_STATES)
 
 
 def _record_by_id(db, record_id: str) -> dict | None:

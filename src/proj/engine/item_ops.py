@@ -130,15 +130,13 @@ def set_state(cfg: ProjConfig, ref: str, state_name: str, note: str | None = Non
 
 def check(cfg: ProjConfig, ref: str, note: str | None = None, commit: str = "") -> str:
     with _editing(cfg, ref, need_item=True) as c:
-        first = next(s.name for s in c.it.states if s.closed)
-        new, notes = items.set_state(c.state, c.it, c.no, first, note, commit)
+        new, notes = items.set_state(c.state, c.it, c.no, items.DONE, note, commit)
         return c.save(new, notes)
 
 
 def uncheck(cfg: ProjConfig, ref: str) -> str:
     with _editing(cfg, ref, need_item=True) as c:
-        first = c.it.states[0].name
-        new, notes = items.set_state(c.state, c.it, c.no, first)
+        new, notes = items.set_state(c.state, c.it, c.no, items.OPEN)
         return c.save(new, notes)
 
 

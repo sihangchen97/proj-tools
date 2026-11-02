@@ -74,7 +74,7 @@ def test_wip_entry_render(proj):
     # a ticked item re-renders the progress n/m
     item_ops.check(proj, f"{row['id']}#001")
     w = _wip(proj)
-    assert "1/2" in w and "- [x] #001 step one" in w
+    assert "1/2" in w and "- [x] #001 ✅ step one" in w
 
 
 def test_wip_render_reflects_db_not_file(proj):
@@ -197,9 +197,9 @@ def test_sync_writes_back_wip_only_drift(proj):
     assert problems == []
     assert _item_state(proj, row["id"], "001") == "done"
     md = (proj.root / "docs/tasks/T-000001-feat.md").read_text(encoding="utf-8")
-    assert "- [x] #001 step one" in md  # re-rendered from the DB
+    assert "- [x] #001 ✅ step one" in md  # re-rendered from the DB
     w = _wip(proj)
-    assert "- [x] #001 step one" in w  # WIP.md re-rendered from the DB too
+    assert "- [x] #001 ✅ step one" in w  # WIP.md re-rendered from the DB too
 
 
 def test_sync_no_write_back_when_wip_matches_db(proj):

@@ -26,11 +26,6 @@ gates:
 items:
   section: Success Criteria
   noun: criterion
-  states:
-    - {name: pending}
-    - {name: met, emoji: ✅, closed: true}
-    - {name: missed, emoji: ❌, closed: true}
-    - {name: inconclusive, emoji: ❔, closed: true}
 # status 按时间顺序排列：Draft → Proposed → Running → Closed | Abandoned
 # Closed/Abandoned 是 done 状态（done 即终止）
 status-allowed:
