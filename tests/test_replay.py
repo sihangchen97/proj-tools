@@ -8,9 +8,13 @@ a temporary `_uuid` row field that items_save never persists).
 """
 from __future__ import annotations
 
+import json
 import random
 import string
+import tempfile
 from pathlib import Path
+
+import pytest
 
 from proj import events as ev
 from proj import replay as rp
@@ -517,3 +521,119 @@ def test_snapshot_replace_semantics_rerun_is_idempotent(tmp_path):
     assert _norm_tables(db2) == _norm_tables(db)
     db.close()
     db2.close()
+
+# ---------------------------------------------------------------------------
+# E8 (P2): randomized determinism — two divergent clones, merged in both
+# orders (A+B / B+A), must yield identical tables on every seed.
+
+
+def _random_clone_events(rng: random.Random, base: list[dict], actor: str):
+    """Random divergence on top of a shared prefix: disjoint AND clashing
+    creates (id collisions), same-field edits, item add/set/move/delete,
+    relations, WIP, project changelog."""
+    evs = list(base)
+    ut, up = base[0]["rec"], base[1]["rec"]  # the two shared tasks
+    for step in range(12):
+        n = rng.randint(1, 4)
+        for _ in range(n):
+            at = evs[-1]["at"] + rng.randint(1, 50)  # later than everything seen
+            seq = len([e for e in evs if e["actor"] == actor])
+            roll = rng.random()
+            if roll < 0.20:
+                # create: 1/3 the chance to clash with an existing id
+                if rng.random() < 0.33 and evs:
+                    src = rng.choice([e for e in evs if e["op"] == "create"])
+                    rid, rtype = src["id"], src["type"]
+                else:
+                    rtype, rid = rng.choice(["task", "decision"]), \
+                        rng.choice([f"T-{rng.randint(1, 40):06d}",
+                                    f"DEC-{rng.randint(1, 40):04d}"])
+                evs.append(ev.make("create", actor=actor, at=at, seq=seq,
+                                   rec=_uuid(), type=rtype, id=rid,
+                                   title=f"{actor} step", status="Draft",
+                                   summary="", sections={}))
+            elif roll < 0.45:
+                # same-field edits (LWW territory)
+                rec = rng.choice([ut, up])
+                evs.append(ev.make("set", actor=actor, at=at, seq=seq, rec=rec,
+                                   fields={rng.choice(["title", "status"]):
+                                           f"by {actor}"}))
+            elif roll < 0.75:
+                # item add/set/move/delete on one of the shared tasks
+                rec = rng.choice([ut, up])
+                iu = _uuid()
+                no = rng.choice(["001", "002", "003", "A01", "A02"])
+                evs.append(ev.make("item.add", actor=actor, at=at, seq=seq,
+                                   rec=rec, item=iu, no=no,
+                                   section="Acceptance Criteria",
+                                   text=f"{actor} item {step}"))
+                if rng.random() < 0.6:
+                    evs.append(ev.make("item.set", actor=actor,
+                                       at=at + 1, seq=seq + 1, rec=rec, item=iu,
+                                       fields=rng.choice(
+                                           [{"state": "done"},
+                                            {"text": f"{actor} edit"},
+                                            {"owner": actor},
+                                            {"deleted": True},
+                                            {"state": "open", "deleted": False}]),
+                                       date=f"2026-01-03T0{step % 10}:00:00+00:00"))
+            else:
+                # relations / WIP / project changelog
+                kind = rng.choice(["related", "supersede"])
+                others = [e["rec"] for e in evs if e["op"] == "create"]
+                evs.append(ev.make("rel.add", actor=actor, at=at, seq=seq,
+                                   rec=rng.choice(others), kind=kind,
+                                   target=rng.choice(others)))
+    return evs
+
+
+def test_random_determinism_both_merge_orders(seed=0, steps=12):
+    """A+B and B+A (union = concat + dedupe, simulated by replay's own
+    line-level dedupe) must produce identical tables, for any seed."""
+    rng = random.Random(seed)
+    specs = _specs()
+    ut, up = _uuid(), _uuid()
+    base = [_create(ut, "task", "T-000001", "父A", 1_000, "alex"),
+            _create(up, "task", "T-000002", "父B", 2_000, "alex")]
+    ea = _random_clone_events(random.Random(seed + 1_000_000), base, "alex")
+    eb = _random_clone_events(random.Random(seed + 2_000_000), base, "billy")
+    tmp = Path(tempfile.mkdtemp(prefix=f"proj-e8-{seed}-"))
+
+    # the columns replay derives from the wall clock (utc_now) when the event
+    # does not carry the field - determinism is about the data, not those
+    _VOLATILE_TS = ("created", "closed_at", "date", "added_at")
+
+    def tables_of(events):
+        (tmp / "db").mkdir(exist_ok=True)
+        db = _db_at(tmp / "db" / f"t{rng.random()}.sqlite")
+        rp.replay(db, events, specs)
+        out = {}
+        for t in ("records", "record_changelog", "items", "relations",
+                  "wip_entries", "changelog_entries"):
+            rows = [dict(r) for r in db.conn.execute(f"SELECT * FROM {t}")]
+            for r in rows:
+                for k in _VOLATILE_TS:
+                    r.pop(k, None)
+            out[t] = sorted(json.dumps(r, sort_keys=True) for r in rows)
+        return out
+
+    ab = tables_of(ea + eb)
+    ba = tables_of(eb + ea)
+    if ab != ba:
+        for t in ab:
+            if ab[t] != ba[t]:
+                pytest.fail(f"seed {seed}: table {t} differs between A+B and "
+                            f"B+A\nA+B: {ab[t][:3]}...\nB+A: {ba[t][:3]}...")
+    assert ab == ba
+
+
+def test_random_determinism_200_seeds():
+    """Run the property over 200 seeds; a failure names the seed (P2)."""
+    for seed in range(200):
+        test_random_determinism_both_merge_orders(seed)
+
+
+# deterministic base-seed sanity (CI-friendly, no flakiness by design)
+@pytest.mark.parametrize("seed", [1, 7, 42, 123, 999])
+def test_random_determinism_named_seeds(seed):
+    test_random_determinism_both_merge_orders(seed)
