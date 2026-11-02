@@ -610,6 +610,13 @@ def ch5() -> None:
     run("task", "start", T_ONNX)
     expect_ok("ONNX 导出任务完成", "→ Done", "task", "done", T_ONNX,
               "-m", "Changed: 导出 12MB 模型，边缘端跑通（延迟未达标）")
+    # the standalone task (no parent) starts too: entering In Progress (task
+    # wip.enter) auto-registers it in WIP.md — the demo ends with a task entry,
+    # not just the plan; one acceptance item so the entry carries a checklist
+    expect_ok("独立验收项（driver 版本）", "#001",
+              "item", "add", T_CUDA, "驱动版本 ≥ 525（支持 CUDA 12）")
+    expect_ok("独立任务开工（自动登记进 WIP）", "→ In Progress",
+              "task", "start", T_CUDA)
 
 
 def ch6() -> None:
@@ -788,6 +795,11 @@ def ch9() -> None:
     assert not empty, f"空正文节（应补正文或列入 EMPTY_OK）: {empty}"
     REP.ok(f"演示项目 {n_files} 条记录文件：无空 ## 正文节"
            f"（例外 {sorted(SECTION_EMPTY_OK)}，items/渲染节除外）")
+    # WIP.md's final state: the plan (still Active) AND the standalone task
+    # (In Progress) both carry an entry; the task's checklist is tickable there
+    wip_text = read("WIP.md")
+    assert f"## {P}." in wip_text and f"## {T_CUDA}." in wip_text, wip_text
+    REP.ok("WIP.md：plan + 独立任务两条目（任务条目带清单，可直接勾）")
 
 
 # ---- A12: render the reference scripts/e2e.sh (PLAN §18.3) ----------------------

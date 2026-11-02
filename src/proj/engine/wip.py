@@ -99,7 +99,8 @@ def render_wip_md(cfg: ProjConfig, db, registry: dict[str, RecordTypeSpec]) -> V
         body += entry_lines(row, registry[row["type"]], cfg, db)
         body.append("")
     lines += body or ["_nothing in progress_"]
-    lines += ["", FOOTER]
+    lines += ["", "---", ""]
+    lines += [FOOTER]
     return View(cfg.root / WIP_FILE, "\n".join(lines).rstrip("\n") + "\n")
 
 

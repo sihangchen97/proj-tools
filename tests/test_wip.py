@@ -56,6 +56,7 @@ def test_wip_md_is_rendered_and_empty_placeholder(proj):
     assert "# WIP" in w and "TOOL-MANAGED except item lines" in w
     assert "_nothing in progress_" in w  # empty
     assert "_Rendered by `proj update`" in w  # footer
+    assert "\n---\n" in w  # the rule separating entries from the footer
 
 
 def test_wip_entry_render(proj):

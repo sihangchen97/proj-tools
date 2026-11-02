@@ -309,6 +309,8 @@ proj task done T-000006  # 标注质检完成
 proj task done T-000001  # 数据集任务完成（items 全关闭）
 proj task start T-000004
 proj task done T-000004 -m 'Changed: 导出 12MB 模型，边缘端跑通（延迟未达标）'  # ONNX 导出任务完成
+proj item add T-000005 '驱动版本 ≥ 525（支持 CUDA 12）'  # 独立验收项（driver 版本）
+proj task start T-000005  # 独立任务开工（自动登记进 WIP）
 
 # ── 第 6 章 出事故：训练/验证集图片重复，指标虚高 ──
 proj incident new '训练集与验证集图片重复' -y  # incident 新建
