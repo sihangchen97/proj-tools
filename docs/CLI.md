@@ -20,7 +20,7 @@
 
 ```
 proj init [--profile <PROFILES…>] [--zoo]
-proj sync [<FILES>]
+proj sync [<FILES>] [--rerender] [--quiet]
 proj adopt [<FILES>]
 proj render [<REF>]
 proj show <ID> [--history] [--json]

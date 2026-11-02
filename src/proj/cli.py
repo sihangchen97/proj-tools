@@ -428,11 +428,30 @@ def init(profiles: list[str] = typer.Option(
 
 @app.command()
 def sync(files: list[Path] = typer.Argument(
-        None, help="Files (default: all managed dirs)")):
+        None, help="Files (default: all managed dirs)"),
+         rerender: bool = typer.Option(
+            False, "--rerender",
+            help="Skip the ingest: overwrite every md with the rendered state "
+                 "(the replay result) as-is — use after a merge without the "
+                 "proj-render driver (conflict markers)."),
+         quiet: bool = typer.Option(
+            False, "--quiet",
+            help="No echo output — the post-merge / post-checkout / post-rewrite "
+                 "hooks run `sync --quiet` (the work still happens, incl. "
+                 "renumber/overwrite notices).")):
     """Bring the md files and the DB in line: every hand edit is checked and
     stored, then the tool-owned parts of every file are regenerated. No file
     argument = everything."""
     cfg = _cfg()
+    if rerender:
+        # C5: no ingest — the md (possibly conflict-laced) is thrown away and
+        # every file is overwritten by the rendered state as-is
+        try:
+            written = rec.render_all(cfg, force=True)
+        except ValueError as e:
+            _fail(str(e))
+        typer.echo(f"OK — {len(written)} file(s) re-rendered")
+        return
     try:
         problems, notes = rec.sync(cfg, list(files) if files else None)
     except ValueError as e:
@@ -440,7 +459,8 @@ def sync(files: list[Path] = typer.Argument(
     _print_problems(problems, notes)
     if problems:
         raise typer.Exit(1)
-    typer.echo("OK — synced and re-rendered")
+    if not quiet:
+        typer.echo("OK — synced and re-rendered")
 
 
 @app.command()

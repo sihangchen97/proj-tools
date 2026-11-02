@@ -616,7 +616,8 @@ def ensure_synced(cfg: ProjConfig) -> None:
                                   if new_p.exists() else None)
 
 
-def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
+def render_all(cfg: ProjConfig, db: dbmod.Db | None = None,
+               force: bool = False) -> list[Path]:
     """Phase 2: DB → every record file + global views. Returns written paths.
     B1: writes only files whose rendered content actually changed (a command no
     longer rewrites every file). No auto-sync here: render_all always runs AFTER
@@ -624,7 +625,9 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
     command entry points (ensure_synced), not in the render itself.
     R3: when called from inside a write command, pass that command's connection
     (render reads its UNCOMMITTED writes — a fresh connection would not see them
-    under WAL); a standalone render opens and closes its own read connection."""
+    under WAL); a standalone render opens and closes its own read connection.
+    force (C5 `sync --rerender`): write EVERY file regardless of the F2
+    fingerprint (the md is overwritten by the rendered state as-is)."""
     from proj.engine.views import render_changelog_md
     from proj.engine.wip import render_wip_md  # WIP.md replaces TASKLIST.md (W1)
     reg = load_registry(cfg.root)
@@ -644,7 +647,7 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
                 text = render_record(spec, row, db, reg, task_rows=task_rows)
                 # F2: no read-back — skip when the rendered text's hash matches
                 # the stored fingerprint AND the file's (mtime_ns, size) does too
-                if not _render_unchanged(row.get("md_hash"), row.get("md_mtime_ns"),
+                if force or not _render_unchanged(row.get("md_hash"), row.get("md_mtime_ns"),
                                          row.get("md_size"), p, text):
                     fsio.write_atomic(p, text)  # S.2: atomic (no half-written file)
                     written.append(p)
@@ -653,7 +656,7 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
             if view is None:
                 continue
             vfp = db.view_fp(view.path.name)
-            if not _render_unchanged(
+            if force or not _render_unchanged(
                     vfp[2] if vfp else None,
                     vfp[0] if vfp else None, vfp[1] if vfp else None,
                     view.path, view.text):
@@ -895,6 +898,13 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
     if text is None:
         text = p.read_text(encoding="utf-8")
     (mk, u), title, raw_sections = parse_record(text)
+    # C5: a git conflict marker (<<<<<<< …) means the merge driver was NOT
+    # installed (the proj-render "keep ours" rule never ran) — refuse to ingest
+    # the half-merged text and point at the fix.
+    if "<<<<<<<" in text:
+        return [f"{p.name}: git conflict marker (<<<<<<< ) — the merge driver is "
+                f"not installed. Run `proj hooks install`, then `proj sync --rerender` "
+                f"(overwrites every md with the replay result)"], []
     if strict:
         if mk != spec.record_type or not u:
             return [f"{p.name}: missing/foreign id marker — run `proj adopt`"], []

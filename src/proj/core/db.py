@@ -577,6 +577,17 @@ class Db:
         # lazily on the FIRST write, so a pure read through a `with` takes no
         # lock at all, and an inner READ-ONLY connection of the same command
         # (e.g. _check_parent_ref inside task.move) can close before we commit).
+        # C5: refuse to open a write transaction while a git merge / rebase is
+        # in flight — the single choke point for every write command (CLI + MCP
+        # all funnel through begin); read-only opens (pure `ls`/`show`) are
+        # unaffected.
+        from proj.core.config import ProjConfig
+        from proj.hooks import git_in_progress  # lazy: hooks imports config
+        # the DB lives at <root>/.proj/cache.sqlite — the project root is two
+        # levels up
+        reason = git_in_progress(ProjConfig(root=self.path.parent.parent))
+        if reason is not None:
+            raise ValueError(f"git: {reason}")
         self.conn.execute("BEGIN")
 
     def __enter__(self) -> Db:

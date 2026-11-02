@@ -15,6 +15,7 @@ but is not a proj hook is never overwritten.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -44,6 +45,7 @@ _HOOK = """\
 #!/bin/sh
 # Installed by `proj hooks install` — {desc}
 {guard}if [ -x "{{proj}}" ]; then
+    PROJ_GIT_HOOK=1
     exec "{{proj}}" {cmd}
 fi
 echo "proj: hook target not found, skipping ({name})"
@@ -65,6 +67,33 @@ POST_HOOKS = {  # git hook name -> script
     "post-checkout": POST_CHECKOUT,
     "post-rewrite": POST_SYNC,
 }
+
+
+def git_in_progress(cfg: ProjConfig) -> str | None:
+    """C5: refuse write commands while a git merge / rebase / cherry-pick is
+    in flight (`.git/MERGE_HEAD`, `.git/REBASE_HEAD`, `.git/CHERRY_PICK_HEAD`
+    present) or the worktree has unmerged paths — an event appended to a
+    half-merged tree would diverge the two sides. Returns a reason, or None
+    when git is idle (also None when the project is not a git checkout).
+    `PROJ_GIT_HOOK=1` (set by the installed hooks) exempts the hook-driven
+    `proj sync` — the post-merge / post-checkout / post-rewrite replay is the
+    merge's completion handling, not a user write command."""
+    if os.environ.get("PROJ_GIT_HOOK"):
+        return None
+    git_dir = cfg.root / ".git"
+    if not git_dir.is_dir():
+        return None
+    for name, what in (("MERGE_HEAD", "merge"), ("REBASE_HEAD", "rebase"),
+                       ("CHERRY_PICK_HEAD", "cherry-pick")):
+        if (git_dir / name).exists():
+            return f"a git {what} is in progress — finish it first, then retry"
+    out = subprocess.run(["git", "-C", str(cfg.root), "diff", "--name-only",
+                          "--diff-filter=U"],
+                         check=False, capture_output=True, text=True)
+    if out.stdout.strip():
+        return ("unmerged paths exist — resolve the conflicts "
+                "(git add / git merge --abort), then retry")
+    return None
 
 
 def _find_proj(root: Path) -> str:

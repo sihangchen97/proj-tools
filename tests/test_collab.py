@@ -14,6 +14,7 @@ harness cannot silently hide a real success.
 from __future__ import annotations
 
 import json
+import re
 
 import collab_harness as ch
 import pytest
@@ -43,8 +44,13 @@ def _task_ids(cl: ch.Clone) -> list[str]:
 
 def _new_task_id(cl: ch.Clone, title: str) -> str:
     out = cl.run("task", "new", title, "-y")
-    return [ln for ln in out.splitlines() if ln.startswith("Created:")][-1] \
-        .split(":", 1)[1].strip()
+    # `task new` prints "Created <relative-path>.md" — the id is the file's
+    # stem prefix (T-000001-…)
+    line = [ln for ln in out.splitlines() if ln.startswith("Created ")][-1]
+    # the file name is `<ID>-<slug>.md` — the id is the leading CODE-DIGITS
+    m = re.search(r"([A-Z]+-\d+)-", line)
+    assert m, line
+    return m.group(1)
 
 
 def test_harness_builds_two_identical_clones(tmp_path, proj_binary):
@@ -358,28 +364,50 @@ def test_rebase_equals_merge(tmp_path):
 
 # ---- C7 write refused while a merge is in progress -------------------------
 
-@WAIT_C5
 def test_write_refused_while_merge_in_progress(tmp_path):
     """C7: with a merge mid-flight (conflict left unresolved), a write command
-    must be refused — no event may be appended to a half-merged tree."""
-    t = ch.build_two_clones(tmp_path)
+    must be refused (C5: the refusal is the single choke point Db.begin +
+    hooks.git_in_progress) — no event may be appended to a half-merged tree.
+
+    Built WITHOUT the proj hooks: the proj-render keep-ours driver would
+    auto-resolve an md conflict (that is C5's happy path, covered by the
+    post-merge replay scenarios); here we want a REAL git conflict that leaves
+    MERGE_HEAD set, so both sides change the SAME line (the title).
+    """
+    t = ch.build_two_clones(tmp_path, install_hooks=False)
     a, b = t.a, t.b
     did = _new_task_id(a, "冲突")
     a.commit("base")
     t.push(a)
-    t.rebase(b)
-    md = next(a.path.rglob(f"{did}-*.md"))
-    conflict = ("\n## 冲突段\n\n<<<<<<< .mine\nA 行\n"
-                "=======\nB 行\n>>>>>>> .their\n")
-    md.write_text(md.read_text(encoding="utf-8") + conflict, encoding="utf-8")
-    a.commit("both touch the same line")
+    t.pull(b)  # B fast-forwards onto A's task
+    md_a = next(a.path.rglob(f"{did}-*.md"))
+    md_b = next(b.path.rglob(f"{did}-*.md"))
+    # both sides change the SAME line (the title) to different text → a real
+    # conflict the proj-render driver would otherwise keep-ours on
+    txt_a = md_a.read_text(encoding="utf-8")
+    txt_b = md_b.read_text(encoding="utf-8")
+    assert txt_a == txt_b  # same base content
+    md_a.write_text(txt_a.replace(f"# {did}.", f"# {did}. A 方", 1), encoding="utf-8")
+    md_b.write_text(txt_b.replace(f"# {did}.", f"# {did}. B 方", 1), encoding="utf-8")
+    a.commit("A 方")
     t.push(a)
-    # start the merge and leave it in conflict (do not resolve)
-    a.run_sh("git pull origin HEAD --no-rebase", expect=1)
-    assert (a.path / ".git" / "MERGE_HEAD").exists()
-    # a write command must now be refused
-    out = a.run("task", "new", "不该成", "-y", expect=1)
-    assert "merge" in out.lower() or "MERGE" in out or "refus" in out.lower()
+    b.commit("B 方")
+    # B pulls A's section — the two end-of-file appends conflict
+    b.run_sh("git pull origin HEAD --no-rebase", expect=1)
+    assert (b.path / ".git" / "MERGE_HEAD").exists()
+    try:
+        # a write command must now be refused
+        out = b.run("task", "new", "不该成", "-y", expect=1)
+        assert "merge" in out.lower() or "refus" in out.lower(), out
+        # …and it must have created nothing
+        assert "不该成" not in b.md_snapshot()
+        assert not [n for n in (b.path / "docs" / "tasks").glob("*.md")
+                    if "不该成" in n.name]
+    finally:
+        b.run_sh("git merge --abort")
+        assert not (b.path / ".git" / "MERGE_HEAD").exists()
+        # unblocked once the merge is aborted
+        b.run("task", "new", "可以成", "-y")
 
 
 # ---- C7 cache rebuild after deletion ---------------------------------------
