@@ -41,9 +41,10 @@ worktree on its own branch**; finished work is merged into `main`. The main chec
 6. **After merging**: append to §28.1 "<name> merged <branch> (<commit>)", then remove the finished
    worktree/branch: `git worktree remove ../proj-tools-wt/<name>` and `git branch -d <name>/<topic>`
    (only your own).
-7. **Fewer conflicts by design.** Still follow the file assignments in PLAN §28; `src/proj/core/db.py`
-   and `src/proj/engine/store.py` should have one active editor at a time (announce in §28.1).
-   Rebase often (at least before each merge) so conflicts stay small.
+7. **No file locks.** Branches isolate everyone, so several agents may change the same file
+   (e.g. `src/proj/core/db.py`) in parallel; whoever merges second resolves the conflict in their
+   own branch during `git rebase main`. Keep conflicts small: rebase often, keep branches short-lived,
+   and merge as soon as a topic is green.
 8. **Edit, don't overwrite.** Use small edits, never rewrite a whole existing file (2026-11-02: a
    full-file write wiped an untracked `items.py`).
 9. **Generated files** (`docs/CLI.md`, `docs/MCP.md`, `templates/PROJ_*.md`, `scripts/e2e.sh`) only via
