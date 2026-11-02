@@ -547,6 +547,16 @@ def _record(fn, *a, **k):
         return f"error: {e}\nrecorded to {path}"
 
 
+def _make(fn):
+    """Capture `fn` in the closure (a loop-local name) so each registered tool
+    delegates to ITS OWN function — B4: auto-record any uncaught, unexpected
+    exception, and copy name/doc/signature from the original."""
+    @functools.wraps(fn)
+    def _wrap(*a, **k):
+        return _record(fn, *a, **k)
+    return _wrap
+
+
 for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
             proj_ls, proj_show, proj_update, proj_verb,
             proj_info,
@@ -557,14 +567,7 @@ for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
             proj_wip_add, proj_wip_return, proj_wip_ls,
             proj_bug, proj_bug_ls,
                         ):
-    def _wrap(*a, **k):
-        # B4: delegate to the original (functools.wraps set __wrapped__=fn, so
-        # this reads it at call time — no loop-variable capture) and auto-record
-        # any uncaught, unexpected exception.
-        return _record(_wrap.__wrapped__, *a, **k)
-
-    functools.wraps(_fn)(_wrap)  # copies name/doc/signature onto the wrapper
-    mcp.tool(name=_fn.__name__)(_wrap)
+    mcp.tool(name=_fn.__name__)(_make(_fn))
 
 
 def main():

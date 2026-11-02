@@ -112,6 +112,76 @@ def test_safe_returns_clean_error_for_sqlite_and_projerror(proj):
     assert _safe(boom_proj) == "error: gate failed"
 
 
+def test_tool_dispatch_reaches_each_own_function(proj):
+    """§21.2: every registered tool is invoked through the REAL MCP dispatch
+    (`mcp.call_tool`), not the module-level functions directly — a
+    registration-closure bug (every wrapper delegating to the LAST registered
+    function) only shows up here. Each call asserts a marker unique to its
+    own function, and that no call fell into the auto-record fallback."""
+    import asyncio
+
+    from proj import mcp as m
+
+    root = str(proj.root)
+    m.proj_init(root=root)  # build the project via direct calls (not under test)
+    m.proj_new("plan", "Ship v1", root=root)
+    m.proj_new("task", "Baseline", parent="PLN-0001", root=root)
+
+    def call(name: str, args: dict) -> str:
+        res = asyncio.run(m.mcp.call_tool(name, args))
+        content = res.content if hasattr(res, "content") else res
+        return "".join(getattr(x, "text", str(x)) for x in content)
+
+    m.proj_changelog_add(entry="Added: ship", root=root)
+    m.proj_wip_add(ids=["PLN-0001"], root=root)
+    m.proj_item_add(ref="PLN-0001", text="marker-item", root=root)
+
+    # (tool, args, marker unique to ITS function)
+    cases = [
+        ("proj_init", {"root": root}, "Nothing to create"),
+        ("proj_new", {"record_type": "zzz", "title": "x", "root": root},
+         "unknown record_type"),
+        ("proj_sync", {"root": root}, "synced and re-rendered"),
+        ("proj_adopt", {"root": root}, "adopted and re-rendered"),
+        ("proj_render", {"root": root}, "Rendered"),
+        ("proj_check", {"root": root}, "OK"),
+        ("proj_ls", {"root": root}, "T-000001"),
+        ("proj_show", {"id": "PLN-0001", "root": root}, "id: PLN-0001"),
+        ("proj_update", {"id": "T-000001", "summary": "s", "root": root},
+         "T-000001"),
+        ("proj_verb", {"id": "PLN-0001", "verb": "nope", "root": root},
+         "unknown verb"),
+        ("proj_info", {"root": root}, "Project:"),
+        ("proj_changelog_add", {"entry": "Added: again", "root": root},
+         "Added entry"),
+        ("proj_changelog_version", {"bump": "patch", "root": root},
+         "Released v"),
+        ("proj_changelog_release_notes", {"version": "v9.9.9", "root": root},
+         "no changelog entries"),
+        ("proj_changelog_list", {"root": root}, "v0.0."),
+        ("proj_task_move", {"id": "T-000001", "parent": "PLN-0001", "root": root},
+         "parent"),
+        ("proj_item_ls", {"ref": "PLN-0001", "root": root}, "marker-item"),
+        ("proj_item_add", {"ref": "T-000001", "text": "t-item", "root": root},
+         "#001"),
+        ("proj_item_update", {"item": "PLN-0001#001", "state": "done", "root": root},
+         "done"),
+        ("proj_item_rm", {"item": "T-000001#001", "root": root}, ""),
+        ("proj_wip_add", {"ids": ["T-000001"], "root": root}, "T-000001"),
+        ("proj_wip_ls", {"root": root}, "PLN-0001"),
+        ("proj_wip_return", {"ids": ["PLN-0001"], "root": root},
+         "returned PLN-0001"),
+        ("proj_bug", {"text": "marker-bug-text", "root": root}, "recorded to"),
+        ("proj_bug_ls", {"root": root}, "marker-bug-text"),
+    ]
+    for name, args, marker in cases:
+        out = call(name, args)
+        assert "unexpected keyword argument" not in out, (name, out)
+        assert "\nrecorded to " not in out, (name, out)  # B4 auto-record fallback
+        if marker:
+            assert marker in out, f"{name}: marker {marker!r} not in {out[:200]!r}"
+
+
 def test_tools_registered_once_sync(proj):
     """D1/D3: every CLI command has a tool, registered ONCE (no async
     duplicate), so the tool set is enumerable from the server itself."""
