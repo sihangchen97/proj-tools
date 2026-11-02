@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 from proj import events as ev
@@ -60,6 +61,9 @@ class _State:
         self.diagnostics: list[str] = []
         # (uuid, field) -> (actor, at, value): the previous write, for G5
         self.last_write: dict[tuple, tuple] = {}
+        # relations a snapshot re-inserts: buffered, flushed after every
+        # record is re-created (a snapshot may point at a higher id)
+        self.pending_rels: list = []
 
     # -- lookup ---------------------------------------------------------
 
@@ -100,8 +104,14 @@ def replay(db, events: list[dict],
     for e in events:
         seen.setdefault(_line_sha(e), e)
     st = _State(specs)
-    for e in sorted(seen.values(), key=ev.sort_key):
+    ordered = sorted(seen.values(), key=ev.sort_key)
+    for e in ordered:  # E6: reserve create/snapshot ids in sorted order so a
+        if e["op"] in ("create", "snapshot") and e.get("rec"):  # snapshot's
+            _pre_alloc(st, e)                                   # relation can
+    for e in ordered:                                           # point earlier
         _apply(st, db, e)
+    for rid, dst, kind in st.pending_rels:  # snapshots: all records exist now
+        db.add_relation(rid, dst, kind)
     for rid in st.rows:
         db.items_save(rid, st.rows[rid])
     res = ReplayResult()
@@ -126,7 +136,10 @@ def _apply(st: _State, db, e: dict) -> None:
         if spec is None:
             st.diagnostics.append(f"create: unknown record type {e['type']!r}")
             return
-        rid = _alloc_id(st, spec, rec, e["id"])
+        # id + rename already decided by the pre-pass (sorted order, so a
+        # collision is resolved deterministically); a create without a
+        # pre-allocation (defensive) still allocates on the spot
+        rid = st.ids.get(rec) or _alloc_id(st, spec, rec, e["id"])
         st.ids[rec] = rid
         st.types[rec] = e["type"]
         db.insert(spec, rid, e["title"], e["status"],
@@ -152,7 +165,7 @@ def _apply(st: _State, db, e: dict) -> None:
         return
     rid = st.rid(rec)
     spec = st.spec(rec)
-    if not rid or spec is None:
+    if (not rid or spec is None) and not (op == "snapshot" and not rec):
         st.diagnostics.append(f"{op}: unknown record uuid {rec!r}")
         return
     if op == "set":
@@ -200,6 +213,9 @@ def _apply(st: _State, db, e: dict) -> None:
              e.get("source", "manual")))
     elif op == "wip.del":
         db.wip_remove(rid)
+    elif op == "snapshot":
+        _apply_snapshot(st, db, e)
+        return
     else:
         st.diagnostics.append(f"unknown op {op!r}")
 
@@ -463,3 +479,105 @@ def apply_incremental(db, lines: list[dict],
     res.overwrites = st.overwrites
     res.diagnostics = st.diagnostics
     return res
+
+# ---------------------------------------------------------------------------
+# E6 (C6 compact): snapshots — one event per record + a project-level one,
+# whose replay yields the same tables as the original log.
+
+
+def _pre_alloc(st: _State, e: dict) -> None:
+    """A create or snapshot reserves its id before any op is applied, in
+    sorted order (the only order replay uses): a snapshot's relation can
+    point at a record whose snapshot line comes later in the file."""
+    rec = e.get("rec", "")
+    if not rec or rec in st.ids:
+        return
+    spec = st.specs.get(e["type"])
+    if spec is None:
+        return
+    st.ids[rec] = _alloc_id(st, spec, rec, e["id"])
+    st.types[rec] = e["type"]
+
+
+def _apply_snapshot(st: _State, db, e: dict) -> None:
+    rec, rid = e.get("rec", ""), st.rid(e.get("rec", ""))
+    if not rec:  # project-level: replace the whole changelog
+        db.conn.execute("DELETE FROM changelog_entries")
+        for ce in e.get("changelog", []):
+            db.conn.execute(
+                "INSERT INTO changelog_entries (version, category, message, "
+                "date) VALUES (?,?,?,?)",
+                (ce["version"], ce["category"], ce["message"], ce["date"]))
+        return
+    spec = st.spec(rec)
+    if not rid or spec is None:
+        st.diagnostics.append(f"snapshot: unknown record uuid {rec!r}")
+        return
+    # replace: drop the current state (items/relations cascade, WIP below)
+    db.delete(spec, rid)
+    db.conn.execute("DELETE FROM wip_entries WHERE record_id=?", (rid,))
+    st.rows.pop(rid, None)
+    db.insert(spec, rid, e["title"], e["status"],
+              e.get("created") or dbmod.utc_now(),
+              summary=e.get("summary", ""), commit=e.get("commit", ""))
+    sections = e.get("sections") or {}
+    if sections:
+        db.set(spec, rid, sections=json.dumps(sections, ensure_ascii=False))
+    for lg in e.get("logs", []):
+        db.conn.execute(
+            "INSERT INTO record_changelog (record_id, date, category, "
+            "message, status, actor) VALUES (?,?,?,?,?,?)",
+            (rid, lg["date"], lg["category"], lg["message"], lg["status"],
+             lg["actor"]))
+    for r in e.get("relations", []):
+        dst = st.rid(r["target"])
+        if not dst:
+            st.diagnostics.append(
+                f"snapshot: relation target {r['target']!r} not in the "
+                "snapshot set - skipped")
+            continue
+        st.pending_rels.append((rid, dst, r["kind"]))
+    if e.get("wip"):
+        db.wip_add(rid, e.get("source", "manual"))
+    rows = e.get("items", [])
+    if rows:
+        # rows in their stored display order; pos is the list index again
+        st.rows[rid] = [dict(r) for r in rows]
+        # _uuid fields ride as before (temporary, never persisted, E2 stage)
+
+
+def snapshot_events(db, at: int | None = None, actor: str = "compact") -> list:
+    """C6: the state of a replayed db as one `snapshot` event per record (in
+    id order) + one project-level `snapshot` (the changelog). Compact (wired
+    by alex in C6) rewrites events.jsonl with exactly these events, the sort
+    key taken from the original maximum, then replays and compares.
+
+    E2 stage: the db carries no uuid columns (C1), so `rec` is the id —
+    replay then maps rec -> id identity. C1 makes `rec` the stored uuid."""
+    at = at or int(time.time() * 1000)
+    out: list = []
+    for r in db.conn.execute("SELECT * FROM records ORDER BY id"):
+        rid = r["id"]
+        sections = json.loads(r["sections"] or "{}")
+        rels = [dict(row) for row in db.conn.execute(
+            "SELECT target, kind FROM relations WHERE source=? "
+            "ORDER BY target, kind", (rid,))]
+        wip = db.conn.execute(
+            "SELECT source FROM wip_entries WHERE record_id=?", (rid,)).fetchone()
+        out.append(ev.make(
+            "snapshot", actor=actor, at=at, seq=len(out), rec=rid,
+            type=r["type"], id=rid, title=r["title"], status=r["status"],
+            summary=r["summary"], commit=r["commit"], created=r["created"],
+            sections=sections, relations=rels,
+            logs=[{"date": r["date"], "category": r["category"],
+                   "message": r["message"], "status": r["status"],
+                   "actor": r["actor"]}
+                   for r in reversed(db.logs(rid))],  # chronological order
+            items=[dict(row) for row in db.items_load(rid)],
+            wip=bool(wip), source=wip[0] if wip else ""))
+    out.append(ev.make(
+        "snapshot", actor=actor, at=at, seq=len(out), rec="",
+        changelog=[{"version": r["version"], "category": r["category"],
+                    "message": r["message"], "date": r["date"]}
+                   for r in db.cl_entries()]))
+    return out

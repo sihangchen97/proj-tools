@@ -27,9 +27,10 @@ from pathlib import Path
 OPS = ("create", "set", "section.set", "item.add", "item.set", "item.move",
        "group.add", "group.set", "group.move", "rel.add", "rel.del",
        "wip.add", "wip.del", "log", "changelog.add", "changelog.release",
-       "delete")
+       "delete", "snapshot")
 #: the fields every event carries, whatever its op (C2.2)
 REQUIRED_FIELDS = ("at", "actor", "op", "rec", "seq")
+#: the E7 comment about OPS: `snapshot` (E6 / C6 compact) is replay-supported
 
 #: the sort key's last component guarantees a total order (design P2)
 def sort_key(ev: dict) -> tuple:

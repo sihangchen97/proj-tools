@@ -401,3 +401,119 @@ def _norm(tables: dict) -> dict:
             if "date" in r and str(r["date"]).startswith("20"):
                 r["date"] = "<now>"
     return tables
+
+# ---------------------------------------------------------------------------
+# E6 (C6 compact): snapshots — snapshot_events + the `snapshot` op
+
+
+def _mk_rich():
+    """A log that exercises every table: 3 records, a parent edge, a related
+    edge, supersede, WIP, items (incl. a tombstone + a closed row), log rows
+    and a project changelog."""
+    ut, up, uc = _uuid(), _uuid(), _uuid()
+    i1, i2 = _uuid(), _uuid()
+    return [
+        _create(ut, "task", "T-000001", "子", 1_000, "alex"),
+        _create(up, "task", "T-000002", "父", 2_000, "alex"),
+        _create(uc, "decision", "DEC-0001", "决定", 3_000, "billy",
+                summary="s"),
+        ev.make("rel.add", actor="alex", at=4_000, seq=1, rec=up,
+                kind="parent", target=ut),
+        ev.make("rel.add", actor="billy", at=5_000, seq=1, rec=uc,
+                kind="related", target=up),
+        ev.make("item.add", actor="alex", at=6_000, seq=1, rec=ut,
+                item=i1, no="001", section="Acceptance Criteria", text="a"),
+        ev.make("item.add", actor="alex", at=7_000, seq=2, rec=ut,
+                item=i2, no="002", section="Acceptance Criteria", text="b"),
+        ev.make("item.set", actor="alex", at=8_000, seq=3, rec=ut, item=i1,
+                fields={"state": "done"}, date="2026-01-02T03:04:05+00:00"),
+        ev.make("item.set", actor="billy", at=9_000, seq=4, rec=ut, item=i2,
+                fields={"deleted": True}),
+        ev.make("wip.add", actor="alex", at=10_000, seq=5, rec=ut,
+                source="manual"),
+        ev.make("log", actor="alex", at=11_000, seq=6, rec=ut,
+                message="T-000001 Draft -> In Progress",
+                status="In Progress", date="2026-01-02T03:00:01+00:00"),
+        ev.make("changelog.add", actor="billy", at=12_000, seq=7, rec="",
+                category="Added", message="m", date="2026-01-02T03:00:02+00:00"),
+    ]
+
+
+def _norm_tables(db, keep=("created",)):
+    t = _db_tables((db, None))
+    for rows in t.values():
+        for r in rows:
+            for k in ("created", "date", "closed_at", "added_at"):
+                if k in r and str(r[k]).startswith("20"):
+                    r[k] = "<ts>"
+    return t
+
+
+def test_snapshot_replay_equals_original(tmp_path):
+    """C6: replaying the original log and replaying snapshot_events(db) give
+    identical tables (ignoring auto timestamps)."""
+    mk = _mk_rich()
+    (tmp_path / "a").mkdir()
+    db = _db_at(tmp_path / "a" / "db.sqlite")
+    rp.replay(db, mk, _specs())
+    snap = rp.snapshot_events(db)
+    assert [e["op"] for e in snap].count("snapshot") == 4  # 3 records + 1 proj
+    (tmp_path / "b").mkdir()
+    db2 = _db_at(tmp_path / "b" / "db.sqlite")
+    res = rp.replay(db2, snap, _specs())
+    assert not res.diagnostics
+    assert _norm_tables(db2) == _norm_tables(db)
+    db.close()
+
+
+def test_events_after_snapshot_still_apply(tmp_path):
+    """C6: an event appended after the snapshot events (larger HLC) changes
+    exactly what it says and nothing else."""
+    mk = _mk_rich()
+    (tmp_path / "a").mkdir()
+    db = _db_at(tmp_path / "a" / "db.sqlite")
+    rp.replay(db, mk, _specs())
+    snap = rp.snapshot_events(db)
+    at = max(ev.sort_key(e)[0] for e in snap) + 1
+    # E2 stage bridge: the db has no uuid columns (C1), so the snapshot's
+    # `rec` is the record's ID; events appended after it reference that id.
+    # (C1 makes the snapshot carry the stored uuid and the bridge go away.)
+    added = ev.make("item.add", actor="alex", at=at, seq=1, rec="T-000001",
+                    item=_uuid(), no="003", section="Acceptance Criteria",
+                    text="c")
+    (tmp_path / "b").mkdir()
+    db2 = _db_at(tmp_path / "b" / "db.sqlite")
+    rp.replay(db2, [*snap, added], _specs())
+    rows = db2.items_load("T-000001")
+    assert [r["no"] for r in rows] == ["001", "002", "003"]
+    assert {r["no"]: r["text"] for r in rows}["003"] == "c"
+    db.close()
+
+
+def test_snapshot_validates_as_event_lines(tmp_path):
+    """A compacted log (snapshot lines) passes events.validate (E7)."""
+    mk = _mk_rich()
+    (tmp_path / "a").mkdir()
+    db = _db_at(tmp_path / "a" / "db.sqlite")
+    rp.replay(db, mk, _specs())
+    p = tmp_path / "events.jsonl"
+    ev.append(p, rp.snapshot_events(db))
+    assert ev.validate(p) == []
+    db.close()
+
+
+def test_snapshot_replace_semantics_rerun_is_idempotent(tmp_path):
+    """Snapshot events replace state: replaying them twice (via two distinct
+    snapshot lines, as a bad re-compact could produce) does not stack."""
+    mk = _mk_rich()
+    (tmp_path / "a").mkdir()
+    db = _db_at(tmp_path / "a" / "db.sqlite")
+    rp.replay(db, mk, _specs())
+    snap = rp.snapshot_events(db)
+    # re-run: at+1 so the lines are distinct (dedup keeps both)
+    snap2 = [{**e, "at": e["at"] + 1} for e in snap]
+    db2 = _db_at(tmp_path / "a" / "db2.sqlite")
+    rp.replay(db2, snap + snap2, _specs())
+    assert _norm_tables(db2) == _norm_tables(db)
+    db.close()
+    db2.close()
