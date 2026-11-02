@@ -84,12 +84,12 @@ db.close()
 '''
 
 
-def _py(script: str, *args: str, env: dict[str, str] | None = None) -> str:
-    env = dict(env if env is not None else os.environ)
+def _py(script: str, *args: str, cwd: Path | None = None) -> str:
+    env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
     env.setdefault("PROJ_AGENT", "bench")
-    p = subprocess.run([sys.executable, "-c", script, *args],
-                       capture_output=True, text=True, env=env)
+    p = subprocess.run([sys.executable, "-c", script, *args], check=False,
+                       capture_output=True, text=True, env=env, cwd=str(cwd) if cwd else None)
     if p.returncode != 0:
         raise SystemExit(f"helper failed:\n{p.stdout}\n{p.stderr}")
     return p.stdout
@@ -97,7 +97,7 @@ def _py(script: str, *args: str, env: dict[str, str] | None = None) -> str:
 
 def build_project(root: Path, n: int) -> None:
     # proj init takes no --root: run it from the target directory itself
-    p = subprocess.run(["proj", "init", "--profile", "default"],
+    p = subprocess.run(["proj", "init", "--profile", "default"], check=False,
                        capture_output=True, text=True, cwd=str(root))
     if p.returncode != 0:
         raise SystemExit(f"proj init failed:\n{p.stdout}\n{p.stderr}")
@@ -105,42 +105,35 @@ def build_project(root: Path, n: int) -> None:
 
 
 def time_cmd(root: Path, *args: str) -> float:
-    env = dict(os.environ)
-    env["PROJ_HOME"] = str(root)
+    # the CLI takes no --root for some commands: run from the project itself
     ts = []
     for _ in range(RUNS):
         t0 = time.perf_counter()
-        p = subprocess.run(["proj", *args], capture_output=True,
-                           text=True, env=env)
+        p = subprocess.run(["proj", *args], check=False, capture_output=True,
+                           text=True, cwd=str(root))
         ts.append(time.perf_counter() - t0)
         if p.returncode != 0:
             raise SystemExit(f"proj {' '.join(args)} failed:\n{p.stdout}\n{p.stderr}")
     return statistics.median(ts)
 
 
-def _cmd_env(root: Path) -> dict[str, str]:
-    env = dict(os.environ)
-    env["PROJ_HOME"] = str(root)
-    return env
-
-
 def _ls_json(root: Path) -> list[dict]:
-    p = subprocess.run(["proj", "ls", "--json"], env=_cmd_env(root),
-                       check=True, capture_output=True, text=True)
+    p = subprocess.run(["proj", "ls", "--json"], check=True,
+                       capture_output=True, text=True, cwd=str(root))
     return json.loads(p.stdout)
 
 
 def write_command(root: Path) -> tuple[float, int, int]:
     """One write command: wall time + md reads + db connections."""
-    env = _cmd_env(root)
     tid = _ls_json(root)[0]["id"]
     subprocess.run(["proj", "item", "add", tid, "bench item"],
-                   env=env, check=True, capture_output=True)
+                   check=True, capture_output=True, cwd=str(root))
     t0 = time.perf_counter()
-    out = _py(_WRAPPER, "item", "check", f"{tid}#001", env=env)
+    out = _py(_WRAPPER, "item", "check", f"{tid}#001", cwd=str(root))
     t = time.perf_counter() - t0
-    line = next(l for l in out.splitlines() if l.startswith("md_reads="))
-    md, dbn = (int(x) for x in line.split())
+    line = next(ln for ln in out.splitlines() if ln.startswith("md_reads="))
+    kv = dict(x.split("=", 1) for x in line.split())
+    md, dbn = int(kv["md_reads"]), int(kv["db_conns"])
     return t, md, dbn
 
 
@@ -151,7 +144,7 @@ def bench_location(label: str, root: Path) -> None:
         p = root / f"p{n}"
         if p.exists():
             shutil.rmtree(p)
-        p.mkdir()
+        p.mkdir(parents=True)
         build_project(p, n)
         tid = _ls_json(p)[0]["id"]
         for name, args in [("ls", ["ls"]), ("show", ["show", tid]),
