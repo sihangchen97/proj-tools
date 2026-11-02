@@ -119,15 +119,29 @@ def _entry_slice(wip_text: str, record_id: str) -> str:
 
 def entry_items_text(wip_text: str, record_id: str) -> str:
     """Just the editable item lines of an entry (its checklist as rendered in the
-    record md): from the first `- [` / `### ` line to the end of the entry. The
-    heading, marker, metadata line and summary are tool-owned and ignored."""
+    record md): the contiguous run of `- [` / `### ` / item-trailer lines from the
+    first item line. Stops at a blank line followed by non-item text (the entry
+    summary or the file footer are tool-owned and must not be handed back). The
+    heading, marker and metadata line are tool-owned and ignored."""
     body = _entry_slice(wip_text, record_id)
     if not body:
         return ""
-    for i, line in enumerate(body.splitlines()):
+    lines = body.splitlines()
+    start = next((i for i, l in enumerate(lines)
+                  if l.startswith("- [") or l.startswith("### ")), None)
+    if start is None:
+        return ""
+    out: list[str] = []
+    for line in lines[start:]:
+        s = line.strip()
         if line.startswith("- [") or line.startswith("### "):
-            return "\n".join(body.splitlines()[i:])
-    return ""
+            out.append(line)
+            continue
+        if out and (s == "" or s.startswith(("- ", "* ", "`"))):
+            out.append(line)  # a blank/continuation line inside the checklist
+            continue
+        break  # a non-item paragraph: the summary or the footer — stop
+    return "\n".join(out).rstrip()
 
 
 def _changed(db, spec: RecordTypeSpec, record_id: str, md_section: str) -> bool:
@@ -136,6 +150,44 @@ def _changed(db, spec: RecordTypeSpec, record_id: str, md_section: str) -> bool:
     from proj.engine import items as items_mod  # lazy
     state = items_mod.load(db, record_id, spec)
     return items_mod.normalize(md_section) != items_mod.normalize(items_mod.render_section(state, spec))
+
+
+def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> tuple[dict, list]:
+    """The §5.5 pre-write scan (run in store.sync BEFORE any DB write): for each
+    WIP entry whose item section drifted in WIP.md, decide whether its record md
+    ALSO drifted (a CONFLICT — neither side may be written, the record is kept as
+    is) or only WIP.md drifted (write WIP.md back, and skip the record md's items
+    section in the ingest). Returns (wip_only: {record_id: section}, conflicts:
+    [record_id]). Read-only."""
+    from proj.engine import items as items_mod  # lazy
+    from proj.engine import store as rec  # lazy: wip↔store cycle
+    wip_path = cfg.root / WIP_FILE
+    wip_text = wip_path.read_text(encoding="utf-8") if wip_path.exists() else ""
+    wip_only: dict[str, str] = {}
+    conflicts: list[str] = []
+    for entry in db.wip_all():
+        rid = entry["record_id"]
+        row = _record_by_id(db, rid)
+        if row is None:
+            continue
+        spec = registry[row["type"]]
+        if spec.items is None:
+            continue
+        section = entry_items_text(wip_text, rid)
+        if not (section and _changed(db, spec, rid, section)):
+            continue  # WIP.md matches the DB: nothing to write back
+        # the record md side: does the record file's items section differ from the DB?
+        rec_drift = False
+        p = rec.file_path(cfg, spec, row)
+        if p.exists():
+            _mk, _u, raw = rec.parse_record(p.read_text(encoding="utf-8"))
+            rec_drift = items_mod.drift(db, spec, row,
+                                        raw.get(spec.items.section.lower(), ""))
+        if rec_drift:
+            conflicts.append(rid)  # both sides edited — keep the DB, flag it
+        else:
+            wip_only[rid] = section  # only WIP.md edited — write it back
+    return wip_only, conflicts
 
 
 def auto_status_wip(db, spec: RecordTypeSpec, record_id: str, old: str, to: str) -> None:

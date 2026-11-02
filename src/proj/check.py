@@ -93,7 +93,28 @@ def check(cfg: ProjConfig) -> list[str]:
                 if row["id"] not in seen:
                     problems.append(f"{record_type} {row['id']}: record in DB has no md file")
 
+    # WIP.md invariants (plans §5.5): the rendered file matches the DB, and no
+    # terminal-status record sits in wip_entries (auto-return missed it)
+    from proj.engine import wip as wipmod  # lazy: check↔wip cycle
+    expected = wipmod.render_wip_md(cfg, db, reg).text
+    wip_path = cfg.root / wipmod.WIP_FILE
+    if not wip_path.is_file():
+        problems.append(f"WIP.md missing — run `proj render`")
+    elif wip_path.read_text(encoding="utf-8") != expected:
+        problems.append("WIP.md differs from the DB render — run `proj sync`")
+    for entry in db.wip_all():
+        row = db.conn.execute(
+            "SELECT * FROM records WHERE id=?", (entry["record_id"],)).fetchone()
+        if row is None:
+            problems.append(f"WIP.md entry {entry['record_id']}: record not in DB")
+            continue
+        if row["status"] in reg[row["type"]].status_terminal:
+            problems.append(
+                f"WIP.md: {row['id']} is {row['status']!r} (terminal) — "
+                f"remove it with `proj wip return {row['id']}`")
+
     # per-record_type invariants: the record_type's Record owns its own checks
+    # (e.g. decision's supersede-cycle, plan's gate consistency)
     for spec in reg.values():
         rows = db.all(spec)
         if rows:

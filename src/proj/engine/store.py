@@ -712,9 +712,10 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
 # ---- sync / adopt --------------------------------------------------------------
 
 def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
-               strict: bool) -> tuple[list[str], list[str]]:
+               strict: bool, skip_items: bool = False) -> tuple[list[str], list[str]]:
     """Read one md into the DB. strict=True (sync): id marker required.
-    Returns (problems, notes)."""
+    skip_items: leave the record's checklist alone (WIP.md just wrote it back —
+    the record md's stale list must not clobber it). Returns (problems, notes)."""
     text = p.read_text(encoding="utf-8")
     (mk, u), title, raw_sections = parse_record(text)
     if strict:
@@ -752,10 +753,21 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         # fully before any write; the items write + changelog + promote follow.
         if spec.items is not None:
             sections.pop(spec.items.section.lower(), None)  # not stored separately
+            if skip_items:
+                # the WIP write-back stored the checklist's intro under the
+                # `<section>/intro` key — preserve it (this sections rewrite must
+                # not clobber it), since sync_section is skipped for this record.
+                from proj.engine import items as items_mod  # lazy: store↔items cycle
+                intro = (json.loads(row.get("sections") or "{}")
+                         .get(items_mod._intro_key(spec), ""))
+                if intro:
+                    sections[items_mod._intro_key(spec)] = intro
         db.set(spec, u, sections=json.dumps(sections, ensure_ascii=False))
         # the items section: sync last (after the text sections) — it writes
-        # its own intro into the sections JSON; a problem leaves everything untouched
-        if spec.items is not None:
+        # its own intro into the sections JSON; a problem leaves everything untouched.
+        # skip_items: WIP.md just wrote this record's checklist back — the record
+        # md's (possibly stale) list must not clobber it.
+        if spec.items is not None and not skip_items:
             from proj.engine import items as items_mod  # lazy: store↔items cycle
             problems, n = items_mod.sync_section(
                 db, spec, db.get(spec, u),
@@ -832,10 +844,59 @@ def _scan_files(cfg: ProjConfig, spec: RecordTypeSpec, files: list[Path] | None)
 
 
 def sync(cfg: ProjConfig, files: list[Path] | None = None):
-    """md → DB (validated, normalized) → render all md. Returns (problems, notes)."""
+    """md → DB (validated, normalized) → render all md. Returns (problems, notes).
+
+    WIP (W5): WIP.md is the second edit entry for a record's checklist. Before
+    anything is written, the scan decides per WIP entry: both the record md and
+    WIP.md drifted → conflict (kept as is, the user keeps one side); only WIP.md
+    drifted → its item section is written back into the record (the record md's
+    items section is then skipped in the ingest, the stored intro preserved);
+    otherwise the record md wins and WIP.md re-renders from the DB."""
     reg = load_registry(cfg.root)
+    if files:
+        return _sync_files(cfg, reg, files)
+    from proj.engine import wip as wipmod  # lazy: store↔wip cycle
+    with open_db(cfg) as db:  # read-only scan, its own short connection
+        wip_only, conflicts = wipmod.wip_sync_plan(db, reg, cfg)
+    problems = [f"{c}: item section edited in BOTH the record md and WIP.md — "
+                f"keep one side (edit only one, then sync)"
+                for c in conflicts]
+    if problems:
+        return problems, []
+    if not wip_only:
+        return _sync_files(cfg, reg, None)  # nothing to write back: the usual path
+    notes = []
+    # one write transaction: write back the WIP-edited checklists, then ingest the
+    # record mds (skipping the items section of the just-written-back records, so
+    # the stale md list can't clobber what WIP.md just stored)
+    with open_db(cfg) as db:
+        db.begin()  # R3: one write transaction for the whole command
+        for rid, section in wip_only.items():
+            row = dict(db.conn.execute(
+                "SELECT * FROM records WHERE id=?", (rid,)).fetchone())
+            spec = reg[row["type"]]
+            from proj.engine import items as items_mod  # lazy: store↔items cycle
+            pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md")
+            if pr:
+                return pr, []
+            notes += [f"WIP.md: {n}" for n in nt]
+        for spec in reg.values():
+            for p in _scan_files(cfg, spec, None):
+                (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
+                pr, nt = _ingest_md(cfg, spec, db, p, strict=True,
+                                     skip_items=u in wip_only if mk == spec.record_type else False)
+                problems += pr
+                notes += nt
+        if not problems:
+            render_all(cfg, db=db)
+    return problems, notes
+
+
+def _sync_files(cfg: ProjConfig, reg: dict, files: list[Path] | None) -> tuple[list[str], list[str]]:
+    """`proj sync` (all files) and `proj sync FILES…` — the record md → DB pass.
+    No WIP write-back: this is the path sync reaches when WIP.md has no pending
+    edits (or files are given explicitly, which never spans WIP.md)."""
     problems, notes = [], []
-    # R3: one write transaction — ingest every drifted md, then re-render the views
     with open_db(cfg) as db:
         db.begin()  # R3: one write transaction for the whole command
         for spec in reg.values():
@@ -846,6 +907,7 @@ def sync(cfg: ProjConfig, files: list[Path] | None = None):
         if not problems:
             render_all(cfg, db=db)
     return problems, notes
+
 
 
 def adopt(cfg: ProjConfig, files: list[Path] | None = None):

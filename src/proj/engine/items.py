@@ -869,11 +869,17 @@ def commit(db, spec, row: dict, old: ItemsState, new: ItemsState,
             and row["status"] in itspec.promote_from
             and any(not i.is_group and i.state in itspec.closed_states
                     for i in new.live())):
+            old_status = row["status"]
             db.set(spec, row["id"], status=itspec.promote_to)
             db.add_log(row["id"],
-                       f"promoted {row['status']} → {itspec.promote_to}",
+                       f"promoted {old_status} → {itspec.promote_to}",
                        category="Changed")
-            notes.append(f"{row['id']} promoted {row['status']} → {itspec.promote_to}")
+            notes.append(f"{row['id']} promoted {old_status} → {itspec.promote_to}")
+            # W3: the promoted status may be the record's wip.enter (a task's first
+            # closed item promotes Draft -> In Progress) - the automatic WIP entry
+            # rides this switch exactly like a manual one (status_set).
+            from proj.engine import wip as wipmod  # lazy: items<->wip cycle
+            wipmod.auto_status_wip(db, spec, row["id"], old_status, itspec.promote_to)
     return list(notes)
 
 
