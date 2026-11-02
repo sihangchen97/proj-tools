@@ -31,12 +31,13 @@ def test_init_creates_expected_files(proj):
 
 
 def test_proj_gitignore_contents(proj):
-    """S.10: .proj/.gitignore excludes the personal/runtime files (and the
-    WAL sidecars); cache.sqlite itself is still committed (until git C4)."""
+    """S.10 + C4: .proj/.gitignore excludes the personal/runtime files (and the
+    WAL sidecars); C4 makes cache.sqlite itself local (rebuilt from
+    events.jsonl on demand) — it is ignored, not committed."""
     gi = (proj.root / ".proj" / ".gitignore").read_text()
-    for line in ("bugs.log", "write.lock", "cache.sqlite-wal", "cache.sqlite-shm"):
+    for line in ("bugs.log", "write.lock", "cache.sqlite",
+                 "cache.sqlite-wal", "cache.sqlite-shm"):
         assert line in gi.splitlines(), line
-    assert "cache.sqlite" not in gi.splitlines()  # committed until C4
 
 
 def test_find_root_walks_up_to_subdir(proj, tmp_path, monkeypatch):

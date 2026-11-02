@@ -107,7 +107,61 @@ HEAD_START = "<!-- proj:head:start — TOOL-MANAGED: metadata, summary and " \
 HEAD_END = "<!-- proj:head:end -->"
 
 
+# C3.2/C4: the cache is local (rebuilt from .proj/events.jsonl); this thread-local
+# guard makes the rebuild re-entrant (the command's own re-open must not re-enter)
+_cache_rebuilding: set[Path] = set()
+
+
+def ensure_cache(cfg: ProjConfig) -> None:
+    """C3.2/C4: the cache is a local rebuild of .proj/events.jsonl. On opening a
+    command: cache missing → full rebuild (a clone's first command); otherwise
+    judge incrementally (noop = one stat; a plain append → apply only the new
+    lines; anything else, e.g. a merge that inserted earlier lines → full
+    rebuild). A local command's own events never trigger this: C2 updates the
+    ev:* bookkeeping in the same transaction it appends (commit_meta)."""
+    from proj import replay as rp  # lazy: no import cycle (replay imports core only)
+    from proj.core import fsio
+    if not cfg.root.joinpath(".proj", "lock.yaml").is_file():
+        return  # not a project (open_db is also used before init)
+    path = cfg.db_path
+    ev_path = cfg.root / ".proj" / "events.jsonl"
+    if path in _cache_rebuilding:
+        return  # mid-rebuild (render_all's own open_db re-enters); the cache
+                 # is being / already atomically replaced — do not rebuild again
+    if path.is_file():
+        db = dbmod.Db(path)
+        try:
+            kind, payload = rp.plan_incremental(ev_path, rp.load_meta(db))
+            if kind == "noop":
+                return
+            if kind == "append":
+                res = rp.apply_incremental(db, payload, load_registry(cfg.root))
+                rp.apply_and_store(db, res, ev_path)
+                return
+            # kind == "full": fall through to a full rebuild below
+        except Exception:
+            return  # a corrupt log must not break every command — `proj check` reports it
+        finally:
+            db.close()
+    # rebuild: full replay onto a temp cache, atomic replace (C3.1 step 3 / C4)
+    # — the cache is missing, was deleted, or the incremental judgment said full.
+    # Holds the write lock; re-entrant for the command that triggered it. A
+    # corrupt log (unparseable line) must NOT take the command down: the old
+    # cache is kept as-is and `proj check` reports the log problem instead.
+    _cache_rebuilding.add(path)
+    try:
+        with fsio.project_lock(cfg.root, "cache-rebuild"):
+            rp.rebuild_cache(path, ev_path, load_registry(cfg.root))
+            render_all(cfg)  # C3.1 step 5: after a rebuild, render every md
+    except Exception:
+        pass  # keep the existing cache (rebuild is atomic: it either replaced
+              # the file or left it untouched — never a half-replaced one)
+    finally:
+        _cache_rebuilding.discard(path)
+
+
 def open_db(cfg: ProjConfig) -> dbmod.Db:
+    ensure_cache(cfg)
     return dbmod.Db(cfg.db_path)
 
 
@@ -1309,6 +1363,8 @@ def info(cfg: ProjConfig) -> dict:
         }
     cl = db.cl_entries()
     versions = sorted({e["version"] for e in cl})
+    ev_path = cfg.root / ".proj" / "events.jsonl"  # C4: the committed event log
+    ev = db.conn.execute("SELECT value FROM meta WHERE key='ev:rebuilt_at'").fetchone()
     views = ["WIP.md", "CHANGELOG.md"]
     out = {
         "root": str(cfg.root),
@@ -1319,6 +1375,11 @@ def info(cfg: ProjConfig) -> dict:
                       "latest": versions[-1] if versions else None},
         "views": views,
         "bug_reports": _bug_count(cfg),  # B: .proj/bugs.log (DB-free; None = file absent)
+        # C4: the cache is a local rebuild of the committed event log — show the
+        # log's size/line count and when the cache last did a full replay
+        "events": {"lines": sum(1 for _ in ev_path.open("rb")) if ev_path.is_file() else 0,
+                   "size": ev_path.stat().st_size if ev_path.is_file() else 0,
+                   "last_full_replay": ev[0] if ev else None},
         "cheatsheet": CHEATSHEET.splitlines(),
     }
     db.close()
@@ -1342,6 +1403,11 @@ def info_text(d: dict) -> str:
         lines.append(f"Changelog: {cl['entries']} entries, latest {cl['latest']}")
     if d.get("bug_reports"):
         lines.append(f"Bug reports: {d['bug_reports']} (.proj/bugs.log)")
+    ev = d.get("events")
+    if ev and (ev["lines"] or ev["size"]):
+        when = f", last full replay {ev['last_full_replay']}" if ev.get("last_full_replay") else ""
+        lines.append(f"Events: {ev['lines']} lines, {ev['size']} B "
+                     f"(.proj/events.jsonl{when}) — the cache is its local rebuild")
     lines.append("Views (rendered, never hand-edit): " + ", ".join(d["views"]))
     lines.append("")
     lines.append(CHEATSHEET)

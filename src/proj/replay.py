@@ -428,6 +428,66 @@ def commit_meta(db, path) -> dict:
     return meta
 
 
+def rebuild_cache(cache_path, event_path,
+                  specs: dict[str, RecordTypeSpec]) -> ReplayResult:
+    """C3.1 step 3 / C4: replay the WHOLE event log onto a fresh database and
+    atomically replace the cache (`.proj/cache.sqlite` ← temp + os.replace).
+    Used when the cache is missing (a clone's first command, or the cache was
+    deleted) or the incremental judgment said "full". Returns the
+    notifications (renumbering / overwrites / diagnostics) — the caller stores
+    them in meta (ev:notifications) so `proj sync` can report them."""
+    import os
+    p = Path(cache_path)
+    tmp = p.parent / "cache.sqlite.tmp"
+    for suffix in ("", "-wal", "-shm"):
+        f = p.parent / (tmp.name + suffix)
+        if f.exists():
+            f.unlink()
+    db = dbmod.Db(tmp)
+    try:
+        db.emitting = False  # replay is read-side; its writes emit no events
+        events = ev.read(event_path) if Path(event_path).is_file() else []
+        res = replay(db, events, specs)
+        # C3.2: the cache now covers the whole file — reset the bookkeeping
+        meta = commit_meta(db, event_path)
+        meta["ev:notifications"] = json.dumps(
+            {"renamed": res.renamed, "overwrites": res.overwrites,
+             "diagnostics": res.diagnostics}, ensure_ascii=False)
+        meta["ev:rebuilt_at"] = dbmod.utc_now()  # C4: `proj info` shows it
+        save_meta(db, meta)
+        db.conn.commit()
+        # WAL mode: data lives in cache.sqlite.tmp-wal until checkpointed into
+        # the main file. Force it in BEFORE the replace (otherwise the main
+        # file is empty and the WAL is orphaned).
+        db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.close()
+        db = None
+        os.replace(tmp, p)  # atomic: readers see either the old or the new cache
+    except Exception:
+        if db is not None:
+            try: db.close()
+            except Exception: pass
+        for suffix in ("", "-wal", "-shm"):
+            f = p.parent / (tmp.name + suffix)
+            if f.exists(): f.unlink()
+        raise
+    return res
+
+
+def apply_and_store(db, res: ReplayResult, event_path) -> None:
+    """C3.2 append path: persist the incremental result (the uuid bridge + the
+    fresh bookkeeping over the now-longer file) into the EXISTING cache, plus
+    any notifications the appended lines surfaced (so `proj sync` reports them)."""
+    m = commit_meta(db, event_path)
+    m["ev:uuids"] = dict(res.ids)
+    if res.renamed or res.overwrites or res.diagnostics:
+        m["ev:notifications"] = json.dumps(
+            {"renamed": res.renamed, "overwrites": res.overwrites,
+             "diagnostics": res.diagnostics}, ensure_ascii=False)
+    save_meta(db, m)
+    db.conn.commit()
+
+
 def plan_incremental(path, meta: dict):
     """C3.2 judgment: ("noop", None) | ("append", [parsed new lines]) |
     ("full", reason). Pure read of the file — no db, no mutation.
@@ -470,19 +530,19 @@ def plan_incremental(path, meta: dict):
 def apply_incremental(db, lines: list[dict],
                       specs: dict[str, RecordTypeSpec]) -> ReplayResult:
     """Apply only the new (already-later) lines to the EXISTING cache db.
-    The record uuid -> id map is seeded from the `ev:uuids` meta bridge and
-    merged back afterwards (C1 makes this column-based and the bridge
-    redundant). Items of existing records are loaded from the db, so this
-    never rewrites untouched checklists."""
+    The record uuid -> id map is seeded from the `records` table (C1 made
+    uuid a column — the meta bridge is redundant and never read as a source)
+    and merged back afterwards. Items of existing records are loaded from the
+    db, so this never rewrites untouched checklists."""
     st = _State(specs)
-    m = load_meta(db)
-    st.ids.update(m.get("ev:uuids", {}) or {})
-    st.types.update(m.get("ev:types", {}) or {})
+    for r in db.conn.execute("SELECT id, uuid, type FROM records"):
+        if r["uuid"]:
+            st.ids[r["uuid"]] = r["id"]
+            st.types[r["uuid"]] = r["type"]
     for e in sorted(lines, key=ev.sort_key):
         _apply(st, db, e)
     for rid in st.rows:
         db.items_save(rid, st.rows[rid])
-    save_meta(db, {"ev:uuids": dict(st.ids), "ev:types": dict(st.types)})
     res = ReplayResult()
     res.ids = dict(st.ids)
     res.renamed = st.renamed

@@ -104,16 +104,16 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     # open_db below and lock.yaml by write_lock (both mkdir .proj/ themselves).
     add(".proj/README.md",
         "# .proj - proj project data (do not delete)\n\n"
-        "- `cache.sqlite`: the database (committed for now; git collab C4 makes\n"
-        "  it a cache rebuilt from `events.jsonl`)\n"
+        "- `cache.sqlite`: the database (a local cache rebuilt from `events.jsonl`\n"
+        "  on demand — never committed; delete it and any command rebuilds it)\n"
         "- `lock.yaml`: the pinned profiles / templates (committed)\n"
         "- `events.jsonl`: the event log (git collab, committed)\n"
         "- `bugs.log`: bug reports about proj itself (personal, not committed)\n"
         "- `write.lock`: the project write lock (runtime, not committed)\n")
     add(".proj/.gitignore",
         "# never committed (personal / runtime)\n"
-        "bugs.log\nwrite.lock\ncache.sqlite-wal\ncache.sqlite-shm\n"
-        "# git collab (C4) stops committing the DB: add `cache.sqlite` once C4 lands\n")
+        "bugs.log\nwrite.lock\ncache.sqlite\ncache.sqlite-wal\ncache.sqlite-shm\n"
+        "# cache.sqlite is a local rebuild of events.jsonl (C4): never committed\n")
     if zoo:
         copy_tpl("zoo-rule.md", ".roo/rules/proj-tools.md")
 

@@ -3,7 +3,8 @@
 The scenarios are the design doc §10 (plans/git-collab-design.md) acceptance
 cases, run against REAL git and the REAL `proj` binary (tests/
 collab_harness.py). Until C2 (event emitter) + C4 (replay on write / cache
-rebuild) land, every scenario is marked xfail with the missing piece named —
+rebuild) land; scenarios still awaiting them are xfailed with the missing
+piece named —
 they fail today (a pulled clone does not sync its DB from events.jsonl) and
 turn into green regression tests the day C2/C4 is wired in, no test change
 needed.
@@ -412,8 +413,10 @@ def test_write_refused_while_merge_in_progress(tmp_path):
 
 # ---- C7 cache rebuild after deletion ---------------------------------------
 
-@WAIT_C2C4
 def test_cache_deleted_rebuilds_identical(tmp_path):
+    """C4 acceptance (no longer xfailed): delete .proj/cache.sqlite, run any
+    command -> it is rebuilt from events.jsonl and equals the other clone.
+    This only needs C2 (events) + C4 (rebuild), not the C5 git-merge path."""
     """C7: delete `.proj/cache.sqlite` in one clone, run any write command →
     the DB is rebuilt from events.jsonl and equals the other side's."""
     t = ch.build_two_clones(tmp_path)

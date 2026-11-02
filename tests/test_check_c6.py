@@ -137,20 +137,38 @@ def test_check_replay_consistency_healthy_and_broken_log(proj):
         db.close()
     ev_path = proj.root / ".proj" / "events.jsonl"
     ev_path.write_text("".join(ev.to_line(e) for e in events), encoding="utf-8")
+    # C2/C3.2 invariant: the ev:* meta always tracks the applied prefix — the
+    # hand-written log counts as fully applied (a local write would have done
+    # this in the same transaction); without it ensure_cache would try to
+    # re-apply the existing creates onto the existing records
+    db = _db(proj)
+    try:
+        rp.commit_meta(db, ev_path)
+    finally:
+        db.close()
     rec.render_all(proj)
 
     problems = check.check(proj)
     assert not [p for p in problems if "events.jsonl" in p], problems
 
-    # break the log (drop the title change) while the DB keeps it: the replay
-    # no longer reproduces the cache (to_line is compact JSON, no spaces)
+    # C4: the cache is a pure rebuild of the log. Breaking the log (drop the
+    # title change) while the DB keeps it no longer surfaces "does not
+    # reproduce" — `ensure_cache` (run by the very `open_db` inside check)
+    # sees the shrunken log, does a full rebuild, and the cache now matches
+    # the log (the title reverts). The log is the source of truth.
     lines = ev_path.read_text(encoding="utf-8").splitlines(keepends=True)
     ev_path.write_text("".join(line for line in lines if '"title":"A2"' not in line),
                        encoding="utf-8")
     problems = check.check(proj)
-    mismatch = [p for p in problems if "does not reproduce" in p]
-    assert mismatch, problems
-    assert "records" in mismatch[0]
+    assert not [p for p in problems if "does not reproduce" in p], problems
+    # and the DB self-healed back to the log's state (the title change is gone)
+    db = _db(proj)
+    try:
+        row = db.conn.execute(
+            "SELECT title FROM records WHERE id='T-000001'").fetchone()
+        assert row is not None and row[0] == "A", row
+    finally:
+        db.close()
 
     # a git conflict marker is reported at the line level, and the replay is
     # skipped (it would abort on the bad line) — no crash either way
