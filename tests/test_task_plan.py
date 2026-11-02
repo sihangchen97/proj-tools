@@ -385,7 +385,8 @@ def test_p3_task_done_closes_referencing_item(proj):
         db.close()
     assert logs and f"→ done (auto: {t['id']} Done" in logs[0]["message"]
     # the incident md re-rendered: the item shows its closed emoji + the ref
-    inc_md = next((proj.root / "docs" / "incidents").glob(f"{inc['id']}-*.md")).read_text(encoding="utf-8")
+    p = next((proj.root / "docs" / "incidents").glob(f"{inc['id']}-*.md"))
+    inc_md = p.read_text(encoding="utf-8")
     assert f"- [x] #001 ✅ refile after the rerun → {t['id']}" in inc_md
 
 
