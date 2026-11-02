@@ -315,7 +315,15 @@ def _apply_item(st: _State, db, e: dict) -> None:
             no = _next_no(rows, letter)
             st.renamed.append({"item": iu, "proposed": e["no"],
                                "actual": no, "record": rid})
-        rows.insert(_after_index(st, rows, e.get("after", "")), {
+        # R3/C2: the event carries the insert `pos` from the WRITE path (like
+        # item.move) — replay lands it exactly there so the rebuilt `pos`
+        # equals the live DB's (C6 compares via `SELECT *`). A pre-pos event
+        # (hand-written / old log) falls back to the legacy `after` anchor
+        # ("" = the checklist end).
+        pos = e.get("pos")
+        if pos is None:
+            pos = _after_index(st, rows, e.get("after", ""))
+        rows.insert(min(max(int(pos), 0), len(rows)), {
             "_uuid": iu, "no": no, "text": e.get("text", ""),
             "state": e.get("state", "open"), "note": e.get("note", ""),
             "owner": e.get("owner", ""), "due": e.get("due", ""),

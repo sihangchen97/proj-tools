@@ -686,6 +686,7 @@ class Db:
         existing = {r["no"]: r["uuid"] for r in old_by_uuid.values()}
         self.conn.execute("DELETE FROM items WHERE record_id=?", (record_id,))
         new_by_uuid = {}
+        new_pos: dict[str, int] = {}
         for pos, it in enumerate(rows):
             # the uuid rides under `uuid` (the items.py write path, via Item.to_row)
             # or `_uuid` (the replayer's temporary carrier, C1); a row in neither
@@ -704,20 +705,28 @@ class Db:
                  1 if it.get("deleted") else 0,
                  it.get("section", ""), it.get("task", ""), it_uuid))
             new_by_uuid[it_uuid] = it
+            # R3/C2: the row's `pos` (the index in THIS save's list) rides on
+            # the item.add event, exactly like item.move's `pos` — the replay
+            # lands a fresh row where the write path put it, so the rebuilt
+            # list order equals the live one (C6 compares `pos`)
+            if it_uuid not in old_by_uuid:
+                new_pos[it_uuid] = pos
         self._touch(record_id)
         if self.emitting:
-            self._emit_items_diff(record_id, old_by_uuid, new_by_uuid)
+            self._emit_items_diff(record_id, old_by_uuid, new_by_uuid, new_pos)
 
     _ITEM_EVENT_FIELDS = ("text", "state", "note", "owner", "due", "task")
 
     def _emit_items_diff(self, record_id: str, old_by_uuid: dict,
-                         new_by_uuid: dict) -> None:
+                         new_by_uuid: dict, new_pos: dict | None = None) -> None:
         """C2: the item events that transform the old checklist into the new one
         (the replayer knows item.add / item.set, both resolved by the row's uuid).
-        A new uuid → item.add (appended at the end, which is where a fresh item
-        goes); a uuid present in both with changed fields → item.set. Replay
-        keeps the existing rows' order, so no reordering op is needed for the
-        add/edit/check/set flow."""
+        A new uuid → item.add carrying its `pos` in THIS save's list (R3/C2:
+        the replayer inserts exactly there — like item.move's `pos` — so the
+        replayed order equals the write path's; pre-pos events keep the
+        legacy tail/after-`after` insert); a uuid present in both with
+        changed fields → item.set. Replay keeps the existing rows' order, so
+        no reordering op is needed for the edit/check/set flow."""
         def _task(uu):
             # an item's task ref rides as the target's uuid (C2.2), not its id
             return self._rec_uuid(uu) if uu else ""
@@ -727,12 +736,14 @@ class Db:
                       "section": it.get("section", ""),
                       "task": _task(it.get("task", ""))}
             if uu not in old_by_uuid:
+                pos = (new_pos or {}).get(uu)
                 self._emit("item.add", record_id, item=uu,
                            state=it.get("state", ""), note=it.get("note", ""),
                            owner=it.get("owner", ""), due=it.get("due", ""),
                            commit=it.get("commit", ""), trailer=it.get("trailer", ""),
                            created=it.get("created") or utc_now(),
-                           closed_at=it.get("closed_at", ""), **common)
+                           closed_at=it.get("closed_at", ""),
+                           pos=pos, **common)
                 continue
             old = old_by_uuid[uu]
             fields = {f: it.get(f, "") for f in self._ITEM_EVENT_FIELDS

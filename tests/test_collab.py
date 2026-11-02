@@ -172,14 +172,18 @@ def _event_line(op, at, actor, seq, rec="", **payload) -> str:
 
 # ---- §10.1 / C7 merge-order independence -----------------------------------
 
-@WAIT_C2C4
-def test_id_collision_renumbers_and_both_sides_agree(tmp_path):
+# R3: C2+C4 now hold (item add carries pos) — no longer xfailed
+def test_id_collision_renumbers_and_both_sides_agree(tmp_path, proj_binary):
     """§10.1: both propose the same next task id (T-000002) → one keeps it
     (the earlier), the other is renumbered (T-000003); BOTH sides agree and
     the renumbering is reported."""
     t = ch.build_two_clones(tmp_path)
     a, b = t.a, t.b
-    # base holds T-000001 (the seed); both clones next propose T-000002
+    # the base holds ONE task (T-000001); both clones next propose T-000002
+    _new_task_id(a, "基础任务")
+    a.commit("base task")
+    t.push(a)
+    t.rebase(b)
     assert _task_ids(a) == ["T-000001"]
     tid_a = _new_task_id(a, "A 建")
     assert tid_a == "T-000002"
@@ -248,6 +252,11 @@ def test_item_number_collision_renumbers(tmp_path):
     t = ch.build_two_clones(tmp_path)
     a, b = t.a, t.b
     tid = _new_task_id(a, "原")
+    # R3: groups must exist before an item can be added to them
+    # (`--group A` on a group-less record is "unknown group A") —
+    # `item group add` assigns the next free letter (A, then B)
+    a.run("item", "group", "add", tid, "组A")
+    a.run("item", "group", "add", tid, "组B")
     for grp, txt in (("A", "甲一"), ("B", "乙一"), ("A", "甲二"), ("B", "乙二")):
         a.run("item", "add", tid, txt, "--group", grp)
     a.commit("base items (A01-A02 in A, A03-A04 in B)")
@@ -266,15 +275,16 @@ def test_item_number_collision_renumbers(tmp_path):
 
 # ---- §10.6 gate violation survives the merge -------------------------------
 
-@WAIT_C2C4
+# R3: C2+C4 now hold (item add carries pos) — no longer xfailed
 def test_closed_plan_plus_new_item_reports_gate_violation(tmp_path):
     """§10.6: A archives a plan while B adds an open item to it → the merge
     succeeds (no git conflict) and `proj check` reports the gate violation."""
     t = ch.build_two_clones(tmp_path)
     a, b = t.a, t.b
     out = a.run("plan", "new", "收尾", "-y")
-    pid = [ln for ln in out.splitlines() if ln.startswith("Created:")][-1] \
-        .split(":", 1)[1].strip()
+    # R3: `plan new` prints "Created <relative-path>.md" (not "Created: <id>")
+    line = [ln for ln in out.splitlines() if ln.startswith("Created ")][-1]
+    pid = re.search(r"(PLN-\d+)", line).group(1)
     a.commit("base plan")
     t.push(a)
     t.rebase(b)
@@ -436,8 +446,8 @@ def test_events_file_without_trailing_newline_fails_check(tmp_path):
 
 # ---- design §10: a clone without hooks -------------------------------------
 
-@WAIT_C2C4
-def test_clone_without_hooks_auto_replays(tmp_path):
+# R3: C2+C4 now hold (item add carries pos) — no longer xfailed
+def test_clone_without_hooks_auto_replays(tmp_path, proj_binary):
     """design §10 (last row): a clone that never ran `proj hooks install` —
     its first write command auto-replays the pulled events; a conflicting md
     gets a hint to run hooks install / `proj sync --rerender`."""
@@ -447,7 +457,10 @@ def test_clone_without_hooks_auto_replays(tmp_path):
     _new_task_id(a, "A 独有")
     a.commit("A")
     t.push(a)
-    # b's next command replays A's events (C2/C4) — then b's tree matches a's
+    # R3: b must first PULL a's commit (the events.jsonl grows); only then the
+    # next command's ensure_cache replays a's events (C2/C4) — the "no hooks"
+    # point is that no post-merge hook does this, the command itself does
+    t.pull(b)
     b.run("task", "ls")
     assert set(_task_ids(a)) == set(_task_ids(b))
     _states_equal(t)
