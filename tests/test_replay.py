@@ -26,6 +26,10 @@ def _empty_db(tmp_path: Path):
     return dbmod.Db(tmp_path / "replay.sqlite")
 
 
+def _db_at(file_path: Path) -> dbmod.Db:
+    return dbmod.Db(file_path)
+
+
 def _create(uuid, type_, id_, title, at, actor, seq=1, **extra):
     base = {"actor": actor, "at": at, "seq": seq, "rec": uuid,
             "type": type_, "id": id_, "title": title, "status": "Draft",
@@ -278,3 +282,122 @@ def _db_tables(run) -> dict:
             f"SELECT * FROM {table} ORDER BY 1, 2")]
     db.close()
     return out
+
+# ---------------------------------------------------------------------------
+# E5 (C3.2): incremental replay — plan_incremental / apply_incremental
+
+
+def _specs():
+    return {s.record_type: s for s in load_registry(None).values()}
+
+
+def test_plan_noop_when_size_unchanged(tmp_path):
+    p = tmp_path / "events.jsonl"
+    u = _uuid()
+    ev.append(p, [_create(u, "task", "T-000001", "a", 1_000, "alex")])
+    meta = rp.commit_meta(_empty_db(tmp_path), p)
+    got = rp.plan_incremental(p, meta)
+    assert got[0] == "noop"
+
+
+def test_plan_append_on_pure_append(tmp_path):
+    p = tmp_path / "events.jsonl"
+    ua, ub = _uuid(), _uuid()
+    ev.append(p, [_create(ua, "task", "T-000001", "a", 1_000, "alex")])
+    meta = rp.commit_meta(_empty_db(tmp_path), p)
+    new = _create(ub, "task", "T-000002", "b", 2_000, "billy")
+    ev.append(p, [new])
+    kind, lines = rp.plan_incremental(p, meta)
+    assert kind == "append" and lines == [new]
+
+
+def test_plan_full_when_a_new_line_sorts_earlier(tmp_path):
+    """A merge can insert a line whose sort key is earlier than ev:last_key
+    (the other clone wrote it with a smaller HLC) -> full replay (C3.2)."""
+    p = tmp_path / "events.jsonl"
+    ua = _uuid()
+    ev.append(p, [_create(ua, "task", "T-000001", "a", 1_000, "alex")])
+    meta = rp.commit_meta(_empty_db(tmp_path), p)
+    # a new line with at < the applied 1_000 -> sorts earlier
+    ev.append(p, [_create(_uuid(), "task", "T-000002", "b", 500, "billy")])
+    kind, reason = rp.plan_incremental(p, meta)
+    assert kind == "full" and "sorts before" in reason
+
+
+def test_plan_full_when_prefix_changed(tmp_path):
+    p = tmp_path / "events.jsonl"
+    ua = _uuid()
+    ev.append(p, [_create(ua, "task", "T-000001", "a", 1_000, "alex")])
+    meta = rp.commit_meta(_empty_db(tmp_path), p)
+    raw = p.read_bytes()
+    # rewrite byte 40 of the prefix, then append (rebase / revert)
+    p.write_bytes(raw[:40] + bytes([raw[40] + 1]) + raw[41:] +
+                  ev.to_line(_create(_uuid(), "task", "T-000002", "b",
+                                     2_000, "billy")).encode("utf-8"))
+    kind, reason = rp.plan_incremental(p, meta)
+    assert kind == "full" and "prefix changed" in reason
+
+
+def test_plan_full_when_truncated(tmp_path):
+    p = tmp_path / "events.jsonl"
+    ua = _uuid()
+    ev.append(p, [_create(ua, "task", "T-000001", "a", 1_000, "alex")])
+    meta = rp.commit_meta(_empty_db(tmp_path), p)
+    p.write_bytes(p.read_bytes()[:10])
+    kind, reason = rp.plan_incremental(p, meta)
+    assert kind == "full" and "shrank" in reason
+
+
+def test_plan_full_when_missing_trailing_newline(tmp_path):
+    p = tmp_path / "events.jsonl"
+    ua = _uuid()
+    ev.append(p, [_create(ua, "task", "T-000001", "a", 1_000, "alex")])
+    meta = rp.commit_meta(_empty_db(tmp_path), p)
+    new = _create(_uuid(), "task", "T-000002", "b", 2_000, "billy")
+    p.write_bytes(p.read_bytes() +
+                  ev.to_line(new).rstrip("\n").encode("utf-8"))
+    kind, reason = rp.plan_incremental(p, meta)
+    assert kind == "full" and "newline" in reason
+
+
+def test_apply_incremental_equals_full_replay(tmp_path):
+    """The core property: a pure append applied incrementally to a cached db
+    yields the SAME tables as a full replay of every line on an empty db."""
+    ua, ub, uc = _uuid(), _uuid(), _uuid()
+    mk = [_create(ua, "task", "T-000001", "a", 1_000, "alex"),
+          ev.make("item.add", actor="alex", at=2_000, seq=1, rec=ua,
+                  item=_uuid(), no="001", section="Acceptance Criteria",
+                  text="x"),
+          _create(ub, "task", "T-000002", "b", 3_000, "billy"),
+          ev.make("set", actor="billy", at=4_000, seq=1, rec=ub,
+                  fields={"title": "b2"})]
+    p = tmp_path / "events.jsonl"
+    ev.append(p, mk[:2])
+    (tmp_path / "a").mkdir()
+    db = _db_at(tmp_path / "a" / "replay.sqlite")
+    rp.replay(db, mk[:2], _specs())          # the cached state of clone A
+    meta = rp.commit_meta(db, p)
+    ev.append(p, mk[2:])
+    kind, lines = rp.plan_incremental(p, meta)
+    assert kind == "append"
+    res_inc = rp.apply_incremental(db, lines, _specs())
+    # compare against a full replay of all four lines on a fresh empty db
+    (tmp_path / "b").mkdir()
+    db2 = _db_at(tmp_path / "b" / "replay.sqlite")
+    rp.replay(db2, mk, _specs())
+    got = _norm(_db_tables((db, None)))
+    ref = _norm(_db_tables((db2, None)))
+    assert got == ref
+    assert not res_inc.diagnostics
+
+
+def _norm(tables: dict) -> dict:
+    """Normalize the auto timestamps that differ between the incremental and
+    full paths (created / a freshly-logged date) before comparing tables."""
+    for rows in tables.values():
+        for r in rows:
+            if "created" in r:
+                r.pop("created")
+            if "date" in r and str(r["date"]).startswith("20"):
+                r["date"] = "<now>"
+    return tables

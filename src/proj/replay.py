@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 from proj import events as ev
 from proj.core import db as dbmod
@@ -345,3 +346,120 @@ def _next_group(rows: list[dict]) -> str:
         if c not in used:
             return c
     raise ValueError("no free group letter left (A-Z exhausted)")
+
+# ---------------------------------------------------------------------------
+# E5 (C3.2): incremental replay — the judgment + the application. Wiring into
+# the command entry (write lock, same-transaction meta update) is alex's.
+
+
+def load_meta(db) -> dict:
+    """The `ev:*` keys from the meta table ({} if none yet): ev:size,
+    ev:prefix_hash (sha1 of the first ev:size bytes), ev:last_key (the max
+    sort key applied so far, as a JSON list), ev:uuids (uuid -> id bridge
+    until C1 adds uuid columns)."""
+    out = {}
+    for k, raw_v in db.conn.execute(
+            "SELECT key, value FROM meta WHERE key LIKE 'ev:%'"):
+        v = raw_v
+        if k == "ev:last_key":
+            v = tuple(json.loads(raw_v)) if raw_v else None
+        elif k in ("ev:uuids", "ev:types"):
+            v = json.loads(raw_v) if raw_v else {}
+        out[k] = v
+    return out
+
+
+def save_meta(db, meta: dict) -> None:
+    for k, raw_v in meta.items():
+        if not k.startswith("ev:"):
+            continue
+        v = raw_v
+        if k == "ev:last_key":
+            v = json.dumps(list(raw_v)) if raw_v is not None else ""
+        elif k in ("ev:uuids", "ev:types"):
+            v = json.dumps(raw_v, ensure_ascii=False)
+        db.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+    db.conn.commit()
+
+
+def commit_meta(db, path) -> dict:
+    """Recompute ev:size / ev:prefix_hash / ev:last_key from the current
+    event file and write them (the caller holds the write lock; C3.2: local
+    appends update the meta in the same transaction so they never trigger a
+    replay). ev:uuids is untouched."""
+    p = Path(path)
+    raw = p.read_bytes() if p.is_file() else b""
+    meta = load_meta(db)
+    meta["ev:size"] = len(raw)
+    meta["ev:prefix_hash"] = hashlib.sha1(raw).hexdigest()
+    lines = [ln for ln in raw.split(b"\n") if ln]
+    if lines:
+        evs = [ev.from_line(ln.decode("utf-8")) for ln in lines]
+        meta["ev:last_key"] = max(ev.sort_key(e) for e in evs)
+    save_meta(db, meta)
+    return meta
+
+
+def plan_incremental(path, meta: dict):
+    """C3.2 judgment: ("noop", None) | ("append", [parsed new lines]) |
+    ("full", reason). Pure read of the file — no db, no mutation.
+
+    - size == ev:size                    -> noop (one stat, C3.3)
+    - size < ev:size (truncated)         -> full
+    - file does not end with \\n         -> full (a fused last line)
+    - first ev:size bytes changed (rebase/revert) -> full
+    - any new line unparseable           -> full
+    - any new line's sort key <= ev:last_key (an earlier line was inserted,
+      e.g. by a merge) -> full
+    - otherwise (a plain append, all later) -> ("append", the new lines)
+    """
+    p = Path(path)
+    size = 0 if not p.is_file() else p.stat().st_size
+    seen = int(meta.get("ev:size", 0) or 0)
+    if size == seen:
+        return ("noop", None)
+    if size < seen:
+        return ("full", "the event file shrank (truncation or rewrite)")
+    raw = p.read_bytes()
+    if not raw.endswith(b"\n"):
+        return ("full", "the event file does not end with a newline")
+    if hashlib.sha1(raw[:seen]).hexdigest() != meta.get("ev:prefix_hash", ""):
+        return ("full", "the prefix changed (rebase, revert or edit)")
+    new_lines = [ln for ln in raw[seen:].split(b"\n") if ln]
+    parsed = []
+    for ln in new_lines:
+        try:
+            parsed.append(ev.from_line(ln.decode("utf-8")))
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
+            return ("full", f"a new line does not parse ({e})")
+    last = meta.get("ev:last_key")
+    if last is not None and any(ev.sort_key(e) <= last for e in parsed):
+        return ("full", "a new line sorts before the last applied key "
+                        "(an earlier event was inserted)")
+    return ("append", parsed)
+
+
+def apply_incremental(db, lines: list[dict],
+                      specs: dict[str, RecordTypeSpec]) -> ReplayResult:
+    """Apply only the new (already-later) lines to the EXISTING cache db.
+    The record uuid -> id map is seeded from the `ev:uuids` meta bridge and
+    merged back afterwards (C1 makes this column-based and the bridge
+    redundant). Items of existing records are loaded from the db, so this
+    never rewrites untouched checklists."""
+    st = _State(specs)
+    m = load_meta(db)
+    st.ids.update(m.get("ev:uuids", {}) or {})
+    st.types.update(m.get("ev:types", {}) or {})
+    for e in sorted(lines, key=ev.sort_key):
+        _apply(st, db, e)
+    for rid in st.rows:
+        db.items_save(rid, st.rows[rid])
+    save_meta(db, {"ev:uuids": dict(st.ids), "ev:types": dict(st.types)})
+    res = ReplayResult()
+    res.ids = dict(st.ids)
+    res.renamed = st.renamed
+    res.overwrites = st.overwrites
+    res.diagnostics = st.diagnostics
+    return res
