@@ -3,12 +3,71 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
+from pathlib import Path
 
 from proj.core import db as dbmod
 from proj.core.config import ProjConfig
 from proj.core.templates import load_registry
 from proj.engine import store as rec
 from proj.engine.record import record_for
+
+# C6 content-only dump: the columns a full replay can actually reproduce.
+# Dropped — an autoincrement `id` (re-insertion order differs),
+# wip_entries.added_at and the F1/F2 file-fingerprint columns on records
+# (runtime-only, a replay never writes them), and the incremental `ev:*` /
+# fingerprint `fp:*` meta keys. Keep in step with compact._SELECT (the
+# `proj compact` verify compares the same set).
+_REPLAY_SELECT: dict[str, str] = {
+    "records": ('SELECT id, type, title, status, summary, "commit", created, '
+                'sections FROM records ORDER BY id'),
+    "record_changelog": ("SELECT record_id, date, category, message, status, actor "
+                         "FROM record_changelog ORDER BY record_id, date"),
+    "items": "SELECT * FROM items ORDER BY record_id, no",
+    "relations": "SELECT * FROM relations ORDER BY source, target, kind",
+    "wip_entries": "SELECT record_id, pos, source FROM wip_entries "
+                   "ORDER BY record_id",
+    "changelog_entries": ("SELECT version, category, message, date FROM "
+                          "changelog_entries ORDER BY version, category, message, date"),
+}
+
+
+def _dump_state(db: dbmod.Db) -> dict:
+    """The project state as comparable rows (see `_REPLAY_SELECT`)."""
+    out = {t: [tuple(r) for r in db.conn.execute(q)]
+           for t, q in _REPLAY_SELECT.items()}
+    out["meta"] = [tuple(r) for r in db.conn.execute(
+        "SELECT * FROM meta WHERE key NOT LIKE 'ev:%' AND key NOT LIKE 'fp:%' "
+        "ORDER BY key")]
+    return out
+
+
+def _replay_consistent(cfg: ProjConfig, db: dbmod.Db) -> list[str]:
+    """C6: the committed log must reproduce the cache (git collab P2): replay
+    the whole events.jsonl onto an empty DB and compare the state. Called only
+    when the file exists and passed the line-level validation above; an empty
+    log is a no-op (nothing to reproduce yet)."""
+    from proj import events as ev
+    from proj import replay as rp
+    events = ev.read(cfg.root / ".proj" / "events.jsonl")
+    if not events:
+        return []
+    specs = load_registry(cfg.root)
+    with tempfile.TemporaryDirectory() as td:
+        fresh = dbmod.Db(Path(td) / "replay.sqlite")
+        try:
+            res = rp.replay(fresh, events, specs)
+            before, after = _dump_state(db), _dump_state(fresh)
+            diff = sorted(t for t in before if before[t] != after[t])
+        finally:
+            fresh.close()
+    problems = [f"events.jsonl replay: {d}" for d in res.diagnostics]
+    if diff:
+        problems.append(
+            f".proj/events.jsonl: replaying the log does not reproduce the DB "
+            f"(tables differ: {', '.join(diff)}) — the log is the source of "
+            "truth: rebuild the cache from it (re-clone)")
+    return problems
 
 
 def check(cfg: ProjConfig) -> list[str]:
@@ -126,14 +185,50 @@ def check(cfg: ProjConfig) -> list[str]:
         if rows:
             problems.extend(record_for(spec).check_rows(rows, db, reg))
 
+    # C6: item checklists reference tasks (→ T-…). Two cross-checks the per-type
+    # check_rows do not cover — the `task` column was never validated:
+    if "task" in reg:
+        task_rows = db.all(reg["task"])
+        task_ids = {r["id"] for r in task_rows}
+        # expected item state per closed task (P3: task Done → done, Failed →
+        # failed). An open task sets no expectation: a merge can leave an
+        # item un-synced after its task closes, but a user may also pre-check
+        # an item before its task is Done — so only flag the closed-task drift.
+        task_state: dict[str, str] = {}
+        for r in task_rows:
+            if r["status"] in reg["task"].status_done:
+                task_state[r["id"]] = "done"
+            elif r["status"] in reg["task"].status_terminal:
+                task_state[r["id"]] = "failed"
+        for r in db.conn.execute(
+                "SELECT record_id, no, state, task FROM items "
+                "WHERE task!='' AND deleted=0"):
+            if r["task"] not in task_ids:
+                problems.append(
+                    f"{r['record_id']} #{r['no']}: references task {r['task']!r}, "
+                    f"which does not exist — run "
+                    f"`proj item edit {r['record_id']}#{r['no']} --task ''`")
+                continue
+            want = task_state.get(r["task"])
+            if want and r["state"] != want:
+                problems.append(
+                    f"{r['record_id']} #{r['no']}: references {r['task']} "
+                    f"(now {want}) but is {r['state']!r} — a merge left it out of "
+                    f"sync; run `proj item set {r['record_id']}#{r['no']} {want}`")
+
     # the event log (git collab E7): only checked when the file exists —
     # projects that have not started recording events are healthy without it.
     # In .proj/ (S.10); committed, so a corrupted one surfaces in `check`.
     events_path = cfg.root / ".proj" / "events.jsonl"
     if events_path.is_file():
         from proj import events  # lazy: events has no import cycle, kept late
-        for msg in events.validate(events_path):
+        line_problems = events.validate(events_path)
+        for msg in line_problems:
             problems.append(f".proj/events.jsonl: {msg}")
+        # C6: only attempt the full replay when the log is well-formed (a
+        # conflicted/unparseable line would abort it — already reported above).
+        if not line_problems:
+            problems.extend(_replay_consistent(cfg, db))
 
     db.close()
     return problems
