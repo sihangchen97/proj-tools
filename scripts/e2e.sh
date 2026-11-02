@@ -298,9 +298,11 @@ proj sync
 proj sync
 proj sync
 proj task fail T-000008 -m 'Changed: INT8 量化精度掉 6 点，放弃'  # TensorRT 量化失败（Failed = 终止，满足父门禁）
+proj task start T-000003
 proj task done T-000003 -m 'Changed: mAP 0.87 / p99 38ms（延迟超标，见 INC-0001）'  # 评估脚本完成
 proj item check 'T-000002#001'
 proj task done T-000002  # 子任务都终止 → 训练管线 done（门禁放行）
+proj task start T-000006
 proj task done T-000006  # 标注质检完成
 proj task done T-000001  # 数据集任务完成（items 全关闭）
 proj task start T-000004

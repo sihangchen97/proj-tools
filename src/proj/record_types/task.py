@@ -190,6 +190,10 @@ def move(cfg: ProjConfig, id_: str, parent: str | None) -> dict:
     return _obj(cfg).move(cfg, id_, parent)
 
 
+def start(cfg: ProjConfig, id_: str) -> dict:
+    return _obj(cfg).transition(cfg, "start", id_)
+
+
 def done(cfg: ProjConfig, id_: str) -> dict:
     return _obj(cfg).transition(cfg, "done", id_)
 

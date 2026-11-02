@@ -601,13 +601,18 @@ def ch5() -> None:
     }) if "## Acceptance Criteria" in read(md_of(T_TRT)) else None
     expect_ok("TensorRT 量化失败（Failed = 终止，满足父门禁）", "→ Failed",
               "task", "fail", T_TRT, "-m", "Changed: INT8 量化精度掉 6 点，放弃")
-    # close the tree: child first, then the parent (its items closed by now)
+    # close the tree: child first, then the parent (its items closed by now).
+    # S.9 前置: T_EVAL / T_QC have no Acceptance Criteria, so nothing promotes
+    # them to In Progress — start them explicitly before done (done can only
+    # leave In Progress).
+    run("task", "start", T_EVAL)
     expect_ok("评估脚本完成", "→ Done", "task", "done", T_EVAL,
               "-m", "Changed: mAP 0.87 / p99 38ms（延迟超标，见 INC-0001）")
     run("item", "check", f"{T_PIPE}#001")
     expect_ok("子任务都终止 → 训练管线 done（门禁放行）", "→ Done",
               "task", "done", T_PIPE)
     # the dataset task: its sub-task (label QC) first, then the dataset itself
+    run("task", "start", T_QC)
     expect_ok("标注质检完成", "→ Done", "task", "done", T_QC)
     for ref in (f"{T_DS}#B01", f"{T_DS}#C01"):
         if "- [ ] " in read(md_of(T_DS)):

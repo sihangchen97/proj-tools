@@ -50,9 +50,12 @@ def test_task_done_blocked_by_draft_child(proj):
 
 
 def test_task_done_not_blocked_by_own_unfinished_state(proj):
-    """A task without children can go Done from any state (its own checkboxes
-    no longer gate done — that gate is gone)."""
+    """A task without children can go Done once it is In Progress (its own
+    checkboxes no longer gate done — that gate is gone). S.9: a task with no
+    items stays in Draft, so it must be started before it can be done (done
+    leaves In Progress only); start first, then done."""
     row, _ = taskmod.new(proj, "Solo")
+    taskmod.start(proj, row["id"])
     assert taskmod.done(proj, row["id"])["status"] == "Done"
 
 
