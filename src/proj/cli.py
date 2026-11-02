@@ -34,6 +34,7 @@ from typer.core import TyperGroup
 from typer.main import get_command as _to_click_command
 
 from proj import bugs, scaffold
+from proj import compact as compact_mod
 from proj.check import check as run_checks
 from proj.core import fsio
 from proj.core.config import ProjConfig, find_root, load_config, load_project_env
@@ -542,6 +543,20 @@ def check():
             typer.echo(f"  {p}", err=True)
         raise typer.Exit(1)
     typer.echo("OK")
+
+
+@app.command()
+def compact():
+    """Shrink .proj/events.jsonl to the current state: one `snapshot` event per
+    record + a project-level one, then a full replay proves the new log
+    reproduces the DB before it is replaced. Refused while the tree is dirty or
+    a merge is in progress."""
+    cfg = _cfg()
+    problems, notes = compact_mod.run_compact(cfg)
+    _print_problems(problems, notes)
+    if problems:
+        raise typer.Exit(1)
+    typer.echo("OK — events.jsonl compacted and verified")
 
 
 @app.command()

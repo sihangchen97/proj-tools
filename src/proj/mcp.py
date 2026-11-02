@@ -36,6 +36,7 @@ from pathlib import Path
 from mcp.server import MCPServer
 
 from proj import bugs, scaffold
+from proj import compact as compact_mod
 from proj.check import check as run_checks
 from proj.core import fsio
 from proj.core.config import load_config, load_project_env
@@ -227,6 +228,20 @@ def proj_check(root: str | None = None) -> str:
     problems = run_checks(cfg)
     if problems:
         return "\n".join(f"FAIL  {p}" for p in problems)
+    return "OK"
+
+
+def proj_compact(root: str | None = None) -> str:
+    """Shrink events.jsonl to the current state (one snapshot event per record +
+    a project-level one), verified by a full replay before the file is
+    replaced. Refused while the working tree is dirty or a merge/rebase is in
+    progress; 'OK — …' + a note to commit on its own, or 'error: …' text."""
+    cfg = _cfg(root)
+    problems, notes = compact_mod.run_compact(cfg)
+    if problems:
+        return f"error: {problems[0]}"
+    if notes:
+        return "OK — " + notes[0]
     return "OK"
 
 
@@ -585,6 +600,7 @@ def _make(fn):
 
 
 for _fn in (proj_init, proj_new, proj_sync, proj_adopt, proj_render, proj_check,
+            proj_compact,
             proj_ls, proj_show, proj_update, proj_verb,
             proj_info,
             proj_changelog_add, proj_changelog_version, proj_changelog_release_notes,

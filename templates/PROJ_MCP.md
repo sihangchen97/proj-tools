@@ -50,6 +50,13 @@ edits are ingested first (problems abort before any file is written).
 
 Validate DB ↔ lock ↔ templates ↔ md invariants. 'OK' or FAIL lines.
 
+### `proj_compact`
+
+Shrink events.jsonl to the current state (one snapshot event per record +
+a project-level one), verified by a full replay before the file is
+replaced. Refused while the working tree is dirty or a merge/rebase is in
+progress; 'OK — …' + a note to commit on its own, or 'error: …' text.
+
 ### `proj_ls`
 
 List records (from DB), one line each (id, status, title). record_type:

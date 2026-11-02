@@ -27,6 +27,7 @@ proj show <ID> [--history] [--json]
 proj ls [--status <STATUS>] [--type <TYPE>] [--json]
 proj open <ID>
 proj check
+proj compact
 proj info [--json]
 proj docs
 proj bug [<TEXT>] [--cmd <CMD>] [--json] [--root <ROOT>]
