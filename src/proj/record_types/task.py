@@ -157,8 +157,8 @@ class Task(Record):
                 if rec.by_id(cfg, reg[record_type], db, parent) is not None:
                     return
         raise ValueError(
-            f"parent {parent!r} not found in any record_type "
-            f"({', '.join(reg)}) — create it first or drop --parent")
+            f"parent {parent!r} not found (types: {', '.join(reg)}) "
+            f"— create it first or drop --parent")
 
 
 # ---- module-level delegations (stable call shape for cli/tests) --------------

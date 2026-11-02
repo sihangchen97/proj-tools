@@ -83,8 +83,10 @@ def test_mcp_record_type_passthrough(proj):
 def test_mcp_error_paths(proj):
     root = str(proj.root)
     assert "unknown record_type" in mcp.proj_new("nope", "X", root=root)
-    # parent must exist in some record_type
-    assert "not found in any record_type" in mcp.proj_new("task", "X", parent="ZZZ", root=root)
+    # parent must exist in some record_type (B1: this refused new leaves no orphan
+    # row — the task below is the explicit one the verb/supersede checks need)
+    assert "not found (types:" in mcp.proj_new("task", "X", parent="ZZZ", root=root)
+    mcp.proj_new("task", "Real task", root=root)  # T-000001
     # verb must be one the template declares
     assert "unknown verb" in mcp.proj_verb("T-000001", "explode", root=root)
     # unknown record_type for a verb (when given explicitly)
@@ -92,7 +94,6 @@ def test_mcp_error_paths(proj):
     # show: nonexistent record
     assert "not found" in mcp.proj_show("9999", root=root)
     # supersede: same-type required (decision cannot supersede a task)
-    mcp.proj_new("task", "X", root=root)
     assert "same type required" in mcp.proj_new("decision", "X2", supersede="T-000001", root=root)
 
 

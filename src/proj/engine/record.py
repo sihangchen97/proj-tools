@@ -31,6 +31,29 @@ def _append_id(v: str, new_id: str) -> str:
     return ", ".join(ids)
 
 
+
+
+def _validate_refs(cfg: ProjConfig, record_type: str, spec: RecordTypeSpec,
+                   supersede: list[str], related: list[str]) -> None:
+    """B1: validate every supersede/related reference before any row is created.
+    Raises ValueError on the first bad ref (nothing is written yet). supersede
+    targets must exist and be the same type; related targets may be any type."""
+    with rec.open_db(cfg) as db:
+        for old_id in supersede:
+            s, old = rec.ref_record(cfg, db, old_id)
+            if old is None:
+                raise ValueError(f"supersede {old_id!r} does not match any record "
+                                 f"— use the canonical id (e.g. DEC-0001)")
+            if s.record_type != record_type:
+                raise ValueError(f"supersede {old_id} is a {s.record_type}, "
+                                 f"not a {record_type} — same type required")
+        for ref in related:
+            _s, target = rec.ref_record(cfg, db, ref)
+            if target is None:
+                raise ValueError(f"related {ref!r} does not match any record "
+                                 f"— use the canonical id (e.g. PLN-0001)")
+
+
 class Record:
     """Base record_type: everything the generic engine already does for any template."""
 
@@ -49,21 +72,45 @@ class Record:
     def new(self, cfg: ProjConfig, title: str, summary: str = "",
             commit: str = "", supersede: list[str] | None = None,
             related: list[str] | None = None):
-        row, p = rec.new_record(cfg, self.spec, title, summary=summary, commit=commit)
-        supersede = supersede or []
-        related = related or []
+        supersede = list(supersede or [])
+        related = list(related or [])
+        # B1: every reference is validated BEFORE a row is created (the parent,
+        # when present, is validated by Task.new) — an illegal ref raises with
+        # nothing in the DB, so no orphan row/md is left. Row + edges then land
+        # in ONE write transaction (_create_row).
+        _validate_refs(cfg, self.record_type, self.spec, supersede=supersede,
+                       related=related)
+        return self._create_row(cfg, title, commit=commit, summary=summary,
+                                supersede=supersede, related=related)
+
+    def _create_row(self, cfg: ProjConfig, title: str, summary: str = "",
+                    commit: str = "", supersede: list[str] | None = None,
+                    related: list[str] | None = None):
+        """B1: create the row + every edge + its changelog lines in ONE
+        transaction (insert + created-log + the rendered md file, then the edges).
+        Refs are pre-validated by the caller; the per-edge checks below stay as
+        same-connection guards (self-supersede / self-related)."""
+        supersede = list(supersede or [])
+        related = list(related or [])
         if not supersede and not related:
-            return row, p
-        # R3: every edge + its changelog lines land in ONE transaction
+            return rec.new_record(cfg, self.spec, title, summary=summary,
+                                  commit=commit)
         with rec.open_db(cfg) as db:
-            db.begin()  # R3: one write transaction for the whole command
+            db.begin()
+            id_ = rec.dbmod.next_id(self.spec, db)
+            status = self.spec.status_allowed[0] if self.spec.status_allowed else ""
+            created = rec.dbmod.utc_now()
+            db.insert(self.spec, id_, title, status, created, summary, commit)
+            db.add_log(id_, "created", category="Added", when=created)
+            row = db.get(self.spec, id_)
+            p = rec.file_path(cfg, self.spec, row)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            rec.fsio.write_atomic(p, rec.render_record(self.spec, row, db))
             for old_id in supersede:
-                # supersede is a pure relation on every record_type (D1): the
-                # target must exist and be the SAME type; no status side effect
                 spec, old = rec.ref_record(cfg, db, old_id)
                 if old is None:
                     raise ValueError(f"supersede {old_id!r} does not match any record "
-                                     f"\u2014 use the canonical id (e.g. DEC-0001)")
+                                     f"— use the canonical id (e.g. DEC-0001)")
                 if spec.record_type != self.record_type:
                     raise ValueError(f"supersede {old_id} is a {spec.record_type}, "
                                      f"not a {self.record_type} — same type required")
@@ -77,14 +124,13 @@ class Record:
                 _spec, target = rec.ref_record(cfg, db, ref)
                 if target is None:
                     raise ValueError(f"related {ref!r} does not match any record "
-                                     f"\u2014 use the canonical id (e.g. PLN-0001)")
+                                     f"— use the canonical id (e.g. PLN-0001)")
                 if target["id"] == row["id"]:
                     raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
                 db.add_relation(row["id"], target["id"], "related")
             if related:
                 db.add_log(row["id"], "related: " + ", ".join(related), "Added")
         rec.render_all(cfg)
-        # the final fresh row is a plain read — one short-lived connection
         with rec.open_db(cfg) as db:
             fresh = rec.by_id(cfg, rec.spec_of(cfg, self.record_type), db, row["id"])
         return fresh, p

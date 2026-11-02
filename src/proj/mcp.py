@@ -106,7 +106,7 @@ def _resolve(root: str | None, record_type: str | None, id_: str) -> tuple:
     with rec.open_db(cfg) as db:  # R3: read-only
         spec, row = rec.ref_record(cfg, db, id_)
     if row is None:
-        raise ValueError(f"{id_} not found in any record_type")
+        raise ValueError(f"{id_} not found (types: {', '.join(reg)})")
     return cfg, spec, row
 
 

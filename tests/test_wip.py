@@ -9,6 +9,7 @@ from proj import check as checkmod
 from proj.engine import item_ops
 from proj.engine import store as rec
 from proj.engine import wip as wipmod
+from proj.engine.record import record_for
 from proj.record_types import task as taskmod
 
 SECTION = "acceptance criteria"  # the task's item section (lowercased)
@@ -355,3 +356,30 @@ def test_wip_ls_owner_filters_and_lists_items(proj):
     assert b["id"] not in out  # the other entry is filtered out
     # the plain `wip ls` lists both entries (no owner filter)
     assert len(wipmod.wip_ls(proj)) == 2
+
+
+def test_b2_wip_writeback_targets_the_wip_checklist(proj):
+    """B2: the WIP.md write-back lands in the record's WIP checklist (its
+    `wip: true` one), never the primary. A plan has several (Work = wip, Success
+    Criteria); a Work item closed in WIP.md is stored as done on entering a
+    terminal state (shelve), Success Criteria untouched (pre-B2 the write-back
+    hit the primary checklist instead)."""
+    plan = record_for("plan", rec.load_registry(proj.root))
+    row, _ = plan.new(proj, "Ship v1")
+    pid = row["id"]
+    item_ops.add(proj, pid, "build the thing", section="Work")              # #001 (wip)
+    item_ops.add(proj, pid, "works end to end", section="Success Criteria")  # #002
+    wipmod.wip_add(proj, [pid])
+    # hand-edit WIP.md: close the Work item (the entry shows the Work checklist)
+    w = _wip(proj)
+    assert "- [ ] #001 build the thing" in w, w
+    (proj.root / "WIP.md").write_text(
+        w.replace("- [ ] #001 build the thing", "- [x] #001 build the thing"),
+        encoding="utf-8")
+    # activate → review → shelve (a terminal state with NO checklist gate, so the
+    # auto-return's write-back is the only place the Work item gets closed)
+    for verb in ("activate", "review", "shelve"):
+        plan.transition(proj, verb, pid)
+    assert _item_state(proj, pid, "001") == "done"   # the Work item was closed
+    assert _item_state(proj, pid, "002") == "todo"   # Success Criteria untouched
+    assert not _has(proj, pid)                        # left WIP on entering terminal

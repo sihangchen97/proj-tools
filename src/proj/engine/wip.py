@@ -149,9 +149,14 @@ def _changed(db, spec: RecordTypeSpec, record_id: str, md_section: str) -> bool:
     """Does an item section differ from the DB's checklist? (compare the rendered
     section to the stored rows; the intro is not part of WIP.md)."""
     from proj.engine import items as items_mod  # lazy
-    state = items_mod.load(db, record_id, spec)
+    # B2: the WIP.md entry shows the record's WIP checklist (its `wip: true`
+    # one), not the primary — compare/write that one (a record may have several).
+    it = spec.wip_items
+    if it is None:
+        return False
+    state = items_mod.load(db, record_id, it)
     return items_mod.normalize(md_section) != items_mod.normalize(
-        items_mod.render_section(state, spec))
+        items_mod.render_section(state, it))
 
 
 def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> tuple[dict, list]:
@@ -193,6 +198,34 @@ def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> t
     return wip_only, conflicts
 
 
+def wip_writeback(db, registry: dict[str, RecordTypeSpec],
+                  cfg: ProjConfig) -> tuple[list[str], list[str]]:
+    """Ingest WIP.md's pending checklist edits into the DB (the WIP.md-side
+    half of `sync`'s two-way merge; B2: the write-back targets each record's
+    WIP checklist, `it=spec.wip_items`, never the primary). Caller must hold
+    the transaction. Both-sides conflicts are reported as problems (nothing is
+    written); returns (problems, notes). No-op when WIP.md matches the DB."""
+    from proj.engine import item_ops as ops_mod  # lazy: wip↔item_ops cycle
+    from proj.engine import items as items_mod  # lazy
+    wip_only, conflicts = wip_sync_plan(db, registry, cfg)
+    if conflicts:
+        return ([f"{c}: item section edited in BOTH the record md and WIP.md \u2014 "
+                 f"keep one side (edit only one, then sync)" for c in conflicts], [])
+    notes: list[str] = []
+    for rid, section in wip_only.items():
+        row = _record_by_id(db, rid)
+        spec = registry[row["type"]]
+        it = spec.wip_items
+        if it is None:
+            continue
+        notes += [f"WIP.md: {n}" for n in ops_mod.sync_owner_notes(db, it, row, section)]
+        pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md", it=it)
+        if pr:
+            return pr, []
+        notes += [f"WIP.md: {n}" for n in nt]
+    return [], notes
+
+
 def auto_status_wip(db, spec: RecordTypeSpec, record_id: str, old: str, to: str) -> None:
     """The automatic WIP side of a status SWITCH (called by store.status_set inside
     its transaction, W3/W6): entering a `wip.enter` status adds the record
@@ -205,13 +238,18 @@ def auto_status_wip(db, spec: RecordTypeSpec, record_id: str, old: str, to: str)
         db.add_log(record_id, f"added to WIP (auto: {to})", category="Changed")
     if (to in spec.status_terminal and old not in spec.status_terminal
             and db.wip_has(record_id)):
-        wip_text = (db.path.parent / WIP_FILE).read_text(encoding="utf-8") \
-            if (db.path.parent / WIP_FILE).exists() else ""
+        # B2/S.10: the DB sits at <root>/.proj/cache.sqlite, so the project root
+        # (where WIP.md lives) is db.path.parent.parent, not .parent.
+        root = db.path.parent.parent
+        wip_text = (root / WIP_FILE).read_text(encoding="utf-8") \
+            if (root / WIP_FILE).exists() else ""
         section = entry_items_text(wip_text, record_id)
         if section and _changed(db, spec, record_id, section):
             row = dict(db.conn.execute(
                 "SELECT * FROM records WHERE id=?", (record_id,)).fetchone())
-            problems, _ = items_mod.sync_section(db, spec, row, section, source="WIP.md")
+            # B2: write back into the WIP checklist, never the primary one
+            problems, _ = items_mod.sync_section(db, spec, row, section,
+                                                 source="WIP.md", it=spec.wip_items)
             if problems:
                 raise ValueError(f"{record_id}: WIP.md write-back on auto-return failed:\n"
                                  + "\n".join(problems))
@@ -323,5 +361,7 @@ def _sync_items(db, spec: RecordTypeSpec, row: dict, md_section: str,
     """Write one checklist section into the DB (items is the only writer); returns
     (problems, notes). The caller is inside the transaction."""
     from proj.engine import items as items_mod  # lazy
-    problems, notes = items_mod.sync_section(db, spec, row, md_section, source=source)
+    # B2: WIP.md edits land in the record's WIP checklist, never the primary one
+    problems, notes = items_mod.sync_section(db, spec, row, md_section, source=source,
+                                             it=spec.wip_items)
     return problems, notes

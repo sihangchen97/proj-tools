@@ -124,7 +124,7 @@ def test_task_move_refuses_cycle_self_missing(proj):
         taskmod.move(proj, parent["id"], parent["id"])
     with pytest.raises(ValueError, match="descendant"):
         taskmod.move(proj, parent["id"], grand["id"])
-    with pytest.raises(ValueError, match="not found in any record_type"):
+    with pytest.raises(ValueError, match="not found \\(types:"):
         taskmod.move(proj, child["id"], "PLN-9999")
 
 
@@ -204,7 +204,7 @@ def test_fk_rejects_dangling_parent(proj):
 
 
 def test_task_rejects_ghost_parent_ref(proj):
-    with pytest.raises(ValueError, match=r"not found in any record_type"):
+    with pytest.raises(ValueError, match=r"not found \(types:"):
         taskmod.new(proj, "T1", parent="999")
     # K2: a plan is not a valid parent (must be a task)
     _plan(proj).new(proj, "P1")
@@ -230,11 +230,14 @@ def test_ambiguous_bare_number_is_rejected(proj):
         taskmod.new(proj, "Amb", parent="1")
     with pytest.raises(ValueError, match="matches several records"):
         taskmod.new(proj, "Amb2", related=["1"])
-    # an unambiguous bare number still resolves ("2" → T-000002, the record the
-    # refused 'Amb' new left behind)
-    row, _ = taskmod.new(proj, "Ok", related=["2"])
+    # B1: a refused `new` (bad/ambiguous ref) leaves NO orphan row — the id
+    # space is unchanged, so the next new task is still T-000002
+    row, _ = taskmod.new(proj, "Ok")
+    assert row["id"] == "T-000002"
+    # an unambiguous bare number still resolves ("2" → that same T-000002)
+    row2, _ = taskmod.new(proj, "Link", related=["2"])
     db = rec.open_db(proj)
-    assert "T-000002" in db.related_of(row["id"])
+    assert "T-000002" in db.related_of(row2["id"])
     db.close()
 
 
@@ -447,3 +450,50 @@ def test_p3_auto_close_triggers_promote(proj):
         assert db.get(rec.load_registry(proj.root)["debt"], debt["id"])["status"] == "In Progress"
     finally:
         db.close()
+
+
+# ---- B1: a bad reference never leaves an orphan row (PLAN §28.1 22:45) ------
+
+def _no_orphan(proj, rid: str) -> bool:
+    """True if no record row exists for rid (B1: a refused new leaves nothing)."""
+    db = rec.open_db(proj)
+    try:
+        reg = rec.load_registry(proj.root)
+        return all(db.get(spec, rid) is None for spec in reg.values())
+    finally:
+        db.close()
+
+
+def test_bad_parent_leaves_no_orphan(proj):
+    """B1: `task new --parent <nonexistent>` validates the ref before the row is
+    created — the error leaves no orphan task row (or md) behind."""
+    before = len(list((proj.root / "docs/tasks").glob("*.md")))
+    with pytest.raises(ValueError, match="not found"):
+        taskmod.new(proj, "Orphan", parent="T-999999")
+    after = len(list((proj.root / "docs/tasks").glob("*.md")))
+    assert after == before, "a refused parent new left an orphan md file"
+    db = rec.open_db(proj)
+    spec = rec.load_registry(proj.root)["task"]
+    assert db.get(spec, "T-000001") is None  # no T-000001 row created
+    db.close()
+
+
+def test_bad_related_leaves_no_orphan(proj):
+    """B1: a bad `related` ref raises before the row exists (no orphan)."""
+    with pytest.raises(ValueError, match="does not match any record"):
+        taskmod.new(proj, "Orphan", related=["T-999999"])
+    assert _no_orphan(proj, "T-000001")
+    db = rec.open_db(proj)
+    spec = rec.load_registry(proj.root)["task"]
+    assert db.get(spec, "T-000001") is None
+    db.close()
+
+
+def test_bad_supersede_leaves_no_orphan(proj):
+    """B1: a bad `supersede` ref raises before the row exists (no orphan)."""
+    reg = rec.load_registry(proj.root)
+    before = len(rec.open_db(proj).all(reg["decision"]))
+    # decision is a same-type-supersede-able record_type; DEC-9999 does not exist
+    with pytest.raises(ValueError, match="does not match any record"):
+        record_for("decision", reg).new(proj, "Orphan", supersede=["DEC-9999"])
+    assert len(rec.open_db(proj).all(reg["decision"])) == before  # no orphan row
