@@ -22,6 +22,14 @@ import os
 import time
 from pathlib import Path
 
+#: every op a well-formed event may carry (E7; the replayer knows the same
+#: set — `snapshot` is added by replay.py's compact support, C6)
+OPS = ("create", "set", "section.set", "item.add", "item.set", "item.move",
+       "group.add", "group.set", "group.move", "rel.add", "rel.del",
+       "wip.add", "wip.del", "log", "changelog.add", "changelog.release",
+       "delete")
+#: the fields every event carries, whatever its op (C2.2)
+REQUIRED_FIELDS = ("at", "actor", "op", "rec", "seq")
 
 #: the sort key's last component guarantees a total order (design P2)
 def sort_key(ev: dict) -> tuple:
@@ -112,3 +120,40 @@ def read(path: Path | str) -> list[dict]:
         parsed.setdefault(text, ev)
     events = sorted(parsed.values(), key=sort_key)
     return events
+
+
+def validate(path: Path | str) -> list[str]:
+    """E7 (C6 `proj check` item, wiring done by alex in C6): every problem
+    with the event log as a list of messages; [] = healthy.
+
+    Per line: parseable (the message names the line number), no git conflict
+    markers, one JSON object, all common fields present (`at`/`actor`/`op`/
+    `rec`/`seq`), `op` in `OPS`. Per file: ends with `\\n` (a missing file is
+    healthy — no events yet; an empty file is fine)."""
+    p = Path(path)
+    if not p.is_file():
+        return []
+    problems: list[str] = []
+    raw = p.read_bytes()
+    if raw and not raw.endswith(b"\n"):
+        problems.append(f"{p}: does not end with a newline")
+    for i, line in enumerate(raw.split(b"\n"), start=1):
+        if not line:
+            continue
+        text = line.decode("utf-8", errors="replace")
+        if "<<<<<<<" in text or ">>>>>>>" in text or text.startswith("|||||||"):
+            problems.append(f"{p}:{i}: git conflict marker in event line")
+            continue
+        try:
+            ev = from_line(text)
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
+            problems.append(f"{p}:{i}: bad event line ({e})")
+            continue
+        missing = [f for f in REQUIRED_FIELDS if f not in ev]
+        if missing:
+            problems.append(
+                f"{p}:{i}: missing field(s) {', '.join(missing)}")
+            continue
+        if ev["op"] not in OPS:
+            problems.append(f"{p}:{i}: unknown op {ev['op']!r}")
+    return problems

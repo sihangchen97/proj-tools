@@ -109,3 +109,77 @@ def test_non_ascii_payloads_roundtrip(tmp_path):
     line = p.read_text(encoding="utf-8")
     assert "标题" in line  # not \uXXXX-escaped (ensure_ascii=False)
     assert ev.read(p) == [a]
+
+# ---------------------------------------------------------------------------
+# E7: validate (C6 check item; one test per problem kind)
+
+
+def test_validate_clean_log_is_empty(tmp_path):
+    p = tmp_path / "e.jsonl"
+    ev.append(p, [_ev(), _ev(op="create", at=2_000, seq=1)])
+    assert ev.validate(p) == []
+
+
+def test_validate_missing_file_is_healthy(tmp_path):
+    assert ev.validate(tmp_path / "nope.jsonl") == []
+
+
+def test_validate_empty_file_is_healthy(tmp_path):
+    p = tmp_path / "e.jsonl"
+    p.write_text("", encoding="utf-8")
+    assert ev.validate(p) == []
+
+
+def test_validate_bad_json_names_line_number(tmp_path):
+    p = tmp_path / "e.jsonl"
+    ev.append(p, [_ev()])
+    p.write_text(p.read_text() + "{not json\n", encoding="utf-8")
+    (got,) = ev.validate(p)
+    assert "e.jsonl:2" in got and "bad event line" in got
+
+
+def test_validate_conflict_marker(tmp_path):
+    p = tmp_path / "e.jsonl"
+    ev.append(p, [_ev()])
+    p.write_text(p.read_text() + "<<<<<<< HEAD\n", encoding="utf-8")
+    (got,) = ev.validate(p)
+    assert "e.jsonl:2" in got and "conflict marker" in got
+
+
+def test_validate_non_object_line(tmp_path):
+    p = tmp_path / "e.jsonl"
+    p.write_text("[1, 2]\n", encoding="utf-8")
+    (got,) = ev.validate(p)
+    assert "e.jsonl:1" in got
+
+
+def test_validate_missing_required_field(tmp_path):
+    p = tmp_path / "e.jsonl"
+    line = json.dumps(ev.make("set", actor="a", at=1, seq=1, rec="u"),
+                      sort_keys=True) + "\n"
+    p.write_text(line, encoding="utf-8")  # a valid object, `op` present
+    e = ev.from_line(line)
+    del e["seq"]  # drop one required field, keep the object valid
+    p.write_text(json.dumps(e, sort_keys=True) + "\n", encoding="utf-8")
+    (got,) = ev.validate(p)
+    assert "e.jsonl:1" in got and "missing field(s) seq" in got
+
+
+def test_validate_unknown_op(tmp_path):
+    p = tmp_path / "e.jsonl"
+    e = _ev(op="frobnicate")
+    e.pop("op")
+    p.write_text(ev.to_line({**e, "op": "frobnicate"}), encoding="utf-8")
+    (got,) = ev.validate(p)
+    assert "e.jsonl:1" in got and "unknown op 'frobnicate'" in got
+
+
+def test_validate_collects_every_problem_not_first(tmp_path):
+    p = tmp_path / "e.jsonl"
+    ev.append(p, [_ev()])
+    raw = p.read_bytes()
+    p.write_bytes(raw + b"{bad")  # a second malformed line without a
+    # final newline: two problems at once (bad line + no trailing newline)
+    got = ev.validate(p)
+    assert any("bad event line" in x and "e.jsonl:2" in x for x in got)
+    assert any("does not end with a newline" in x for x in got)
