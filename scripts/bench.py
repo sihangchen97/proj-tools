@@ -25,6 +25,9 @@ REPO = Path(__file__).resolve().parent.parent
 N_RECORDS = [50, 300, 1000]
 # median of RUNS real CLI invocations
 RUNS = 3
+# E9 (C3.3): full-replay benchmark size + target
+REPLAY_RECORDS = 1000
+REPLAY_MS_TARGET = 2000.0
 
 # wrapper: count md reads + sqlite connections of one real proj CLI run
 _WRAPPER = r'''
@@ -157,6 +160,74 @@ def bench_location(label: str, root: Path) -> None:
               f"   write: md_reads={md} db_conns={dbn}")
 
 
+def bench_replay() -> None:
+    """E9 (C3.3): synthesize 1000 records / ~46k events, replay onto an empty
+    db, time the full replay. Runs in a subprocess (its own tmp dir, the CLI
+    is not involved)."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO / "src")
+    env.setdefault("PROJ_AGENT", "bench")
+    script = (
+        "import random, string, sys, time, tempfile\n"
+        "from pathlib import Path\n"
+        "from proj import events as ev, replay as rp\n"
+        "from proj.core import db as dbmod\n"
+        "from proj.core.templates import load_registry\n"
+        "rng = random.Random(1)\n"
+        "def U():\n"
+        "    return \'\'.join(rng.choices(string.hexdigits, k=32))\n"
+        "specs = {s.record_type: s for s in load_registry(None).values()}\n"
+        "tmp = Path(tempfile.mkdtemp())\n"
+        "evs = []; at = 1000\n"
+        "recs = [(U(), f\'T-{i:06d}\') for i in range(1, 1001)]\n"
+        "for u, rid in recs:\n"
+        "    at += 1\n"
+        "    evs.append(ev.make(\'create\', actor=\'bench\', at=at, seq=len(evs),\n"
+        "        rec=u, type=\'task\', id=rid, title=rid, status=\'Draft\',\n"
+        "        summary=\'\', sections={\'Acceptance Criteria\': \'\'}))\n"
+        "for u, rid in recs:\n"
+        "    rows = []\n"
+        "    for k in range(20):\n"
+        "        iu = U(); at += 1; rows.append(iu)\n"
+        "        evs.append(ev.make(\'item.add\', actor=\'bench\', at=at, seq=len(evs),\n"
+        "            rec=u, item=iu, no=f\'{k + 1:03d}\',\n"
+        "            section=\'Acceptance Criteria\', text=f\'item {k}\',\n"
+        "            owner=rng.choice([\'\', \'a\', \'b\']),\n"
+        "            due=rng.choice([\'\', \'2026-01-01\'])))\n"
+        "    for k in range(10):\n"
+        "        iu = rows[k]; at += 1\n"
+        "        evs.append(ev.make(\'item.set\', actor=\'bench\', at=at, seq=len(evs),\n"
+        "            rec=u, item=iu, fields={\'state\': \'done\'},\n"
+        "            date=f\'2026-01-0{1 + k % 2}T00:00:{k:02d}+00:00\'))\n"
+        "    for k in range(15):\n"
+        "        at += 1\n"
+        "        evs.append(ev.make(\'log\', actor=\'bench\', at=at, seq=len(evs),\n"
+        "            rec=u, message=f\'log {k}\', status=\'In Progress\',\n"
+        "            date=f\'2026-01-0{(k % 9) + 1}T00:00:00+00:00\'))\n"
+        "p = tmp / \'events.jsonl\'\n"
+        "ev.append(p, evs)\n"
+        "n = len(p.read_text().splitlines())\n"
+        "target = float(sys.argv[1])\n"
+        "evs = ev.read(p)\n"
+        "best = 0.0\n"
+        "for _ in range(3):\n"
+        "    db = dbmod.Db(tmp / f\'db{ _ }.sqlite\')\n"
+        "    t0 = time.perf_counter()\n"
+        "    rp.replay(db, evs, specs)\n"
+        "    db.close()\n"
+        "    ms = (time.perf_counter() - t0) * 1000\n"
+        "    best = ms if not best else min(best, ms)\n"
+        "verdict = \'OK\' if best <= target else \'SLOW\'\n"
+        "print(f\'replay: {n} events / 1000 records -> {best:.0f} ms \'\n"
+        "      f\'(target <= {target:.0f} ms): {verdict}\')\n"
+    )
+    r = subprocess.run([sys.executable, "-c", script, str(REPLAY_MS_TARGET)],
+                       check=False, capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        raise SystemExit(f"replay bench failed:\n{r.stdout}\n{r.stderr}")
+    print(r.stdout.strip())
+
+
 def selftest() -> None:
     """The counters must see a write command's md reads and one+ db connections."""
     d = Path(tempfile.mkdtemp(prefix="bench-selftest-"))
@@ -173,9 +244,14 @@ def main() -> None:
     if "--selftest" in sys.argv:
         selftest()
         return
+    if "--replay" in sys.argv:
+        bench_replay()
+        return
     tmp = Path(tempfile.mkdtemp(prefix="bench-"))
     try:
         bench_location("local", tmp)
+        print("--- replay (E9, local in-process)")
+        bench_replay()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     nfs = os.environ.get("BENCH_NFS_DIR")
