@@ -52,8 +52,9 @@ proj check                       # invariants; also runs in the pre-commit hook
 
 ## Core model
 
-- **Source of truth = `.proj.sqlite`** (project root — one table per record_type
-  + the shared `record_changelog`; committed by default).
+- **Source of truth = `.proj/cache.sqlite`** (one table per record_type + the shared
+  `record_changelog`, committed by default so a clone is ready to use — see the
+  `.proj/` layout below).
   The md files are **input channel + rendered output**: edit `##` section
   content → `proj sync` reads it back, then re-renders every md from the DB.
 - **Templates are YAML schema** (bundled with the package; the project's own
@@ -63,9 +64,14 @@ proj check                       # invariants; also runs in the pre-commit hook
   each bound to a `##` section — one per type with `wip: true`, editable in
   WIP.md), gates.
   New record_type = one YAML file, zero code changes.
-- **`.proj.lock`** (committed) pins which templates + schema the DB was built
+- **`.proj/lock.yaml`** (committed) pins which templates + schema the DB was built
   from. `proj init` with a lock follows the lock; without, it builds from the
   bundled profiles and writes the lock.
+- **The `.proj/` directory** (S.10) holds all project data, keeping the repo root
+  clean: `cache.sqlite` (the DB, committed by default) + `lock.yaml` (committed)
+  are the source of truth; `events.jsonl` (the git-collab event log) and
+  `write.lock` / `bugs.log` (runtime, git-ignored by `.proj/.gitignore`) are
+  never committed. A fresh clone is ready to use — the DB ships with it.
 - **IDs live in the filename and the md** (e.g. `T-000001`); each md carries
   an invisible first line `<!-- proj:<record_type> <id> -->` for cross-validation
   (the id must match the filename prefix).
@@ -76,7 +82,7 @@ proj check                       # invariants; also runs in the pre-commit hook
   (a changed title renames the file to the new slug);
   id/created/status/fields/changelog → DB wins.
 - **Multi-writer safety**: every write command holds the project write lock
-  (`.proj.write-lock`, flock) and all md files are written atomically, so
+  (`.proj/write.lock`, flock) and all md files are written atomically, so
   several agents / terminals can share one project directory — they queue,
   and a crashed command never leaves a half-written file.
 
@@ -178,7 +184,7 @@ proj show ID / proj ls [--status S] [--json]
 proj docs                  # regenerate docs/CLI.md + docs/MCP.md
 proj changelog add|version|release-notes|list
 proj hooks install         # pre-commit → proj check
-proj bug "…"              # record a proj bug in .proj.bugs (never committed)
+proj bug "…"              # record a proj bug in .proj/bugs.log (never committed)
 
 # per record_type (dynamic; <verb> = one from that type's template `verbs:`)
 proj <rt> new TITLE [--supersede N] [--parent N] [-y]
@@ -228,7 +234,7 @@ Highlights (full list in `docs/MCP.md`):
 | `proj_item_ls` / `proj_item_add` / `proj_item_update` / `proj_item_rm` | `proj item …` (checklist ops, `--reassign` included) |
 | `proj_wip_add` / `proj_wip_ls` / `proj_wip_return` | `proj wip …` |
 | `proj_changelog_add` / `_version` / `_release_notes` / `_list` | `proj changelog …` |
-| `proj_bug` / `proj_bug_ls` | `proj bug "…"` (records tool bugs in `.proj.bugs`) |
+| `proj_bug` / `proj_bug_ls` | `proj bug "…"` (records tool bugs in `.proj/bugs.log`) |
 
 Tools return human-readable text; on validation failure the full error message
 is returned (agent-readable).
@@ -246,7 +252,7 @@ the engine is fully generic.
   current writer, then proceeds; md files are written atomically, so no reader
   ever sees a half-written file.
 - **Multiple people in separate git clones: not supported yet.** Ids would
-  collide on merge and `.proj.sqlite` cannot be merged. A git-based
+  collide on merge and `.proj/cache.sqlite` cannot be merged. A git-based
   collaboration design (event log as the committed source of truth, the
   sqlite kept as a local cache) is ready for post-release implementation —
   see `plans/git-collab-design.md`.
@@ -261,7 +267,7 @@ the engine is fully generic.
   actor; unset falls back to the system username. Also use it as the name you
   claim checklist items with (`--owner <you>`).
 - **Tool bugs:** `proj bug "what happened"` (or the MCP `proj_bug` tool)
-  appends to `.proj.bugs` in the project (never committed, `gitignore`d) —
+  appends to `.proj/bugs.log` in the project (never committed, `gitignore`d) —
   auto-recorded with the traceback on unexpected errors too; `proj bug ls`
   lists the reports.
 

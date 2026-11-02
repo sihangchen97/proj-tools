@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `proj` (distribution `proj-tools`, import name `proj`) is a project-governance CLI + stdio MCP
 server: decisions, tasks, plans, changelog, tech debt, incidents, experiments. One generic
-engine; YAML profiles are the schema, SQLite (`.proj.sqlite`) is the source of truth, Markdown
+engine; YAML profiles are the schema, SQLite (`.proj/cache.sqlite`) is the source of truth, Markdown
 is the human/LLM input channel and rendered output.
 
 **This repo is the tool's dev repo, not a proj project.** Never run state-changing `proj`
@@ -63,11 +63,11 @@ Layers (`src/proj/`):
   Docstring documents the profile format.
 - `core/db.py` — SQLite `Db` wrapper (one shared `records` table with a `type` column, plus
   `record_changelog` (with the `actor` column), `items`, and a `relations` table for
-  supersede/related/parent edges), id allocation (`next_id`), and `.proj.lock` read/write (pins
+  supersede/related/parent edges), id allocation (`next_id`), and `.proj/lock.yaml` read/write (pins
   the templates/schema the DB was built from; `proj init` follows an existing lock).
 - `core/fsio.py` — the multi-writer safety layer: `write_atomic` (temp file in the same dir +
   `os.replace`, refuses to clobber a file whose mtime changed mid-command) and `project_lock`
-  (exclusive `fcntl.flock` on `.proj.write-lock`, re-entrant per thread, 10 s wait naming the
+  (exclusive `fcntl.flock` on `.proj/write.lock`, re-entrant per thread, 10 s wait naming the
   holder pid + command).
 - `engine/store.py` — module-level storage functions: md parsing (id marker on line 1, the
   tool-owned head fence `<!-- proj:head:start … -->` … `<!-- proj:head:end -->` with title,
@@ -101,7 +101,7 @@ Layers (`src/proj/`):
   falls back to `$PROJ_HOME` then cwd; every tool takes it). Tools cover the same
   capabilities as the CLI — they are NOT a one-to-one mapping of commands (§9.3);
   write tools hold the project write lock.
-- `bugs.py` — `.proj.bugs` (tool bug reports: append-only plain text, never committed,
+- `bugs.py` — `.proj/bugs.log` (tool bug reports: append-only plain text, never committed,
   O_APPEND writes; auto-records uncaught exceptions with the traceback).
 - `check.py` (invariants: md↔DB, filename↔id, schema↔template, relation consistency),
   `scaffold.py` (`init`), `hooks.py` (pre-commit → `proj check`), `docs.py`
@@ -111,10 +111,10 @@ Key invariants:
 - Sync conflict ownership: `##` section content → md wins; id/title/status/fields/changelog → DB wins.
 - Rendered views and the head fence are never hand-edited; change them via `proj`.
 - Multi-writer: every write command holds the project write lock (`core/fsio.py` `project_lock`,
-  `.proj.write-lock` is gitignored) and all md writes go through `write_atomic` — concurrent
+  `write.lock` is gitignored via `.proj/.gitignore`) and all md writes go through `write_atomic` — concurrent
   writers queue, a crash leaves no half-written file.
 - Every changelog row records the actor (`record_changelog.actor`, from `PROJ_AGENT` / the
-  system username via `config.reporter()`); `.proj.bugs` is append-only and personal.
+  system username via `config.reporter()`); `.proj/bugs.log` is append-only and personal.
 - Bundled profiles live in repo-root `profiles/` (`default/*.yaml`, plus top-level `task.yaml`,
   `changelog.yaml`, `texts.yaml` — the latter holds all human-facing text written into projects).
   A project's own `profiles/<record_type>.yaml` overrides the bundled one.
@@ -144,7 +144,7 @@ design plans are Chinese; the e2e demo project's prose is Chinese.
 
 - The README's id/status tables can lag behind the code — trust `profiles/*.yaml` and
   the module docstrings.
-- Dev stage: no data migrations or backward compatibility for old `.proj.sqlite` files
+- Dev stage: no data migrations or backward compatibility for old `.proj/cache.sqlite` files
   (schema changes bump `SCHEMA_VERSION` and are picked up on a fresh `proj init`).
 - `plans/` (local design docs, e.g. `plans/PLAN.md`), `tobedelete/` (staging area for removed
   files — move rather than delete), `reference/`, `.roo/` are gitignored.
