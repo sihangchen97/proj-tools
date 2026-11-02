@@ -334,6 +334,22 @@ def ch0() -> None:
     out = mcp_call("proj_info")
     assert "decision" in out, out
     REP.ok("proj_info 项目状态（MCP）")
+    # A11: the scaffold-seeded decision starts with Context/Decision/Consequences
+    # only — fill the rest so it is not an empty shell
+    write_sections(md_of("DEC-0001"), {
+        "Decision Drivers": (
+            "- 多个 agent 并发写同一项目不冲突"
+            "\n- 变更可进 git 审计（md 投影）"
+            "\n- 零外部服务依赖"
+        ),
+        "Considered Options": (
+            "### SQLite + md 投影（已选）\n"
+            "Pros: 单文件原子写、md 即人工/LLM 输入通道、编号由 DB 保证\n"
+            "### 纯 markdown + 约定\n"
+            "Cons: 无并发写保护，编号靠扫描，门禁没有单一事实来源"
+        ),
+    })
+    REP.ok("种子决策 DEC-0001 补 Drivers/Options 正文")
 
 
 def ch1() -> None:
@@ -361,6 +377,32 @@ def ch1() -> None:
     write_sections(md_of(D), {
         "Consequences": "训练显存需求低（单卡 A10 即可）；ONNX 链路成熟；"
                         "小缺陷召回率需在实验阶段单独验证。",
+        "Decision Drivers": (
+            "- mAP@0.5 ≥ 0.85（对照现有目检漏检率 ~5%）"
+            "\n- 单帧延迟 < 30 ms（边缘端 A10）"
+            "\n- 团队熟悉训练与 ONNX 链路"
+        ),
+        "Considered Options": (
+            "### YOLOv8n（已选）\n"
+            "Pros: 显存需求低、ONNX 链路成熟、训练快\n"
+            "Cons: 小目标召回待验证\n"
+            "### RetinaNet（见 " + D2 + "，已 Rejected）\n"
+            "Pros: dense 回归对小目标略优\n"
+            "Cons: 显存高、部署链路要重跑、团队无经验"
+        ),
+    })
+    # A11: the rejected alternative also gets a full body — a rejection
+    # without context is exactly what this project should not ship
+    write_sections(md_of(D2), {
+        "Context": "YOLOv8n 的小缺陷（<32px）召回偏低，评估是否引入 dense 回归检测器补足。",
+        "Decision Drivers": "- 边缘端部署成本\n- 与现有 ONNX 链路兼容\n- 团队经验",
+        "Considered Options": (
+            "### RetinaNet\n"
+            "Pros: dense 回归对小目标略优\n"
+            "Cons: 显存需求高、ONNX 链路要重跑、团队无生产经验"
+        ),
+        "Decision": "不引入 RetinaNet；小目标问题先用数据增强解决（见 EXP-0001）。",
+        "Consequences": "小缺陷召回押注 mosaic 实验；若仍不达标再重新评估检测器。",
     })
 
 
@@ -375,6 +417,15 @@ def ch2() -> None:
         "Scope": "8 类缺陷；不含产线整改与复检流程（后续版本）。",
         "Risks & Dependencies": "依赖标注数据量（≥3 万张）与 CUDA 驱动升级（T-000005）。",
     })
+    # A11: fill Milestones (Review is written at plan close — see ch9's
+    # EMPTY_OK exceptions: sections not yet due stay empty on purpose)
+    write_sections(md_of(P), {
+        "Milestones": (
+            "- M1 数据集就绪（T-000001 Done）"
+            "\n- M2 训练收敛（T-000002 Done，val mAP 平台期）"
+            "\n- M3 评估 + 边缘端部署（T-000003 / T-000004 Done）"
+        ),
+    })
     for text in ("mAP@0.5 ≥ 0.85", "单帧延迟 < 30 ms", "漏检率 < 2%"):
         expect_ok(f"Success Criterion: {text}", "#", "item", "add", P, text)
     expect_fail("activate 前 review 被拒（from: Active）", "plan", "review", P)
@@ -385,21 +436,59 @@ def ch3() -> None:
     REP.chapter("第 3 章 拆任务")
     T_DS = _id_of(expect_ok("数据集任务", "Created",
                             "task", "new", "构建数据集（采集/标注/划分）", "-y", "--parent", P))
+    # A11: task bodies (Goal/Steps; Open/Notes only appear when there is a
+    # blocker or a remark — see the ch9 EMPTY_OK exceptions)
+    write_sections(md_of(T_DS), {
+        "Goal": "产出 3 万张、8 类缺陷、可直接喂给 YOLOv8n 训练的数据集，含按板号哈希的划分（P 的 M1）。",
+        "Steps": (
+            "- 产线相机采集原图并按文件哈希去重（INC-0001 之后）"
+            "\n- YOLO 格式标注 8 类缺陷 + 抽检"
+            "\n- 按板号哈希划分 train/val/test = 7/2/1"
+        ),
+    })
     T_PIPE = _id_of(expect_ok("训练管线任务", "Created",
                               "task", "new", "训练管线（数据增强/训练/早停）", "-y", "--parent", P))
+    write_sections(md_of(T_PIPE), {
+        "Goal": "用数据集把 YOLOv8n 训到 val mAP ≥ 0.85，产出可部署 checkpoint（P 的 M2）。",
+        "Steps": (
+            "- 数据增强：mosaic p=0.5（E 的结论）"
+            "\n- 训练 100 epoch、早停 patience=8"
+            "\n- 保存 checkpoint 与训练日志"
+        ),
+    })
     T_EVAL = _id_of(expect_ok("评估脚本任务", "Created",
                               "task", "new", "评估脚本（mAP/延迟/漏检）", "-y"))
+    write_sections(md_of(T_EVAL), {
+        "Goal": "在 test 集评出 mAP@0.5、p99 延迟、漏检率，作为 P 是否达标的判定依据。",
+        "Steps": "- 在 test 集评 mAP@0.5\n- 边缘端实测 p99 延迟\n- 抽检漏检率",
+    })
     T_ONNX = _id_of(expect_ok("ONNX 导出任务", "Created",
                               "task", "new", "导出 ONNX 并部署边缘端", "-y", "--parent", P))
+    write_sections(md_of(T_ONNX), {
+        "Goal": "checkpoint 导出 ONNX 并部署边缘端：模型 ≤ 15 MB、单帧延迟 < 30 ms（P 的 M3）。",
+        "Steps": "- 导出 ONNX（opset 12）\n- 边缘端实测延迟与内存\n- 部署脚本入仓",
+    })
     # standalone task — no parent (a task may stand alone)
     T_CUDA = _id_of(expect_ok("独立任务：升级训练机 CUDA 驱动", "Created",
                               "task", "new", "升级训练机 CUDA 驱动", "-y"))
+    write_sections(md_of(T_CUDA), {
+        "Goal": "训练机 CUDA 驱动升到与 PyTorch 2.x 轮子兼容的版本（T_PIPE 的前置，独立任务无父任务）。",
+        "Steps": "- 确认目标驱动版本\n- 停机窗口升级\n- 重启后 nvidia-smi 验证",
+    })
     # sub-task under the dataset task
     T_QC = _id_of(expect_ok("子任务：标注质检", "Created",
                             "task", "new", "标注质检", "-y", "--parent", T_DS))
+    write_sections(md_of(T_QC), {
+        "Goal": "标注质检：抽检 ≥ 10% 的板、一致率 ≥ 95%，不达标的批退回重标（T_DS 的子任务）。",
+        "Steps": "- 按板号随机抽 10%\n- 双人复核一致率\n- 不达标批退回重标",
+    })
     # related (cross-type, unordered): eval script ↔ baseline decision
     T_REL = _id_of(expect_ok("相关任务：产线抽检对照", "Created",
                              "task", "new", "产线抽检对照", "-y", "-r", D))
+    write_sections(md_of(T_REL), {
+        "Goal": "产线抽检盲测对照：量化模型相对人眼目检的漏检率（与 D 相关，cross-type 边）。",
+        "Steps": "- 抽一批板盲测\n- 人眼 vs 模型双评\n- 汇总漏检率对照",
+    })
     # move: the eval script re-homes under the training pipeline
     expect_ok("评估脚本改挂到训练管线", f"parent → {T_PIPE}",
               "task", "move", T_EVAL, "--parent", T_PIPE)
@@ -497,6 +586,10 @@ def ch5() -> None:
     T_TRT = _id_of(expect_ok("TensorRT 量化任务", "Created",
                              "task", "new", "TensorRT 量化（INT8）", "-y", "--parent", T_PIPE))
     write_sections(md_of(T_TRT), {
+        "Goal": "INT8 量化压边缘端延迟（spike）：精度掉 ≤ 5pt 才保留，否则放弃（T_PIPE 的子任务）。",
+        "Steps": "- 校准集生成\n- INT8 量化\n- 对照 mAP 与延迟",
+    })
+    write_sections(md_of(T_TRT), {
         "Acceptance Criteria": "",  # section exists; items are added via CLI
     }) if "## Acceptance Criteria" in read(md_of(T_TRT)) else None
     expect_ok("TensorRT 量化失败（Failed = 终止，满足父门禁）", "→ Failed",
@@ -543,6 +636,14 @@ def ch6() -> None:
     run("item", "check", f"{I}#002")
     write_sections(md_of(I), {
         "Timeline": "- 2026-10-01 发现指标异常\n- 2026-10-02 定位重复图片\n- 2026-10-03 去重 + 重划",
+        "Actions taken": (
+            "- 按文件哈希去重 1,240 张（sara，2026-10-03）"
+            "\n- 按板号哈希重划 train/val（lin），mAP 回到 0.87 区间"
+        ),
+        "Lessons learned": (
+            "按创建时间去重不可靠：同一次拍摄的文件时间戳相同；"
+            "去重必须按内容哈希，划分必须按板号哈希。"
+        ),
         "Prevention rule": "划分脚本必须按板号哈希分层，CI 加 train/val 重叠率检查（须为 0）。",
     })
     expect_ok("Action Items 全处理 → close", "→ Closed", "incident", "close", I)
@@ -555,6 +656,7 @@ def ch7() -> None:
     write_sections(md_of(DEB), {
         "Location": "configs/yolov8.yaml:anchor_sizes",
         "Reason": "赶 v1 进度，没来得及按数据集统计 anchor，先用默认值。",
+        "Impact": "8 类 anchor 用默认尺寸，小缺陷 mAP 约低 1pt（E 的对照臂受影响）。",
         "Trigger for removal": "v1.1 按缺陷尺寸重算 anchor 时。",
     })
     expect_ok("debt open", "→ Open", "debt", "open", DEB)
@@ -564,6 +666,12 @@ def ch7() -> None:
                 "debt", "repay", DEB)
     DEB2 = _id_of(expect_ok("debt：固定数据增强随机种子", "Created",
                             "debt", "new", "数据增强随机种子固定为 42", "-y"))
+    write_sections(md_of(DEB2), {
+        "Location": "train/configs/aug.py:seed = 42",
+        "Reason": "v1 期间让 mosaic 实验可复现（E 需要同种子对照）。",
+        "Impact": "增强分布固定在同一份随机抽取，无法多抽几次看方差。",
+        "Trigger for removal": "v2 放开随机种子时。",
+    })
     run("debt", "open", DEB2)
     run("debt", "progress", DEB2)
     expect_ok("Repayment Plan 步骤", "#001", "item", "add", DEB2, "恢复随机种子")
@@ -619,10 +727,67 @@ def ch8() -> None:
     # a second, doomed experiment: 4-bit quantization — abandoned (any → Abandoned)
     E2 = _id_of(expect_ok("第二实验：4-bit 量化", "Created",
                           "experiment", "new", "4-bit 量化压缩", "-y"))
+    write_sections(md_of(E2), {
+        "Hypothesis": "4-bit 量化可再砍一半边缘端内存，精度损失可接受（< 3pt）。",
+        "Setup": "同一 checkpoint，FP16 vs 4-bit 两臂，test 集对照 mAP 与边缘端内存。",
+        "Results": "4-bit：mAP 0.871 → 0.78（-9pt）；内存 12MB → 6MB。",
+    })
     run("experiment", "propose", E2)
     run("experiment", "run", E2)
     expect_ok("abandon（放弃，Abandoned 终止）", "→ Abandoned",
               "experiment", "abandon", E2, "-m", "Deprecated: 4-bit 精度掉 9 点，不可用")
+
+
+# ---- ch9: 演示项目收尾 — 没有空的 ## 正文节（A11, §18.2）-----------------------
+
+
+def ch9() -> None:
+    REP.chapter("第 9 章 收尾：演示项目没有空的 ## 正文节")
+    # A11: sections the story has deliberately not reached yet stay empty —
+    # listed by NAME (each exists on exactly one record type): the task's
+    # Open/Notes only carry a blocker or a remark, the plan's Review only at
+    # M3 (plan still Active). These are the PLAN §18.2 "explicit exceptions".
+    SECTION_EMPTY_OK = {"Open", "Notes", "Review"}
+    # abandoned 实验没有结论可写（原因走 -m，不写 Conclusion 节）
+    PAIR_EMPTY_OK = {("EXP-0002", "Analysis"), ("EXP-0002", "Conclusion")}
+    # items/渲染拥有的节（由 DB 生成，不是"正文"，不在本断言范围内）
+    ITEMS_OR_RENDER = {"Confirmation", "Success Criteria", "Acceptance Criteria",
+                       "Repayment Plan", "Action Items"}
+    from proj.engine import store as rec
+    reg = rec.load_registry(None)
+
+    def body_of(t: str, name: str) -> str:
+        # the body of the `## name` section, up to the next `##` or EOF
+        out: list[str] = []
+        on = False
+        for line in t.splitlines():
+            if line.startswith("## "):
+                on = line[3:].strip() == name
+                continue
+            if on:
+                out.append(line)
+        return "\n".join(out).strip()
+
+    empty: list[str] = []
+    n_files = 0
+    for name, spec in reg.items():
+        if name == "changelog":
+            continue  # 渲染视图（CHANGELOG.md），不是记录文件
+        text_secs = [sec.name for sec in spec.sections if sec.kind == "text"]
+        for p in sorted(SANDBOX.glob(f"{spec.dir}/*.md")):
+            n_files += 1
+            t = p.read_text(encoding="utf-8")
+            m = re.search(r"<!-- proj:\S+ ([A-Z]+-\d+) -->", t)
+            rid = m.group(1) if m else p.name
+            for sec_name in text_secs:
+                if sec_name in ITEMS_OR_RENDER:
+                    continue
+                if not body_of(t, sec_name) and sec_name not in SECTION_EMPTY_OK \
+                    and (rid, sec_name) not in PAIR_EMPTY_OK:
+                    empty.append(f"{rid} {sec_name}")
+    assert not empty, f"空正文节（应补正文或列入 EMPTY_OK）: {empty}"
+    REP.ok(f"演示项目 {n_files} 条记录文件：无空 ## 正文节"
+           f"（例外 {sorted(SECTION_EMPTY_OK)}，items/渲染节除外）")
 
 
 # ---- A12: render the reference scripts/e2e.sh (PLAN §18.3) ----------------------
@@ -778,7 +943,7 @@ def main() -> int:
     print(f"e2e: PCB 缺陷检测模型 v1  ({'子进程模式' if SUBPROCESS else '进程内模式'}，沙盒 {where})")
     try:
         reset_sandbox()
-        for ch in (ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8):
+        for ch in (ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8, ch9):
             ch()
         rc = _summary()
         # A12: refresh the reference e2e.sh after every run (pass OR fail)

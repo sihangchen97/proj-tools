@@ -28,6 +28,22 @@ proj hooks install
 
 # ── 第 0 章 开局：新建 PCB 缺陷检测项目仓库 ──
 # (MCP) proj_info   — 参考脚本只跑 CLI；MCP 调用见 e2e.py
+# 编辑 docs/decisions/DEC-0001-record-architecture-decisions.md 的 ## Decision Drivers 节，再 proj sync 回收
+cat <<'EOF' | set_section docs/decisions/DEC-0001-record-architecture-decisions.md 'Decision Drivers'
+- 多个 agent 并发写同一项目不冲突
+- 变更可进 git 审计（md 投影）
+- 零外部服务依赖
+EOF
+proj sync
+# 编辑 docs/decisions/DEC-0001-record-architecture-decisions.md 的 ## Considered Options 节，再 proj sync 回收
+cat <<'EOF' | set_section docs/decisions/DEC-0001-record-architecture-decisions.md 'Considered Options'
+### SQLite + md 投影（已选）
+Pros: 单文件原子写、md 即人工/LLM 输入通道、编号由 DB 保证
+### 纯 markdown + 约定
+Cons: 无并发写保护，编号靠扫描，门禁没有单一事实来源
+EOF
+proj sync
+proj sync
 
 # ── 第 1 章 选型：基线检测器选型 ──
 proj decision new '基线检测器选 YOLOv8' -y  # decision YOLOv8 新建
@@ -54,6 +70,53 @@ cat <<'EOF' | set_section 'docs/decisions/DEC-0002-基线检测器选-yolov8.md'
 训练显存需求低（单卡 A10 即可）；ONNX 链路成熟；小缺陷召回率需在实验阶段单独验证。
 EOF
 proj sync
+# 编辑 docs/decisions/DEC-0002-基线检测器选-yolov8.md 的 ## Decision Drivers 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/decisions/DEC-0002-基线检测器选-yolov8.md' 'Decision Drivers'
+- mAP@0.5 ≥ 0.85（对照现有目检漏检率 ~5%）
+- 单帧延迟 < 30 ms（边缘端 A10）
+- 团队熟悉训练与 ONNX 链路
+EOF
+proj sync
+# 编辑 docs/decisions/DEC-0002-基线检测器选-yolov8.md 的 ## Considered Options 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/decisions/DEC-0002-基线检测器选-yolov8.md' 'Considered Options'
+### YOLOv8n（已选）
+Pros: 显存需求低、ONNX 链路成熟、训练快
+Cons: 小目标召回待验证
+### RetinaNet（见 DEC-0003，已 Rejected）
+Pros: dense 回归对小目标略优
+Cons: 显存高、部署链路要重跑、团队无经验
+EOF
+proj sync
+proj sync
+# 编辑 docs/decisions/DEC-0003-备选-retinanet.md 的 ## Context 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/decisions/DEC-0003-备选-retinanet.md' Context
+YOLOv8n 的小缺陷（<32px）召回偏低，评估是否引入 dense 回归检测器补足。
+EOF
+proj sync
+# 编辑 docs/decisions/DEC-0003-备选-retinanet.md 的 ## Decision Drivers 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/decisions/DEC-0003-备选-retinanet.md' 'Decision Drivers'
+- 边缘端部署成本
+- 与现有 ONNX 链路兼容
+- 团队经验
+EOF
+proj sync
+# 编辑 docs/decisions/DEC-0003-备选-retinanet.md 的 ## Considered Options 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/decisions/DEC-0003-备选-retinanet.md' 'Considered Options'
+### RetinaNet
+Pros: dense 回归对小目标略优
+Cons: 显存需求高、ONNX 链路要重跑、团队无生产经验
+EOF
+proj sync
+# 编辑 docs/decisions/DEC-0003-备选-retinanet.md 的 ## Decision 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/decisions/DEC-0003-备选-retinanet.md' Decision
+不引入 RetinaNet；小目标问题先用数据增强解决（见 EXP-0001）。
+EOF
+proj sync
+# 编辑 docs/decisions/DEC-0003-备选-retinanet.md 的 ## Consequences 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/decisions/DEC-0003-备选-retinanet.md' Consequences
+小缺陷召回押注 mosaic 实验；若仍不达标再重新评估检测器。
+EOF
+proj sync
 proj sync
 
 # ── 第 2 章 立项：缺陷检测 v1 上线计划 ──
@@ -74,6 +137,14 @@ cat <<'EOF' | set_section 'docs/plans/PLN-0001-缺陷检测-v1-上线.md' 'Risks
 EOF
 proj sync
 proj sync
+# 编辑 docs/plans/PLN-0001-缺陷检测-v1-上线.md 的 ## Milestones 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/plans/PLN-0001-缺陷检测-v1-上线.md' Milestones
+- M1 数据集就绪（T-000001 Done）
+- M2 训练收敛（T-000002 Done，val mAP 平台期）
+- M3 评估 + 边缘端部署（T-000003 / T-000004 Done）
+EOF
+proj sync
+proj sync
 proj item add PLN-0001 'mAP@0.5 ≥ 0.85'  # Success Criterion: mAP@0.5 ≥ 0.85
 proj item add PLN-0001 '单帧延迟 < 30 ms'  # Success Criterion: 单帧延迟 < 30 ms
 proj item add PLN-0001 '漏检率 < 2%'  # Success Criterion: 漏检率 < 2%
@@ -82,12 +153,103 @@ proj plan activate PLN-0001  # plan activate
 
 # ── 第 3 章 拆任务 ──
 proj task new '构建数据集（采集/标注/划分）' -y --parent PLN-0001  # 数据集任务
+# 编辑 docs/tasks/T-000001-构建数据集-采集-标注-划分.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000001-构建数据集-采集-标注-划分.md' Goal
+产出 3 万张、8 类缺陷、可直接喂给 YOLOv8n 训练的数据集，含按板号哈希的划分（P 的 M1）。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000001-构建数据集-采集-标注-划分.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000001-构建数据集-采集-标注-划分.md' Steps
+- 产线相机采集原图并按文件哈希去重（INC-0001 之后）
+- YOLO 格式标注 8 类缺陷 + 抽检
+- 按板号哈希划分 train/val/test = 7/2/1
+EOF
+proj sync
+proj sync
 proj task new '训练管线（数据增强/训练/早停）' -y --parent PLN-0001  # 训练管线任务
+# 编辑 docs/tasks/T-000002-训练管线-数据增强-训练-早停.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000002-训练管线-数据增强-训练-早停.md' Goal
+用数据集把 YOLOv8n 训到 val mAP ≥ 0.85，产出可部署 checkpoint（P 的 M2）。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000002-训练管线-数据增强-训练-早停.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000002-训练管线-数据增强-训练-早停.md' Steps
+- 数据增强：mosaic p=0.5（E 的结论）
+- 训练 100 epoch、早停 patience=8
+- 保存 checkpoint 与训练日志
+EOF
+proj sync
+proj sync
 proj task new '评估脚本（mAP/延迟/漏检）' -y  # 评估脚本任务
+# 编辑 docs/tasks/T-000003-评估脚本-map-延迟-漏检.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000003-评估脚本-map-延迟-漏检.md' Goal
+在 test 集评出 mAP@0.5、p99 延迟、漏检率，作为 P 是否达标的判定依据。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000003-评估脚本-map-延迟-漏检.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000003-评估脚本-map-延迟-漏检.md' Steps
+- 在 test 集评 mAP@0.5
+- 边缘端实测 p99 延迟
+- 抽检漏检率
+EOF
+proj sync
+proj sync
 proj task new '导出 ONNX 并部署边缘端' -y --parent PLN-0001  # ONNX 导出任务
+# 编辑 docs/tasks/T-000004-导出-onnx-并部署边缘端.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000004-导出-onnx-并部署边缘端.md' Goal
+checkpoint 导出 ONNX 并部署边缘端：模型 ≤ 15 MB、单帧延迟 < 30 ms（P 的 M3）。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000004-导出-onnx-并部署边缘端.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000004-导出-onnx-并部署边缘端.md' Steps
+- 导出 ONNX（opset 12）
+- 边缘端实测延迟与内存
+- 部署脚本入仓
+EOF
+proj sync
+proj sync
 proj task new '升级训练机 CUDA 驱动' -y  # 独立任务：升级训练机 CUDA 驱动
+# 编辑 docs/tasks/T-000005-升级训练机-cuda-驱动.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000005-升级训练机-cuda-驱动.md' Goal
+训练机 CUDA 驱动升到与 PyTorch 2.x 轮子兼容的版本（T_PIPE 的前置，独立任务无父任务）。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000005-升级训练机-cuda-驱动.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000005-升级训练机-cuda-驱动.md' Steps
+- 确认目标驱动版本
+- 停机窗口升级
+- 重启后 nvidia-smi 验证
+EOF
+proj sync
+proj sync
 proj task new '标注质检' -y --parent T-000001  # 子任务：标注质检
+# 编辑 docs/tasks/T-000006-标注质检.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000006-标注质检.md' Goal
+标注质检：抽检 ≥ 10% 的板、一致率 ≥ 95%，不达标的批退回重标（T_DS 的子任务）。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000006-标注质检.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000006-标注质检.md' Steps
+- 按板号随机抽 10%
+- 双人复核一致率
+- 不达标批退回重标
+EOF
+proj sync
+proj sync
 proj task new '产线抽检对照' -y -r DEC-0002  # 相关任务：产线抽检对照
+# 编辑 docs/tasks/T-000007-产线抽检对照.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000007-产线抽检对照.md' Goal
+产线抽检盲测对照：量化模型相对人眼目检的漏检率（与 D 相关，cross-type 边）。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000007-产线抽检对照.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000007-产线抽检对照.md' Steps
+- 抽一批板盲测
+- 人眼 vs 模型双评
+- 汇总漏检率对照
+EOF
+proj sync
+proj sync
 proj task move T-000003 --parent T-000002  # 评估脚本改挂到训练管线
 proj task update T-000004 -t 'ONNX 导出 + TensorRT 部署 (edge)'  # -t 改名（id 不变）
 proj sync
@@ -125,6 +287,19 @@ proj item add T-000002 '训练收敛：val mAP 平台期 ≥ 5 epoch'  # 训练�
 proj task done T-000002 && echo "意外成功" || echo "（按预期被拒绝）"  # done 被拒：仍有未处理 item
 proj task done T-000002 && echo "意外成功" || echo "（按预期被拒绝）"  # 父任务被拒：子任务 T_EVAL 未结束
 proj task new 'TensorRT 量化（INT8）' -y --parent T-000002  # TensorRT 量化任务
+# 编辑 docs/tasks/T-000008-tensorrt-量化-int8.md 的 ## Goal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000008-tensorrt-量化-int8.md' Goal
+INT8 量化压边缘端延迟（spike）：精度掉 ≤ 5pt 才保留，否则放弃（T_PIPE 的子任务）。
+EOF
+proj sync
+# 编辑 docs/tasks/T-000008-tensorrt-量化-int8.md 的 ## Steps 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/tasks/T-000008-tensorrt-量化-int8.md' Steps
+- 校准集生成
+- INT8 量化
+- 对照 mAP 与延迟
+EOF
+proj sync
+proj sync
 proj sync
 proj task fail T-000008 -m 'Changed: INT8 量化精度掉 6 点，放弃'  # TensorRT 量化失败（Failed = 终止，满足父门禁）
 proj task done T-000003 -m 'Changed: mAP 0.87 / p99 38ms（延迟超标，见 INC-0001）'  # 评估脚本完成
@@ -168,6 +343,17 @@ cat <<'EOF' | set_section 'docs/incidents/INC-0001-训练集与验证集图片�
 - 2026-10-03 去重 + 重划
 EOF
 proj sync
+# 编辑 docs/incidents/INC-0001-训练集与验证集图片重复.md 的 ## Actions taken 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/incidents/INC-0001-训练集与验证集图片重复.md' 'Actions taken'
+- 按文件哈希去重 1,240 张（sara，2026-10-03）
+- 按板号哈希重划 train/val（lin），mAP 回到 0.87 区间
+EOF
+proj sync
+# 编辑 docs/incidents/INC-0001-训练集与验证集图片重复.md 的 ## Lessons learned 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/incidents/INC-0001-训练集与验证集图片重复.md' 'Lessons learned'
+按创建时间去重不可靠：同一次拍摄的文件时间戳相同；去重必须按内容哈希，划分必须按板号哈希。
+EOF
+proj sync
 # 编辑 docs/incidents/INC-0001-训练集与验证集图片重复.md 的 ## Prevention rule 节，再 proj sync 回收
 cat <<'EOF' | set_section 'docs/incidents/INC-0001-训练集与验证集图片重复.md' 'Prevention rule'
 划分脚本必须按板号哈希分层，CI 加 train/val 重叠率检查（须为 0）。
@@ -188,6 +374,11 @@ cat <<'EOF' | set_section 'docs/debts/DEB-0001-anchor-尺寸硬编码在配置�
 赶 v1 进度，没来得及按数据集统计 anchor，先用默认值。
 EOF
 proj sync
+# 编辑 docs/debts/DEB-0001-anchor-尺寸硬编码在配置文件.md 的 ## Impact 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/debts/DEB-0001-anchor-尺寸硬编码在配置文件.md' Impact
+8 类 anchor 用默认尺寸，小缺陷 mAP 约低 1pt（E 的对照臂受影响）。
+EOF
+proj sync
 # 编辑 docs/debts/DEB-0001-anchor-尺寸硬编码在配置文件.md 的 ## Trigger for removal 节，再 proj sync 回收
 cat <<'EOF' | set_section 'docs/debts/DEB-0001-anchor-尺寸硬编码在配置文件.md' 'Trigger for removal'
 v1.1 按缺陷尺寸重算 anchor 时。
@@ -198,6 +389,27 @@ proj debt open DEB-0001  # debt open
 proj item add DEB-0001 '参数化 anchor 配置（读数据集统计）'  # Repaid 需要门禁：先留一个未完成步骤
 proj debt repay DEB-0001 && echo "意外成功" || echo "（按预期被拒绝）"  # repay 被拒：Repayment Plan 未全部处理（gates.items）
 proj debt new '数据增强随机种子固定为 42' -y  # debt：固定数据增强随机种子
+# 编辑 docs/debts/DEB-0002-数据增强随机种子固定为-42.md 的 ## Location 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/debts/DEB-0002-数据增强随机种子固定为-42.md' Location
+train/configs/aug.py:seed = 42
+EOF
+proj sync
+# 编辑 docs/debts/DEB-0002-数据增强随机种子固定为-42.md 的 ## Reason 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/debts/DEB-0002-数据增强随机种子固定为-42.md' Reason
+v1 期间让 mosaic 实验可复现（E 需要同种子对照）。
+EOF
+proj sync
+# 编辑 docs/debts/DEB-0002-数据增强随机种子固定为-42.md 的 ## Impact 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/debts/DEB-0002-数据增强随机种子固定为-42.md' Impact
+增强分布固定在同一份随机抽取，无法多抽几次看方差。
+EOF
+proj sync
+# 编辑 docs/debts/DEB-0002-数据增强随机种子固定为-42.md 的 ## Trigger for removal 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/debts/DEB-0002-数据增强随机种子固定为-42.md' 'Trigger for removal'
+v2 放开随机种子时。
+EOF
+proj sync
+proj sync
 proj debt open DEB-0002
 proj debt progress DEB-0002
 proj item add DEB-0002 '恢复随机种子'  # Repayment Plan 步骤
@@ -248,8 +460,26 @@ proj sync
 proj sync
 proj experiment close EXP-0001 -m 'Changed: 结论定稿，mosaic 进入管线'  # criterion 全 evaluated → close
 proj experiment new '4-bit 量化压缩' -y  # 第二实验：4-bit 量化
+# 编辑 docs/experiments/EXP-0002-4-bit-量化压缩.md 的 ## Hypothesis 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/experiments/EXP-0002-4-bit-量化压缩.md' Hypothesis
+4-bit 量化可再砍一半边缘端内存，精度损失可接受（< 3pt）。
+EOF
+proj sync
+# 编辑 docs/experiments/EXP-0002-4-bit-量化压缩.md 的 ## Setup 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/experiments/EXP-0002-4-bit-量化压缩.md' Setup
+同一 checkpoint，FP16 vs 4-bit 两臂，test 集对照 mAP 与边缘端内存。
+EOF
+proj sync
+# 编辑 docs/experiments/EXP-0002-4-bit-量化压缩.md 的 ## Results 节，再 proj sync 回收
+cat <<'EOF' | set_section 'docs/experiments/EXP-0002-4-bit-量化压缩.md' Results
+4-bit：mAP 0.871 → 0.78（-9pt）；内存 12MB → 6MB。
+EOF
+proj sync
+proj sync
 proj experiment propose EXP-0002
 proj experiment run EXP-0002
 proj experiment abandon EXP-0002 -m 'Deprecated: 4-bit 精度掉 9 点，不可用'  # abandon（放弃，Abandoned 终止）
+
+# ── 第 9 章 收尾：演示项目没有空的 ## 正文节 ──
 
 echo "场景完成，项目在: $dir"
