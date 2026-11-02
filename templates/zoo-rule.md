@@ -81,10 +81,10 @@ binary to merge.
   rendered md `merge=proj-render` keep-ours), and the keep-ours merge driver.
 - **After a merge / branch checkout / rebase you do nothing by hand**: the
   post-* hook replays the merged log (deterministic — both clones converge) and
-  re-renders. If replay renumbered an id it reports the rename — follow the note.
+  re-renders. If replay renumbered an id, update your references to the new one.
 - **Renumbering, never a lost write**: if two of you claim the next id, replay
-  keeps the first and moves the later to the next free number; the sync output
-  tells you which reference to update.
+  keeps the first and moves the later to the next free number — nothing is lost;
+  the id stays stable, its number follows the replay.
 - **A merge can leave business-rule drift** (e.g. a task `Done` whose referencing
   item is still open — replay runs no business logic). `proj check` flags it and
   prints the fixing command; **run that command to emit a normal event** — never

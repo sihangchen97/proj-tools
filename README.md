@@ -235,8 +235,9 @@ What it installs (and why it works without conflicts):
 
 - **Renumbering, never a lost write.** If two people both claim the next id
   (e.g. both create `T-000003`), replay keeps the first and renumbers the
-  later to the next free number, then *reports the rename* in the sync output —
-  follow the note to update your references.
+  later to the next free number — deterministically (a total order), with
+  nothing lost. Update your references to the new number (the id stays stable;
+  its number follows the replay).
 - **Field conflicts survive, deterministically.** Both sides' edits to a field
   are kept; the replay's total order (not file order) decides the winner.
 - **Business-rule drift is reported, not auto-fixed.** A merge can leave e.g. a
