@@ -228,8 +228,12 @@ What it installs (and why it works without conflicts):
   anyway, so the "lose the other side" conflict is harmless.
 - **`pre-commit`** hook → `proj check` (invariants; refuse to push a broken state).
 - **`post-merge` / `post-checkout` / `post-rewrite`** hooks → `proj sync --quiet`:
-  replay the merged event log into the cache and re-render. After a merge you do
-  nothing by hand — the replay is deterministic, so both clones converge.
+  replay the merged event log into the cache and re-render. The replay is
+  deterministic, so both clones converge. **One manual step remains**: a merge
+  can re-render new or renamed md files (e.g. a renumbered record leaves a
+  *new* file; its stale old file is deleted) — `git status` shows them
+  uncommitted, so **commit them after the merge**: `git add -A && git commit`
+  (the hook prints this reminder when uncommitted re-rendered files exist).
 
 **What the replay guarantees (P2):**
 

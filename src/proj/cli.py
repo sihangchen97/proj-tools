@@ -426,6 +426,26 @@ def init(profiles: list[str] = typer.Option(
         typer.echo("Nothing to create — everything already exists.")
 
 
+def _uncommitted_rerender_reminder(cfg: ProjConfig) -> str | None:
+    """R5: a merge can re-render NEW or RENAMED md (a renumbered record leaves
+    a new file; its stale old file is deleted) — those are uncommitted and the
+    user does not know they must commit again. Only the post-merge / checkout /
+    rewrite hooks reach `sync --rerender` (PROJ_GIT_HOOK=1); outside a hook or
+    when the tree is clean this says nothing."""
+    if not os.environ.get("PROJ_GIT_HOOK"):
+        return None
+    out = subprocess.run(["git", "-C", str(cfg.root), "status", "--porcelain"],
+                        check=False, capture_output=True, text=True)
+    dirty = [ln[3:].strip() for ln in out.stdout.splitlines()
+             if ln.startswith("??") or (len(ln) > 3 and ln[1] in "MADRC")]
+    if not dirty:
+        return None
+    return ("uncommitted re-rendered file(s) after the merge: "
+            + ", ".join(dirty[:5])
+            + ("…" if len(dirty) > 5 else "")
+            + " — commit them: git add -A && git commit")
+
+
 def _replay_notices(cfg: ProjConfig) -> list[str]:
     """C4: print and CONSUME the merge-surfaced notifications a full rebuild
     or incremental apply stored in meta (ev:notifications) — renumbering (G2),
@@ -446,8 +466,18 @@ def _replay_notices(cfg: ProjConfig) -> list[str]:
                 lines.append(f"renumbered item {r['record']} #{r['proposed']} "
                              f"→ #{r['actual']} (the number was taken — update your references)")
             else:  # record renumbering (G2)
-                lines.append(f"renumbered {r['proposed']} → {r['actual']} "
-                             f"(the id was taken by another record — update your references)")
+                # R4: name BOTH records — both clones print this notice, so the
+                # bare "T-000001 → T-000002" reads as "MY record was changed".
+                # Titles come from the (just-rebuilt) cache, looked up here.
+                def _title(rid: str) -> str:
+                    row = conn.execute(
+                        "SELECT title FROM records WHERE id=?", (rid,)).fetchone()
+                    return row["title"] if row and row["title"] else ""
+                moved = _title(r["actual"]) or r["actual"]
+                holder = _title(r["proposed"]) or r["proposed"]
+                lines.append(f"renumbered \"{moved}\" {r['proposed']} → "
+                             f"{r['actual']} (its id was already taken by \"{holder}\") — "
+                             f"references updated; commit the re-rendered files")
         for o in n.get("overwrites", []):
             lines.append(f"overwritten {o['record']}.{o['field']}: kept "
                          f"{o['kept_by']}'s value, dropped {o['overwritten_by']}'s (LWW)")
@@ -492,6 +522,9 @@ def sync(files: list[Path] = typer.Argument(
         typer.echo(f"OK — {len(written)} file(s) re-rendered")
         for line in _replay_notices(cfg):
             typer.echo(f"note: {line}")
+        rem = _uncommitted_rerender_reminder(cfg)
+        if rem:
+            typer.echo(f"note: {rem}")
         return
     try:
         problems, notes = rec.sync(cfg, list(files) if files else None)
