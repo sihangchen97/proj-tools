@@ -6,18 +6,19 @@ numbered: 4
 # 有子任务就在 head 下渲染任务树（任意深度、全展开）；WIP.md 的成员自动
 # 推导：plan 进入 wip.enter 状态（Active）即入列，退出即移除，无需注册
 # 无 features:（supersede 是纯 relation，所有类型通用）
-# 门禁（由 Record.validate_transition 统一实现）：
-# gates.tasks — 进入 Pending Review / Shelved / Archived 前，整棵后代任务树必须
-# 处于终止状态（Done/Failed）；Shelved/Archived 是 done 状态（done 即终止）
-# gates.items — 进入 Archived 前，Success Criteria 每条都必须已评估（met/missed）；
-# Shelved（暂停）故意不设 item 门禁——暂停不要求清单处理完
-gates:
-  tasks: [Pending Review, Shelved, Archived]
-# items: Success Criteria 节的结构化清单；评审时逐条 set met/missed 并留证据
+# K2：plan 不再当 task 的 parent（parent 只 task→task）、不再有 Tasks 块；
+# plan 的工作把关改走 Work 清单（item → task 引用，P3 自动同步：task Done →
+# item done；引用的 task 未结束时 item 不能手动关闭）
+# 清单门禁：进入 Archived 前 Work 与 Success Criteria 两条清单都必须 closed
 items:
-  - section: Success Criteria
+  - section: Work
+    noun: item
+    fields: [owner, due]
+    wip: true
     gate: [Archived]
+  - section: Success Criteria
     noun: criterion
+    gate: [Archived]
 # 状态机 verbs（from 是具体状态，非 Any）：每个状态都有进入它的动词
 wip:
   enter: [Active]
@@ -53,6 +54,15 @@ sections:
       assumes it). Note fixed constraints: deadline, budget, people, systems
       that must not change. Changing scope after activation: write the change
       and the date here and log it with `proj plan update ID -c "..."`.
+  - name: Work
+    hint: >-
+      The deliverables, one per line as an item: `- <what> (→ T-xxxxxx)` —
+      reference the task that does it with `proj item add PLN-xxxx "<what>"
+      --task T-xxxxxx`; the tool links it and closes the item automatically
+      when the task is Done (a task in Failed marks the item failed; move the
+      task back to a running status and the item reopens). owner/due: `· owner:
+      x · due: YYYY-MM-DD`. This is what a plan's `archive` gates on (all work
+      done), and where the WIP.md entry shows the plan's in-progress items.
   - name: Success Criteria
     hint: >-
       Measurable conditions that decide at review time whether the goal was
@@ -61,13 +71,6 @@ sections:
       States: `[ ]` pending, `[x] ✅` met, `[x] ❌` missed. At review,
       evaluate each one with `proj item set PLN-xxxx#n met|missed --note
       <evidence>`; `proj plan archive` is refused while any is still pending.
-  - name: Milestones
-    hint: >-
-      The intermediate checkpoints in order, as plain bullets: `- <date or
-      week>: <observable result> (T-xxxxxx, T-yyyyyy)` (e.g. "- W2: schema
-      migrated in staging (T-000004)"). A milestone is a checkpoint, not work:
-      the work behind it lives in tasks (see the Tasks block), referenced by id.
-      Mark slips inline ("(slipped to W4: reason)") rather than deleting.
   - name: Risks & Dependencies
     hint: >-
       What could make the plan late or fail, as bullets: `- Risk: <what> —

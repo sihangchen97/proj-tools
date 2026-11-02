@@ -24,9 +24,9 @@ def _record_section_md(cfg: ProjConfig, spec, row: dict) -> str:
     return raw.get(spec.primary_items.section.lower(), "") or ""
 
 
-def _load_state(db, spec, row: dict) -> items.ItemsState:
-    state = items.load(db, row["id"], spec)
-    state.intro = items._intro_of(spec, row)
+def _load_state(db, row: dict, it) -> items.ItemsState:
+    state = items.load(db, row["id"], it)
+    state.intro = items._intro_of(it, row)
     return state
 
 
@@ -68,18 +68,19 @@ class _Ctx:
         """Commit (one changelog), re-render the record and views, and return
         the notes (`note: …` lines — renumbering moves, promote, …) followed by
         the fresh item list."""
-        notes = items.commit(self.db, self.spec, self.row, self.state, new, notes)
+        notes = items.commit(self.db, self.spec, self.row, self.state, new, notes, it=self.it)
         # R3: render on the SAME connection — it reads the (still uncommitted)
         # item write; a fresh connection would not see it under WAL
         rec.render_all(self.cfg, db=self.db)
         row = self.db.get(self.spec, self.row["id"])
-        state = _load_state(self.db, self.spec, row)
+        state = _load_state(self.db, row, self.it)
         listing = items.render_section(state, self.it)
         return "\n".join([*(f"note: {n}" for n in notes), listing]).strip("\n")
 
 
 @contextmanager
-def _editing(cfg: ProjConfig, ref: str, need_item: bool):
+def _editing(cfg: ProjConfig, ref: str, need_item: bool,
+             section: str | None = None, task: str = ""):
     """The whole op flow (plans/items-design.md §7): resolve ref → refuse on
     unsynced md → yield _Ctx → (caller computes new state) → ctx.save re-renders.
     S.2: the whole op (incl. the save + re-render) holds the project write lock."""
@@ -87,8 +88,27 @@ def _editing(cfg: ProjConfig, ref: str, need_item: bool):
         spec, row, no = _parse_ref(cfg, ref, need_item)
         rec.ensure_synced(cfg)  # A1: unsynced edits are ingested, never refused
         db = rec.open_db(cfg)
+        it = spec.primary_items
+        if need_item and no:
+            # the item is addressed by number: find the checklist that carries
+            # it (P1: a record may have several; the number is record-unique)
+            for x in spec.items:
+                st = items.load(db, row["id"], x)
+                if st.by_no(no) is not None:
+                    it = x
+                    break
+        elif section:  # a specific checklist (P1: a record may have several)
+            if it is None or all(x.section != section for x in spec.items):
+                raise items.ItemsError(
+                    f"no checklist named {section!r} on {row['id']} "
+                    f"(has: {', '.join(x.section for x in spec.items)})")
+            it = next(x for x in spec.items if x.section == section)
+        elif task and spec.wip_items is not None:
+            # a new item that references a task belongs to the record's WIP
+            # checklist (the one that shows in WIP.md / gates on archive)
+            it = spec.wip_items
         try:
-            yield _Ctx(cfg, spec, db, row, spec.primary_items, _load_state(db, spec, row), no)
+            yield _Ctx(cfg, spec, db, row, it, _load_state(db, row, it), no)
         finally:
             db.close()
 
@@ -132,8 +152,8 @@ def _parse_after(ctx: _Ctx, s: str) -> str:
 def add(cfg: ProjConfig, ref: str, text: str, group: str | None = None,
         after: str | None = None, state: str | None = None,
         note: str = "", owner: str = "", due: str = "",
-        task: str = "") -> str:
-    with _editing(cfg, ref, need_item=False) as c:
+        task: str = "", section: str | None = None) -> str:
+    with _editing(cfg, ref, need_item=False, section=section, task=task) as c:
         after_no = _parse_after(c, after) if after is not None else None
         _check_task_ref(c, task)  # K3/P5: the ref must be an existing task
         new, notes = items.add(c.state, c.it, text, group=group, after=after_no,
@@ -143,28 +163,29 @@ def add(cfg: ProjConfig, ref: str, text: str, group: str | None = None,
 
 
 def set_state(cfg: ProjConfig, ref: str, state_name: str, note: str | None = None,
-              commit: str = "") -> str:
-    with _editing(cfg, ref, need_item=True) as c:
+              commit: str = "", section: str | None = None) -> str:
+    with _editing(cfg, ref, need_item=True, section=section) as c:
         new, notes = items.set_state(c.state, c.it, c.no, state_name, note, commit)
         return c.save(new, notes)
 
 
-def check(cfg: ProjConfig, ref: str, note: str | None = None, commit: str = "") -> str:
-    with _editing(cfg, ref, need_item=True) as c:
+def check(cfg: ProjConfig, ref: str, note: str | None = None, commit: str = "",
+          section: str | None = None) -> str:
+    with _editing(cfg, ref, need_item=True, section=section) as c:
         new, notes = items.set_state(c.state, c.it, c.no, items.DONE, note, commit)
         return c.save(new, notes)
 
 
-def uncheck(cfg: ProjConfig, ref: str) -> str:
-    with _editing(cfg, ref, need_item=True) as c:
+def uncheck(cfg: ProjConfig, ref: str, section: str | None = None) -> str:
+    with _editing(cfg, ref, need_item=True, section=section) as c:
         new, notes = items.set_state(c.state, c.it, c.no, items.OPEN)
         return c.save(new, notes)
 
 
 def edit(cfg: ProjConfig, ref: str, text: str | None = None, note: str | None = None,
          owner: str | None = None, due: str | None = None, task: str | None = None,
-         reassign: bool = False) -> str:
-    with _editing(cfg, ref, need_item=True) as c:
+         reassign: bool = False, section: str | None = None) -> str:
+    with _editing(cfg, ref, need_item=True, section=section) as c:
         if task:
             _check_task_ref(c, task)  # K3/P5: the new ref must be an existing task
         # S.3: handing an item to a DIFFERENT owner (or clearing the owner) is
@@ -282,28 +303,30 @@ def ls_rows(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
         grp = group.upper() if group else None
 
         def scan(spec, row):
-            if spec.primary_items is None:
+            if not spec.items:
                 return
             if record_type is not None and spec.record_type != record_type:
                 return
-            for i in _load_state(db, spec, row).live():
-                if i.is_group:
-                    continue
-                if grp and items.group_of(i.no) != grp:
-                    continue
-                if open_only and i.state in spec.primary_items.closed_states:
-                    continue
-                if owner and i.owner != owner:
-                    continue
-                if overdue and (not i.due or i.due >= today
-                               or i.state in spec.primary_items.closed_states):
-                    continue
-                out.append({"ref": f"{row['id']}#{i.no}", "record": row["id"],
-                            "no": i.no, "group": items.group_of(i.no),
-                            "state": i.state,
-                            "closed": i.state in spec.primary_items.closed_states,
-                            "text": i.text, "note": i.note, "owner": i.owner,
-                            "due": i.due})
+            for itspec in spec.items:
+                closed = set(itspec.closed_states)
+                for i in items.load(db, row["id"], itspec).live():
+                    if i.is_group:
+                        continue
+                    if grp and items.group_of(i.no) != grp:
+                        continue
+                    if open_only and i.state in closed:
+                        continue
+                    if owner and i.owner != owner:
+                        continue
+                    if overdue and (not i.due or i.due >= today
+                                   or i.state in closed):
+                        continue
+                    out.append({"ref": f"{row['id']}#{i.no}", "record": row["id"],
+                                "no": i.no, "group": items.group_of(i.no),
+                                "state": i.state,
+                                "closed": i.state in closed,
+                                "text": i.text, "note": i.note, "owner": i.owner,
+                                "due": i.due})
 
         if ref is not None:
             spec, row = rec.ref_record(cfg, db, ref.partition("#")[0])

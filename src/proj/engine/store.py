@@ -390,23 +390,23 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     lines += ["", HEAD_END]
     sections = json.loads(row["sections"] or "{}")
     # the Tasks block sits right BELOW the head fence, before the user-owned
-    # sections, for ANY record that parents tasks (kind=parent edges). Content
-    # = the record's task tree from the DB (A2: generated, never stored).
-    # A2/Q5: the block is generated ENTIRELY from the DB (the relations table) —
-    # the record's task tree, indented by depth, each line with the task's
-    # one-line summary. Nothing task-related is stored in the md; the task table
-    # is fetched ONCE per render_all.
-    from proj.engine.views import render_tasks_block  # lazy: cycle
-    task_spec = reg.get("task")
-    if task_rows is None and task_spec is not None:
-        task_rows = db.all(task_spec)
-    block = render_tasks_block(
-        task_rows, db, task_spec, reg,
-        Path(db.path).parent / spec.dir,
-        Path(db.path).parent / task_spec.dir, row["id"])
-    if block:
-        lines += ["", "<details open>", "<summary>Tasks</summary>", ""]
-        lines += [*block, "</details>", ""]
+    # sections, for a TASK that parents other tasks (K2: parent edges are
+    # task→task only, so the tree belongs to tasks; a plan references work via
+    # its Work checklist instead). Content = the task's subtree from the DB
+    # (A2: generated, never stored; the task table is fetched ONCE per
+    # render_all).
+    if spec.record_type == "task":
+        from proj.engine.views import render_tasks_block  # lazy: cycle
+        task_spec = reg["task"]
+        if task_rows is None:
+            task_rows = db.all(task_spec)
+        block = render_tasks_block(
+            task_rows, db, task_spec, reg,
+            Path(db.path).parent / task_spec.dir,
+            Path(db.path).parent / task_spec.dir, row["id"])
+        if block:
+            lines += ["", "<details open>", "<summary>Tasks</summary>", ""]
+            lines += [*block, "</details>", ""]
     from proj.engine import items as items_mod  # lazy: store↔items cycle
     item_specs = {it.section: it for it in spec.items}
     for sec in spec.sections:

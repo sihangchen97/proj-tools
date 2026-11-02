@@ -16,8 +16,6 @@ verbs:
 # gates.tasks — 进入 Repaid 前，名下所有后代任务必须已终止（Done/Failed）
 # gates.items — 进入 Repaid 前，Repayment Plan 里每步都必须已处理（done/skipped）
 # Waived（长期接受）故意不设门禁——放弃不要求任务树和清单处理完
-gates:
-  tasks: [Repaid]
 # items: Repayment Plan 节的结构化步骤清单；第一个 closed 步骤出现时
 # Draft/Open 自动升到 In Progress（promote）
 items:

@@ -1043,8 +1043,8 @@ def sync_section(db, spec, row: dict, md_text: str,
             it.no = None
     if parsed.problems:
         return parsed.problems, []
-    old = load(db, row["id"], spec)
-    old.intro = _intro_of(spec, row)
+    old = load(db, row["id"], itspec)  # the checklist being synced (not primary)
+    old.intro = _intro_of(itspec, row)
     old_nos = {i.no for i in old.live()}
     try:
         new, notes = apply_md(old, parsed, itspec)
@@ -1069,11 +1069,16 @@ def sync_section(db, spec, row: dict, md_text: str,
     return [], [f"{source}: {n}" for n in sync_notes]
 
 
-def drift(db, spec, row: dict, md_text: str) -> bool:
-    """normalize(md_text) != render_section(load(...)) — an unsynced edit."""
-    state = load(db, row["id"], spec)
-    state.intro = _intro_of(spec, row)
-    return normalize(md_text) != render_section(state, spec)
+def drift(db, spec, row: dict, md_text: str, section: str | None = None) -> bool:
+    """normalize(md_text) != render_section(load(...)) — an unsynced edit.
+    `section`: the checklist this md section belongs to (P1: a record may have
+    several; without it the record's primary one is checked)."""
+    itspec = _spec(spec)
+    if section is not None:
+        itspec = next(it for it in spec.items if it.section == section)
+    state = load(db, row["id"], itspec)
+    state.intro = _intro_of(itspec, row)
+    return normalize(md_text) != render_section(state, itspec)
 
 
 # ---- apply_md (sync: merge the parsed md into the state) ---------------------

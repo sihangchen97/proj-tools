@@ -47,6 +47,11 @@ class Task(Record):
                 # re-open restriction: never parent a fresh task under a closed
                 # ancestor (its state is in that ancestor's gates.tasks)
                 p_spec, p_row = rec.ref_record(cfg, db, canonical)
+                if p_spec is not None and p_spec.record_type != "task":
+                    raise ValueError(
+                        f"parent {canonical} must be a task (got a {p_spec.record_type}) "
+                        f"— to attach it to a {p_spec.record_type}, reference that "
+                        f"{p_spec.record_type} from one of ITS checklists instead")
                 if p_row is not None and p_row["status"] in p_spec.gates_tasks:
                     raise ValueError(
                         f"parent {canonical} is {p_row['status']!r} (a closed state) "
@@ -96,6 +101,11 @@ class Task(Record):
                         f"cannot move {row['id']} under its own descendant {canonical} "
                         "(cycle)")
                 p_spec, p_row = rec.ref_record(cfg, db, canonical)
+                if p_spec is not None and p_spec.record_type != "task":
+                    raise ValueError(
+                        f"parent {canonical} must be a task (got a {p_spec.record_type}) "
+                        f"— to attach it to a {p_spec.record_type}, reference that "
+                        f"{p_spec.record_type} from one of ITS checklists instead")
                 if p_row is not None and p_row["status"] in p_spec.gates_tasks:
                     raise ValueError(
                         f"parent {canonical} is {p_row['status']!r} (a closed state) "

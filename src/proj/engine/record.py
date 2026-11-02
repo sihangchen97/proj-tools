@@ -176,7 +176,9 @@ class Record:
                     f"in '{it.section}' block {verb} (need a closed state: "
                     f"{', '.join(items_mod.CLOSED_STATES)}):\n  "
                     + "\n  ".join(un))
-        if to_s not in self.spec.gates_tasks:
+        # the descendant-task gate applies to tasks only (K2: parent edges are
+        # task→task); non-task record types no longer gate on a task subtree
+        if self.spec.record_type != "task" or to_s not in self.spec.gates_tasks:
             return
         reg = rec.load_registry(cfg.root)
         task_spec = reg.get("task")

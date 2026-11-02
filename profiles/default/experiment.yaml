@@ -19,8 +19,6 @@ verbs:
 # gates.tasks — 进入 Closed 前，名下所有后代任务必须已终止（Done/Failed）
 # gates.items — 进入 Closed 前，Success Criteria 每条都必须已评估（met/missed/
 # inconclusive）；Abandoned（未出结论即放弃）故意不设门禁——放弃不要求清单处理完
-gates:
-  tasks: [Closed]
 # items: Success Criteria 节的结构化清单；关实验时逐条 set met/missed/inconclusive
 items:
   - section: Success Criteria

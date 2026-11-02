@@ -16,8 +16,6 @@ verbs:
 # gates.tasks — 进入 Closed 前，名下所有后代任务必须已终止（Done/Failed）
 # gates.items — 进入 Closed 前，Action Items 里每条都必须已处理（done/dropped）
 # Mitigated（已止血）故意不设门禁——恢复不要求复盘和清单完成
-gates:
-  tasks: [Closed]
 # items: Action Items 节的结构化清单；owner/due 用字段表示（· owner: x · due: d）
 items:
   - section: Action Items

@@ -184,7 +184,8 @@ def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> t
         if p.exists():
             _mk, _u, raw = rec.parse_record(p.read_text(encoding="utf-8"))
             rec_drift = items_mod.drift(db, spec, row,
-                                        raw.get(spec.wip_items.section.lower(), ""))
+                                        raw.get(spec.wip_items.section.lower(), ""),
+                                        section=spec.wip_items.section)
         if rec_drift:
             conflicts.append(rid)  # both sides edited — keep the DB, flag it
         else:

@@ -417,15 +417,8 @@ def ch2() -> None:
         "Scope": "8 类缺陷；不含产线整改与复检流程（后续版本）。",
         "Risks & Dependencies": "依赖标注数据量（≥3 万张）与 CUDA 驱动升级（T-000005）。",
     })
-    # A11: fill Milestones (Review is written at plan close — see ch9's
-    # EMPTY_OK exceptions: sections not yet due stay empty on purpose)
-    write_sections(md_of(P), {
-        "Milestones": (
-            "- M1 数据集就绪（T-000001 Done）"
-            "\n- M2 训练收敛（T-000002 Done，val mAP 平台期）"
-            "\n- M3 评估 + 边缘端部署（T-000003 / T-000004 Done）"
-        ),
-    })
+    # K2: the plan no longer has a Milestones section (and cannot parent tasks);
+    # it tracks work through its Work checklist (ch3 references the tasks there)
     for text in ("mAP@0.5 ≥ 0.85", "单帧延迟 < 30 ms", "漏检率 < 2%"):
         expect_ok(f"Success Criterion: {text}", "#", "item", "add", P, text)
     expect_fail("activate 前 review 被拒（from: Active）", "plan", "review", P)
@@ -434,8 +427,10 @@ def ch2() -> None:
 
 def ch3() -> None:
     REP.chapter("第 3 章 拆任务")
+    # K2: parent is task→task only (no plan parent); the plan tracks these via
+    # its Work checklist, referenced with `item add P … --task T-…` (added below)
     T_DS = _id_of(expect_ok("数据集任务", "Created",
-                            "task", "new", "构建数据集（采集/标注/划分）", "-y", "--parent", P))
+                            "task", "new", "构建数据集（采集/标注/划分）", "-y"))
     # A11: task bodies (Goal/Steps; Open/Notes only appear when there is a
     # blocker or a remark — see the ch9 EMPTY_OK exceptions)
     write_sections(md_of(T_DS), {
@@ -447,7 +442,7 @@ def ch3() -> None:
         ),
     })
     T_PIPE = _id_of(expect_ok("训练管线任务", "Created",
-                              "task", "new", "训练管线（数据增强/训练/早停）", "-y", "--parent", P))
+                              "task", "new", "训练管线（数据增强/训练/早停）", "-y"))
     write_sections(md_of(T_PIPE), {
         "Goal": "用数据集把 YOLOv8n 训到 val mAP ≥ 0.85，产出可部署 checkpoint（P 的 M2）。",
         "Steps": (
@@ -463,7 +458,7 @@ def ch3() -> None:
         "Steps": "- 在 test 集评 mAP@0.5\n- 边缘端实测 p99 延迟\n- 抽检漏检率",
     })
     T_ONNX = _id_of(expect_ok("ONNX 导出任务", "Created",
-                              "task", "new", "导出 ONNX 并部署边缘端", "-y", "--parent", P))
+                              "task", "new", "导出 ONNX 并部署边缘端", "-y"))
     write_sections(md_of(T_ONNX), {
         "Goal": "checkpoint 导出 ONNX 并部署边缘端：模型 ≤ 15 MB、单帧延迟 < 30 ms（P 的 M3）。",
         "Steps": "- 导出 ONNX（opset 12）\n- 边缘端实测延迟与内存\n- 部署脚本入仓",
@@ -492,6 +487,17 @@ def ch3() -> None:
     # move: the eval script re-homes under the training pipeline
     expect_ok("评估脚本改挂到训练管线", f"parent → {T_PIPE}",
               "task", "move", T_EVAL, "--parent", T_PIPE)
+    # K2: the plan tracks its work through the Work checklist (item → task
+    # reference); a terminal task closes the item automatically (P3)
+    for label, tid in (("构建数据集", T_DS), ("训练管线", T_PIPE),
+                       ("导出 ONNX 并部署边缘端", T_ONNX)):
+        expect_ok(f"Work 清单引用 {label}", "→", "item", "add", P,
+                  label, "--task", tid)
+    expect_ok("plan 的 Work 清单列出 3 条 item", "PLN", "item", "ls", P)
+    pmd = read(md_of(P))
+    for tid in (T_DS, T_PIPE, T_ONNX):
+        assert f"→ {tid}" in pmd, f"Work checklist missing → {tid}"
+    REP.ok("plan 的 Work 清单渲染进 md（3 个 → T- 引用）")
     # rename: -t renames the md file (id stable); the new title mixes CJK + ASCII,
     # so the slug (and therefore the filename) changes (A10: CJK kept in the slug)
     expect_ok("-t 改名（id 不变）", "title →",
@@ -509,13 +515,14 @@ def ch3() -> None:
     md = read(md_of(T_DS))
     assert f"[{T_QC}-" in md and "<summary>Tasks</summary>" in md
     REP.ok("父任务 md 渲染子任务树（checkbox + 超链接）")
-    # the plan's Tasks block lists the tree from the DB (sub-task indented);
-    # the plan's own summary trails as an italic line in the head fence
+    # K2: the plan has NO Tasks block (it cannot parent tasks); it references its
+    # work through the Work checklist (item → task). The dataset TASK shows its
+    # own task subtree in a Tasks block. The plan's summary trails in the head.
     pmd = read(md_of(P))
-    assert f"[{T_DS}-" in pmd
-    assert "  - [ ]" in pmd, "sub-task line not indented under its parent"
+    assert "<summary>Tasks</summary>" not in pmd  # no Tasks block on a plan
+    assert f"## Work" in pmd and f"→ {T_DS}" in pmd  # Work checklist refs the task
     assert "_在产线边缘端跑 YOLOv8n，达到验收指标后全量上线_" in pmd
-    REP.ok("plan Tasks 块：DB 生成 + 子任务缩进；summary 斜体在 head 围栏")
+    REP.ok("plan 无 Tasks 块；Work 清单引用任务；summary 斜体在 head 围栏")
     # cross-type ls + cross-type show (id carries the type)
     out = expect_ok("跨类型 ls（--type task）", T_DS, "ls", "--type", "task")
     expect_ok("跨类型 show（id 自带类型）", "status:", "show", T_QC)

@@ -72,7 +72,8 @@ def check(cfg: ProjConfig) -> list[str]:
                     if s.name in item_secs:
                         from proj.engine import items as items_mod  # lazy
                         if items_mod.drift(db, spec, row,
-                                           raw_sections.get(s.name.lower(), "")):
+                                           raw_sections.get(s.name.lower(), ""),
+                                           section=s.name):
                             problems.append(f"{p.name}: section '{s.name}' (items) differs "
                                             f"from DB — run `proj sync`")
                         continue

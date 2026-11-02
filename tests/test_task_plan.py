@@ -20,15 +20,20 @@ def _task(proj):
 
 
 def test_parent_relation_stored(proj):
-    _plan(proj).new(proj, "P1")
-    row, _ = taskmod.new(proj, "Attached", parent="PLN-0001")
-    # parent is a relations edge (kind=parent, source=parent), not a column
+    """K2: parent is task→task only — the parent edge is a relations row
+    (kind=parent, source=parent task), not a column."""
+    parent, _ = taskmod.new(proj, "Parent")
+    row, _ = taskmod.new(proj, "Attached", parent=parent["id"])
     spec = rec.load_registry(proj.root)["task"]
     db = rec.open_db(proj)
     assert "parent" not in db.get(spec, row["id"])
-    assert db.parent_of(row["id"])["source"] == "PLN-0001"
-    assert [c["target"] for c in db.children_of("PLN-0001")] == [row["id"]]
+    assert db.parent_of(row["id"])["source"] == parent["id"]
+    assert [c["target"] for c in db.children_of(parent["id"])] == [row["id"]]
     db.close()
+    # a plan can NOT be a task's parent anymore
+    _plan(proj).new(proj, "P1")
+    with pytest.raises(ValueError, match=r"must be a task"):
+        taskmod.new(proj, "Nope", parent="PLN-0001")
 
 
 def test_task_done_blocked_by_draft_child(proj):
@@ -51,47 +56,47 @@ def test_task_done_not_blocked_by_own_unfinished_state(proj):
     assert taskmod.done(proj, row["id"])["status"] == "Done"
 
 
-def test_plan_review_blocked_by_grandchild(proj):
-    """plan gates.tasks covers the whole descendant tree (any depth): a
-    grandchild still Draft blocks review — even through an unfinished parent."""
-    _plan(proj).new(proj, "P1")
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    parent, _ = taskmod.new(proj, "Open task", parent="PLN-0001")
-    taskmod.new(proj, "Grandchild", parent=parent["id"])
+def test_task_done_blocked_by_grandchild(proj):
+    """K2: gates.tasks now lives on TASKS — the whole descendant tree (any depth)
+    must be terminal before a parent goes Done. A grandchild still Draft blocks
+    the parent, even through an unfinished child."""
+    parent, _ = taskmod.new(proj, "Open task")
+    taskmod._obj(proj).transition(proj, "start", parent["id"])
+    mid, _ = taskmod.new(proj, "Mid", parent=parent["id"])
+    taskmod.new(proj, "Grandchild", parent=mid["id"])
     with pytest.raises(ValueError, match="not finished"):
-        _plan(proj).transition(proj, "review", "PLN-0001")
+        taskmod.done(proj, parent["id"])
 
 
-def test_plan_review_passes_with_failed_child(proj):
-    """A Failed child task (terminal) does not block plan review."""
-    _plan(proj).new(proj, "P1")
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    doomed, _ = taskmod.new(proj, "Doomed", parent="PLN-0001")
-    ok, _ = taskmod.new(proj, "Fine", parent="PLN-0001")
+def test_task_done_passes_with_failed_child(proj):
+    """K2: a Failed child task (terminal) does not block the parent's Done."""
+    parent, _ = taskmod.new(proj, "Parent")
+    doomed, _ = taskmod.new(proj, "Doomed", parent=parent["id"])
+    ok, _ = taskmod.new(proj, "Fine", parent=parent["id"])
     taskmod.fail(proj, doomed["id"])
     taskmod.done(proj, ok["id"])
-    row = _plan(proj).transition(proj, "review", "PLN-0001")
-    assert row["status"] == "Pending Review"
+    row = taskmod.done(proj, parent["id"])
+    assert row["status"] == "Done"
 
 
-def test_reopen_restricted_under_closed_ancestor(proj):
-    """Once a plan is closed (Pending Review ∈ gates.tasks): re-opening a child
-    task, parenting a new task, and moving a task there are all refused."""
-    _plan(proj).new(proj, "P1")
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    row, _ = taskmod.new(proj, "Child", parent="PLN-0001")
-    doomed, _ = taskmod.new(proj, "Doomed child", parent="PLN-0001")
+def test_reopen_restricted_under_closed_task(proj):
+    """K2: once a parent TASK is closed (Done ∈ gates.tasks): re-opening a child
+    task, parenting a new task under it, and moving a task there are refused."""
+    parent, _ = taskmod.new(proj, "Parent")
+    taskmod._obj(proj).transition(proj, "start", parent["id"])
+    row, _ = taskmod.new(proj, "Child", parent=parent["id"])
+    doomed, _ = taskmod.new(proj, "Doomed child", parent=parent["id"])
     other, _ = taskmod.new(proj, "Elsewhere")
     taskmod.done(proj, row["id"])
     taskmod.fail(proj, doomed["id"])
-    _plan(proj).transition(proj, "review", "PLN-0001")  # Pending Review
-    # re-open (Failed → In Progress): refused, the ancestor is closed
+    taskmod.done(proj, parent["id"])  # Done (closed)
+    # re-open (Failed → In Progress): refused, the ancestor task is closed
     with pytest.raises(ValueError, match="ancestor"):
         _task(proj).transition(proj, "start", doomed["id"])
     with pytest.raises(ValueError, match="closed state"):
-        taskmod.new(proj, "Fresh", parent="PLN-0001")
+        taskmod.new(proj, "Fresh", parent=parent["id"])
     with pytest.raises(ValueError, match="closed state"):
-        taskmod.move(proj, other["id"], "PLN-0001")
+        taskmod.move(proj, other["id"], parent["id"])
 
 
 def test_task_move_rehomes_and_logs(proj):
@@ -151,21 +156,21 @@ def test_relations_allow_parent_plus_related(proj):
 
 
 def test_failed_task_rendered_checked_with_emoji(proj):
-    """Terminal statuses render [x]; a non-done terminal status (Failed) gets
-    its status emoji before the link; Done gets none. A record's Tasks block
-    shows its FULL subtree (finished tasks included, for progress)."""
-    plan, _ = _plan(proj).new(proj, "P1")
-    _plan(proj).transition(proj, "activate", "PLN-0001")
-    un, _ = taskmod.new(proj, "Open one", parent="PLN-0001")
-    doomed, _ = taskmod.new(proj, "Doomed one", parent="PLN-0001")
-    taskmod.fail(proj, doomed["id"])
-    done, _ = taskmod.new(proj, "Done one", parent="PLN-0001")
-    taskmod.done(proj, done["id"])
-    md = (proj.root / "docs" / "plans" / f"PLN-0001-{plan['title'].lower()}.md")
+    """K2: the Tasks block renders on a TASK (its task subtree), not a plan.
+    Terminal statuses render [x]; a non-done terminal status (Failed) gets its
+    status emoji before the link; Done gets none. The full subtree shows
+    (finished tasks included, for progress)."""
     from proj.engine.store import file_path, load_registry
-    spec = load_registry(proj.root)["plan"]
+    parent, _ = taskmod.new(proj, "Parent")
+    taskmod._obj(proj).transition(proj, "start", parent["id"])
+    un, _ = taskmod.new(proj, "Open one", parent=parent["id"])
+    doomed, _ = taskmod.new(proj, "Doomed one", parent=parent["id"])
+    taskmod.fail(proj, doomed["id"])
+    done, _ = taskmod.new(proj, "Done one", parent=parent["id"])
+    taskmod.done(proj, done["id"])
+    spec = load_registry(proj.root)["task"]
     db = rec.open_db(proj)
-    md = file_path(proj, spec, db.get(spec, "PLN-0001"))
+    md = file_path(proj, spec, db.get(spec, parent["id"]))
     db.close()
     lines = md.read_text().splitlines()
     open_line = next(x for x in lines if f"[{un['id']}-" in x)
@@ -174,6 +179,11 @@ def test_failed_task_rendered_checked_with_emoji(proj):
     assert open_line.strip().startswith("- [ ]")
     assert doomed_line.strip().startswith("- [x] ❌")
     assert done_line.strip().startswith("- [x] [")  # [x] + link, no emoji
+    # a plan has NO Tasks block (it references work via its Work checklist)
+    plan, _ = _plan(proj).new(proj, "P1")
+    pdir = proj.root / "docs/plans"
+    plan_md = next(pdir.glob(f"{plan['id']}-*.md")).read_text(encoding="utf-8")
+    assert "<summary>Tasks</summary>" not in plan_md
 
 
 def test_fk_rejects_dangling_parent(proj):
@@ -196,10 +206,15 @@ def test_fk_rejects_dangling_parent(proj):
 def test_task_rejects_ghost_parent_ref(proj):
     with pytest.raises(ValueError, match=r"not found in any record_type"):
         taskmod.new(proj, "T1", parent="999")
+    # K2: a plan is not a valid parent (must be a task)
     _plan(proj).new(proj, "P1")
-    row, _ = taskmod.new(proj, "T1", parent="PLN-0001")
+    with pytest.raises(ValueError, match=r"must be a task"):
+        taskmod.new(proj, "T1", parent="PLN-0001")
+    # a task under a task is fine
+    parent, _ = taskmod.new(proj, "P")
+    row, _ = taskmod.new(proj, "T1", parent=parent["id"])
     db = rec.open_db(proj)
-    assert db.parent_of(row["id"])["source"] == "PLN-0001"
+    assert db.parent_of(row["id"])["source"] == parent["id"]
     db.close()
     taskmod.new(proj, "T2")  # a bare task (no parent) is fine — Unparented
 
@@ -250,21 +265,6 @@ def test_plan_state_machine(proj, steps, expect):
         db.close()
 
 
-def test_plan_tree_rendered_any_depth(proj):
-    """The plan's task tree renders at any depth (no 2-level cap): the
-    grandchild sits two indents below the plan root."""
-    _plan(proj).new(proj, "P1")
-    row, _ = taskmod.new(proj, "Attached", parent="PLN-0001")
-    sub, _ = taskmod.new(proj, "Substep", parent=row["id"])
-    grand, _ = taskmod.new(proj, "Grandstep", parent=sub["id"])
-    plan_md = next((proj.root / "docs/plans").glob("PLN-0001-*.md")).read_text()
-    assert "> **subtask:**" not in plan_md  # the old subtask head row is gone
-    assert "<summary>Tasks</summary>" in plan_md
-    assert f"[{row['id']}-" in plan_md
-    assert f"[{sub['id']}-" in plan_md
-    assert f"[{grand['id']}-" in plan_md  # third level still rendered
-    # the per-record Tasks block is flat (stored/auto lines, id order)
-    assert plan_md.count("- [") >= 3
 
 
 def test_summary_roundtrip(proj):

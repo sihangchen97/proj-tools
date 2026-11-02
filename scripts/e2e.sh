@@ -137,14 +137,6 @@ cat <<'EOF' | set_section 'docs/plans/PLN-0001-缺陷检测-v1-上线.md' 'Risks
 EOF
 proj sync
 proj sync
-# 编辑 docs/plans/PLN-0001-缺陷检测-v1-上线.md 的 ## Milestones 节，再 proj sync 回收
-cat <<'EOF' | set_section 'docs/plans/PLN-0001-缺陷检测-v1-上线.md' Milestones
-- M1 数据集就绪（T-000001 Done）
-- M2 训练收敛（T-000002 Done，val mAP 平台期）
-- M3 评估 + 边缘端部署（T-000003 / T-000004 Done）
-EOF
-proj sync
-proj sync
 proj item add PLN-0001 'mAP@0.5 ≥ 0.85'  # Success Criterion: mAP@0.5 ≥ 0.85
 proj item add PLN-0001 '单帧延迟 < 30 ms'  # Success Criterion: 单帧延迟 < 30 ms
 proj item add PLN-0001 '漏检率 < 2%'  # Success Criterion: 漏检率 < 2%
@@ -152,7 +144,7 @@ proj plan review PLN-0001 && echo "意外成功" || echo "（按预期被拒绝�
 proj plan activate PLN-0001  # plan activate
 
 # ── 第 3 章 拆任务 ──
-proj task new '构建数据集（采集/标注/划分）' -y --parent PLN-0001  # 数据集任务
+proj task new '构建数据集（采集/标注/划分）' -y  # 数据集任务
 # 编辑 docs/tasks/T-000001-构建数据集-采集-标注-划分.md 的 ## Goal 节，再 proj sync 回收
 cat <<'EOF' | set_section 'docs/tasks/T-000001-构建数据集-采集-标注-划分.md' Goal
 产出 3 万张、8 类缺陷、可直接喂给 YOLOv8n 训练的数据集，含按板号哈希的划分（P 的 M1）。
@@ -166,7 +158,7 @@ cat <<'EOF' | set_section 'docs/tasks/T-000001-构建数据集-采集-标注-划
 EOF
 proj sync
 proj sync
-proj task new '训练管线（数据增强/训练/早停）' -y --parent PLN-0001  # 训练管线任务
+proj task new '训练管线（数据增强/训练/早停）' -y  # 训练管线任务
 # 编辑 docs/tasks/T-000002-训练管线-数据增强-训练-早停.md 的 ## Goal 节，再 proj sync 回收
 cat <<'EOF' | set_section 'docs/tasks/T-000002-训练管线-数据增强-训练-早停.md' Goal
 用数据集把 YOLOv8n 训到 val mAP ≥ 0.85，产出可部署 checkpoint（P 的 M2）。
@@ -194,7 +186,7 @@ cat <<'EOF' | set_section 'docs/tasks/T-000003-评估脚本-map-延迟-漏检.md
 EOF
 proj sync
 proj sync
-proj task new '导出 ONNX 并部署边缘端' -y --parent PLN-0001  # ONNX 导出任务
+proj task new '导出 ONNX 并部署边缘端' -y  # ONNX 导出任务
 # 编辑 docs/tasks/T-000004-导出-onnx-并部署边缘端.md 的 ## Goal 节，再 proj sync 回收
 cat <<'EOF' | set_section 'docs/tasks/T-000004-导出-onnx-并部署边缘端.md' Goal
 checkpoint 导出 ONNX 并部署边缘端：模型 ≤ 15 MB、单帧延迟 < 30 ms（P 的 M3）。
@@ -251,6 +243,10 @@ EOF
 proj sync
 proj sync
 proj task move T-000003 --parent T-000002  # 评估脚本改挂到训练管线
+proj item add PLN-0001 '构建数据集' --task T-000001  # Work 清单引用 构建数据集
+proj item add PLN-0001 '训练管线' --task T-000002  # Work 清单引用 训练管线
+proj item add PLN-0001 '导出 ONNX 并部署边缘端' --task T-000004  # Work 清单引用 导出 ONNX 并部署边缘端
+proj item ls PLN-0001  # plan 的 Work 清单列出 3 条 item
 proj task update T-000004 -t 'ONNX 导出 + TensorRT 部署 (edge)'  # -t 改名（id 不变）
 proj sync
 proj ls --type task  # 跨类型 ls（--type task）
@@ -483,5 +479,14 @@ proj experiment run EXP-0002
 proj experiment abandon EXP-0002 -m 'Deprecated: 4-bit 精度掉 9 点，不可用'  # abandon（放弃，Abandoned 终止）
 
 # ── 第 9 章 收尾：演示项目没有空的 ## 正文节 ──
+
+# ── 第 12 章 agent 接手：真实 MCP stdio 会话（proj-mcp 子进程 + 客户端 SDK） ──
+# (MCP) proj_info   — 参考脚本只跑 CLI；MCP 调用见 e2e.py
+# (MCP) proj_wip_ls   — 参考脚本只跑 CLI；MCP 调用见 e2e.py
+# (MCP) proj_new  record_type=task title='MCP 接手任务' — 参考脚本只跑 CLI；MCP 调用见 e2e.py
+# (MCP) proj_item_add  ref=T-000001 text='由 MCP 会话接手' — 参考脚本只跑 CLI；MCP 调用见 e2e.py
+# (MCP) proj_item_update  item='T-000001#001' state=done note='备注：stdio 会话完成' — 参考脚本只跑 CLI；MCP 调用见 e2e.py
+# (MCP) proj_verb  id=T-000001 verb=done — 参考脚本只跑 CLI；MCP 调用见 e2e.py
+# (MCP) proj_show  id=T-000001 history=True — 参考脚本只跑 CLI；MCP 调用见 e2e.py
 
 echo "场景完成，项目在: $dir"

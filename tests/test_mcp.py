@@ -13,16 +13,23 @@ def test_mcp_init_new_status_check_chain(proj):
     assert out.startswith("Created") and "error" not in out
     plan_id = out.split("docs/plans/")[1][:8]  # PLN-0001
 
-    out = mcp.proj_new("task", "Baseline", parent=plan_id, root=root)
+    # K2: parent is task→task only — a task attaches to a plan via the plan's
+    # Work checklist reference instead. A bare task (no parent) is fine.
+    out = mcp.proj_new("task", "Baseline", root=root)
     assert "Created" in out and "error" not in out
     task_id = out.split("tasks/")[1][:8]  # docs/tasks/T-000001-...
+    # the plan references the task from its Work checklist (→ T-…)
+    out = mcp.proj_item_add(ref=plan_id, text="run the baseline", task=task_id,
+                            root=root)
+    assert "error" not in out and task_id in out
 
     # D2: the id carries the type — record_type is optional
     out = mcp.proj_show(task_id, root=root)
-    assert f"id: {task_id}" in out and f"parent: {plan_id}" in out
-    # as_json (C10/D5): the same fields as a JSON object
+    assert f"id: {task_id}" in out
+    # as_json (C10/D5): the same fields as a JSON object; picked_by carries the
+    # reverse ref (K4) — the plan that references this task
     out = mcp.proj_show(task_id, as_json=True, root=root)
-    assert f'"id": "{task_id}"' in out and f'"parent": "{plan_id}"' in out
+    assert f'"id": "{task_id}"' in out and f'"{plan_id}"' in out  # picked_by
 
     out = mcp.proj_verb(task_id, "start", root=root)
     assert f"task {task_id}: status → In Progress" in out
@@ -125,7 +132,9 @@ def test_tool_dispatch_reaches_each_own_function(proj):
     root = str(proj.root)
     m.proj_init(root=root)  # build the project via direct calls (not under test)
     m.proj_new("plan", "Ship v1", root=root)
-    m.proj_new("task", "Baseline", parent="PLN-0001", root=root)
+    # K2: no plan→task parent; the task is bare and referenced from the plan's
+    # Work checklist instead (see the proj_item_add case below)
+    m.proj_new("task", "Baseline", root=root)
 
     def call(name: str, args: dict) -> str:
         res = asyncio.run(m.mcp.call_tool(name, args))
