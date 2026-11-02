@@ -36,6 +36,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLW"]
 [tool.ruff.lint.per-file-ignores]
 # docs.py holds the Chinese reference-doc prose (fullwidth punctuation is intentional)
 "src/proj/docs.py" = ["RUF001", "RUF002", "RUF003", "RUF005"]
+# e2e.py's story prose is Chinese too (chapter titles, step comments — and they
+# flow into the generated scripts/e2e.sh comments); fullwidth is intentional
+"scripts/e2e.py" = ["RUF001", "RUF002", "RUF003", "RUF005"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["typer.Option", "typer.Argument"]
