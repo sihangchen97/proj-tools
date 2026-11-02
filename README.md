@@ -31,15 +31,18 @@ proj init --profile default          # additive: add more with --profile quality
 proj decision new "Use pixi" -y     # docs/decisions/DEC-0002-*.md (the -y skips the editor)
 proj task new "Data pipeline" -y    # docs/tasks/T-000001-*.md (status: Draft)
 proj plan new "Ship v1" -y
-proj task new "Baseline" --parent PLN-0001   # links to the plan (parent edge;
-                                             # drawn in the plan's Tasks block)
+proj item add PLN-0001 "Baseline" --task T-000001
+                                       # the plan's Work checklist references the
+                                       # task (→ T-000001); ticks itself when the
+                                       # task ends (Done → done, Failed → failed)
 proj plan activate PLN-0001      # Active → auto-registered in WIP.md
 proj item add T-000001 "tests pass" --owner alex
 proj item check T-000001#001     # first closed criterion → Draft auto-promotes to
                                   # In Progress (the task joins WIP.md)
 proj item edit T-000001#001 --owner billy --reassign   # taking over an owned item
 proj task done T-000001          # needs every criterion closed + sub-tasks terminal
-proj plan review PLN-0001 && proj plan shelve PLN-0001
+proj plan review PLN-0001        # Active → Pending Review (no task gate)
+proj plan archive PLN-0001       # only once Work + Success Criteria are all closed
 proj changelog add "Added: sqlite core"
 proj changelog version --bump patch
 proj check                       # invariants; also runs in the pre-commit hook
@@ -91,10 +94,6 @@ proj check                       # invariants; also runs in the pre-commit hook
 Statuses show an emoji in views (`proj ls`, WIP.md) when the template defines
 one; the md `Status:` line stays plain text.
 
-> The parent-edge rules (only task→task parents, the "task tree") are about to
-> change — see `plans/PLAN.md` §10. The commands in the quick start above
-> reflect the current behavior.
-
 ### Decisions supersede (multi-valued)
 
 Supersede is a relationship, not a status: one decision can replace several
@@ -105,13 +104,21 @@ old ones, and one old one can be replaced by several new ones.
   `superseded_by`.
 - `proj check` enforces: no dangling refs, A↔B mutual consistency, no cycles.
 
-### Tasks link to records via `parent`
+### Tasks form a tree; plans track work via a checklist
 
-Tasks are independent records; `task --parent` (a relation) links them to a
-plan, a parent task (sub-task), or an experiment. No file moving; children are
-resolved at render time, any depth, drawn in the parent's `Tasks` block
-(e.g. the plan's md shows its task tree), and the task's head shows a
-`parent:` link.
+Tasks are independent records; `task --parent` (a relation) links a task to
+**another task only** (sub-task, any depth) — pointing it at a plan/debt is
+refused (the CLI says: reference that plan from one of ITS checklists instead).
+A task's sub-tasks render in its `## Tasks` block (depth-indented, any depth,
+completed ones kept), and the task's head shows a `parent:` link.
+
+A **plan tracks work through its `Work` checklist** (not a parent edge):
+`proj item add <plan> "…" --task <T-…>` makes a checklist line reference a
+task (rendered `→ T-…`). The line ticks itself when the referenced task ends
+(Done → done, Failed → failed) and cannot be closed manually while the task
+is still open; a bare id written in a section body (e.g. `见 DEC-0001`) is
+only link-rendered, with no state coupling. Every record whose checklist
+references a task is listed in that task's head as `picked by:`.
 
 - **WIP.md membership is derived from status, not from the link**: a record
   joins WIP.md when it switches into a status listed in its type's
@@ -122,9 +129,10 @@ resolved at render time, any depth, drawn in the parent's `Tasks` block
   *Unparented*); `proj task move T-… --parent P` re-homes it and `--detach`
   removes the edge.
 
-Plan state machine: `Draft →(activate) Active →(review: all its tasks Done)
-Pending Review →(shelve) Shelved →(resume) Active`;
-`Pending Review →(archive) Archived` and `Shelved →(freeze) Archived`.
+Plan state machine: `Draft →(activate) Active →(review) Pending Review
+→(shelve) Shelved →(resume) Active`; `Pending Review →(archive) Archived` and
+`Shelved →(freeze) Archived`. `review` has no task gate; `archive` only passes
+when the plan's **Work** and **Success Criteria** checklists are all closed.
 
 ### Checklists (items)
 
@@ -183,7 +191,7 @@ proj <rt> <verb> ID        # state-machine step, e.g. decision accept, plan acti
 proj item ls|add|set|check|uncheck|edit|mv|rm
 
 # WIP (the "what is in progress" list)
-proj wip add|return|ls
+proj wip add|return|ls [--owner <you>]
 ```
 
 > 完整参考：[`docs/CLI.md`](docs/CLI.md)（`proj docs` 从代码生成，永不漂移）。

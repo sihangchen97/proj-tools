@@ -44,3 +44,28 @@ def test_type_sections_only_type_specific_verbs(proj):
         block = sections[heading]
         for cmd in ("new", "ls", "show", "update"):
             assert f"proj {heading} {cmd}" not in block
+
+# ---------------------------------------------------------------------------
+# §28.1 23:10: the generated reference must equal the committed files (docs/
+# AND the templates/ seed copies) — nobody may hand-edit the four generated
+# files or change the CLI/MCP surface without re-running `pixi run docs`.
+
+
+def _repo():
+    from pathlib import Path
+    return Path(__file__).resolve().parent.parent
+
+
+def test_docs_match_generated(proj):
+    """docs/CLI.md == templates/PROJ_CLI.md == what docs.py generates now."""
+    repo = _repo()
+    cli = docs.cli_reference()
+    mcp = docs.mcp_reference()
+    for pair in ((cli, repo / "docs" / "CLI.md", repo / "templates" / "PROJ_CLI.md"),
+                 (mcp, repo / "docs" / "MCP.md", repo / "templates" / "PROJ_MCP.md")):
+        text, *paths = pair
+        for p in paths:
+            got = p.read_text(encoding="utf-8")
+            assert got == text, (f"{p} has drifted from the generated reference — "
+                                 "edit src/proj/docs.py (or cli.py / mcp.py) then run "
+                                 "`pixi run docs`")

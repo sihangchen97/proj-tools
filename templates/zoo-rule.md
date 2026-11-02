@@ -32,9 +32,14 @@ files manually — use the `proj` CLI (or the `proj_*` MCP tools if available).
    (tests pass); the first checked item auto-promotes Draft → In Progress.
    Finish with `proj task done <ID>` (requires every sub-task finished and every
    criterion closed).
-3. **Group tasks under a plan**: `proj task new … --parent PLN-NNNN`.
-   `proj plan review <ID>` only passes when all its tasks are finished; move the
-   plan with `activate` / `shelve` / `resume` / `archive` / `freeze`.
+3. **Track a plan's work with its `Work` checklist**: reference each task from
+   the plan — `proj item add PLN-… "…" --task T-…` (the line renders `→ T-…`
+   and ticks itself when the task ends; it cannot be closed manually while the
+   task is open). Tasks only nest under **other tasks**
+   (`proj task new … --parent T-…`). `proj plan review <ID>` only needs the
+   plan Active; `archive` only passes once the **Work** and **Success
+   Criteria** checklists are fully closed; move the plan with `activate` /
+   `shelve` / `resume` / `archive` / `freeze`.
 4. **Record temporary hacks as debt**: `proj debt new "Title" -y` with
    Location, Reason, and Trigger for removal.
 5. **Changelog on milestones**: `proj changelog add "Added: …"` (into

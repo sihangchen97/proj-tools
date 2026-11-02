@@ -74,3 +74,5 @@ e2e = { cmd = "python scripts/e2e.py", default-environment = "dev" }
 e2e-full = { cmd = "python scripts/e2e.py", env = { PROJ_E2E_SUBPROCESS = "1" }, default-environment = "dev" }
 # 性能基准（PLAN §26.1）：本地 50/300/1000 条记录；BENCH_NFS_DIR=/vol/… 加 NFS 列
 bench = { cmd = "python scripts/bench.py", default-environment = "dev" }
+# 重新生成文档参考（PLAN §28.1 23:10）：沙盒里跑 proj docs，拷到 docs/ + templates/ 四处
+docs = { cmd = "python scripts/gen_docs.py", default-environment = "dev" }

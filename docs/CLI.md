@@ -1,8 +1,8 @@
 # proj CLI 参考
 
 > 入口：`proj`（pixi dev 环境或 `pip install .`）。
-> `--root PATH`：项目根，**默认 = 当前目录**（不向上找）。项目根 = 含
-> `.proj.lock` / `.proj.sqlite` 的目录（由 `proj init` 创建）。
+> `--root PATH`：项目根，**默认 = 当前目录（或它的任一上级目录）**。项目根 = 含
+> `.proj/lock.yaml`（+ `.proj/cache.sqlite`）的目录（由 `proj init` 创建，S.10）。
 > **未 init 的目录里只有 `proj init` 可用**；其余命令会报
 > `error: no proj project in <cwd> …`。
 > record_type = 模板注册的任意类型（task/plan/decision/debt/incident/experiment…）；
@@ -40,15 +40,16 @@ proj bug [<TEXT>] [--cmd <CMD>] [--json] [--root <ROOT>]
   里体现，DB 为准）：`sync` 把新标题
   回收进 DB 并把文件重命名到新 slug（id 不变；changelog 块、`<!-- proj:head … -->`
   围栏内的 metadata 仍由工具维护）。
-- `check` 检查：.proj.lock 模板在、表 schema 匹配模板、md 各 section 与 DB 一致、
+- `check` 检查：.proj/lock.yaml 模板在、表 schema 匹配模板、md 各 section 与 DB 一致、
   record_type 特有不变量（task：parent/related 存在、无父环）。
 - 裸跑 `proj`（无子命令）：已 init → 项目状态（同 `info`）；未 init → 只有 `init` 可用。
 - 新建默认打开 `$EDITOR`/`$VISUAL`；`-y` 跳过（agent/非终端下自动不打开）。
 - 改状态用**模板动词** `proj <rt> <verb> ID`（等价 `record.transition(cfg, verb, id)`）；
   `from: Any` = 任意当前状态都能触发（直达目标，如 `deprecate`/`close`），
   `from: <状态>` = 必须在该状态（如 plan `activate` 只从 Draft）。带门禁的动词
-  （模板 `gates:` 声明：如 plan `review` 要求名下任务树全部结束、task `done` 同理）
-  由引擎统一校验。
+  （清单级 `items[].gate` 或 `gates:` 声明：如 task `done` 要求后代任务树全终止
+  + Acceptance Criteria 全 closed，plan `archive` 要求 Work 与 Success Criteria
+  全 closed）由引擎统一校验。
 
 ## 所有 record 共用的命令
 
@@ -71,7 +72,7 @@ proj <rt> update <ID> [-t <TITLE>] [-s <SUMMARY>] [-m <MESSAGE>]
 - `render [REF|TYPE]…` 只 DB→md（不带 md 输入，全局一条）：省略参数 = 全部记录 +
   全部视图，否则只渲染指定的记录或类型。
 - `task move ID (--parent X | --detach)`：改挂已有任务（两个选项必须且只能给一个）；
-  挂在已关闭记录下、挂到自己或自己的后代上都会被拒绝。
+  挂到已关闭的**任务**上、挂到自己或自己的后代上都会被拒绝。
 
 ## task
 
@@ -202,11 +203,11 @@ proj hooks install
 
 ```
 proj item ls [<REF>] [--group <GROUP>] [--open] [--type <TYPE>] [--owner <OWNER>] [--overdue] [--json]
-proj item add <REF> <TEXT> [--group <GROUP>] [--after <AFTER>] [--state <STATE>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>] [--task <T-…>]
+proj item add <REF> <TEXT> [--group <GROUP>] [--after <AFTER>] [--state <STATE>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>] [--task <TASK>]
 proj item set <ITEM> <STATE> [--note <NOTE>] [--commit <COMMIT>]
 proj item check <ITEM> [--note <NOTE>] [--commit <COMMIT>]
 proj item uncheck <ITEM>
-proj item edit <ITEM> [--text <TEXT>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>]
+proj item edit <ITEM> [--text <TEXT>] [--note <NOTE>] [--owner <OWNER>] [--due <DUE>] [--task <TASK>] [--reassign]
 proj item mv <ITEM> [--group <GROUP>] [--ungroup] [--after <AFTER>] [--first]
 proj item rm <ITEM>
 proj item group
@@ -228,7 +229,8 @@ task。**正文里裸写的 id（如 `见 DEC-0001`）只做链接渲染**（`[�
 无联动，悬空 id 保持裸文本）；要联动用 `--task`，要多个引用写进正文即可。
 - `set ID#n STATE`：改状态（如 met / missed / done / skipped）；`check ID#n` =
 标记为已处理（该清单第一个 closed 状态）；`uncheck ID#n` = 重开（回到第一个未处理
-状态）；`edit ID#n --text/--note/--owner/--due`（空串清除该字段）。
+状态）；`edit ID#n --text/--note/--owner/--due/--task`（空串清除该字段）；
+`--reassign` 在转交/清空 owner 时必给（S.3 防抢，转交记 changelog）。
 - `mv ID#n`：`--group L`/`--ungroup`/`--after ITEM`/`--first` 四选一。
 **跨组移动换新编号**（旧编号作废，永不复用）；组内移动只换顺序。
 `rm ID#n` 删除（编号永不复用）。
@@ -236,7 +238,7 @@ task。**正文里裸写的 id（如 `见 DEC-0001`）只做链接渲染**（`[�
 分配下一个字母；`group rename` 改名称（字母不变）；`group rm REF L`
 （有成员须 `--ungroup-items`/`--delete-items`）；`group mv REF L --after B/--first`。
 - 操作前 md 必须与 DB 一致，否则报 `unsynced edits`（先 `proj sync`）。处于
-`gates.items` 门禁状态的记录（如 Archived plan）拒绝重开/新增未处理项。
+门禁清单（items[].gate，如 Archived plan 的 Success Criteria）里还有未处理项的记录会被拒绝。
 - 进度：任务带清单时，其行末在 Tasks 块与 `WIP.md` 显示 `n/m`（已处理/总数）。
 
 ## wip
@@ -244,7 +246,7 @@ task。**正文里裸写的 id（如 `见 DEC-0001`）只做链接渲染**（`[�
 ```
 proj wip add <IDS>
 proj wip return <IDS>
-proj wip ls
+proj wip ls [--owner <OWNER>]
 ```
 
 - 全局 `WIP.md`（取代旧 TASKLIST.md）：正在做/进行中的记录自动登记——记录进入
@@ -259,11 +261,14 @@ proj wip ls
 ```
 proj init
 proj plan new "Ship v1" -y && proj plan activate 1
-proj task new "Parse config" --parent 1 -y
-proj task new "Edge cases" --parent B -y      # B = 上面的任务 id（子任务）
-proj task start A -y
-proj task done B && proj task done A          # 子任务先结束，父任务门禁才放行
-proj plan review 1   # 门禁通过（任务树全终止）→ Pending Review
+proj task new "Parse config" -y && proj task new "Edge cases" -y   # A / B = 两个任务
+proj item add 1 "Parse config" --task A        # plan 的 Work 清单引用任务（→ A）
+proj item add 1 "Edge cases" --task B
+proj task start A && proj task done B && proj task done A   # Done 时 Work 行自动勾
+proj plan review 1   # Active → Pending Review（无任务门禁）
+proj item add 1 "e2e passes"                 # Success Criteria 行（#003）
+proj item check 1#003                        # 勾 Success Criteria
+proj plan archive 1    # Work + Success Criteria 全 closed 才放行
 proj changelog add "Added: v1 发布"
 proj changelog version --bump major
 ```
