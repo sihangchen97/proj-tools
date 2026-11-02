@@ -64,8 +64,8 @@ def teardown() -> None:
         return  # PROJ_E2E_SANDBOX: ran in place, nothing to copy back
     import gc
     gc.collect()  # drop any command connection still referenced in-process
-    if (SANDBOX / ".proj.sqlite").is_file():
-        con = sqlite3.connect(SANDBOX / ".proj.sqlite", timeout=5.0)
+    if (SANDBOX / ".proj" / "cache.sqlite").is_file():  # S.10
+        con = sqlite3.connect(SANDBOX / ".proj" / "cache.sqlite", timeout=5.0)
         try:
             con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:

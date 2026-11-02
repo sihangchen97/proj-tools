@@ -148,7 +148,7 @@ def test_check_ignores_missing_events_log(proj):
 
 
 def test_check_validates_events_log(proj):
-    path = proj.root / "events.jsonl"
+    path = proj.root / ".proj" / "events.jsonl"  # S.10
     path.write_text("not a json line\n", encoding="utf-8")
     problems = checkmod.check(proj)
     assert any("events.jsonl" in p and "line 1" in p for p in problems)

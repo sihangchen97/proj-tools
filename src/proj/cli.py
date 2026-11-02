@@ -868,7 +868,7 @@ def bug(text: str | None = typer.Argument(None,
         cmd: str | None = typer.Option(None, "--cmd", help="the command being run"),
         as_json: bool = typer.Option(False, "--json", help="JSON output for 'ls'"),
         root: Path | None = typer.Option(None, "--root", help="project root")):
-    """Record a bug in the proj tool itself -> .proj.bugs (B2); `proj bug ls` lists.
+    """Record a bug in the proj tool itself -> .proj/bugs.log (B2); `proj bug ls` lists.
 
     The first argument is interpreted as the subcommand name `ls` (a group's
     positional would otherwise steal it) — `proj bug ls` / `proj bug ls --json`."""
@@ -894,7 +894,7 @@ def main():
     """CLI entry point (pyproject [project.scripts] proj = "proj.cli:main").
 
     B4: an uncaught, unexpected exception (not a normal ValueError / sqlite3 /
-    typer error) is auto-recorded to .proj.bugs before the process exits
+    typer error) is auto-recorded to .proj/bugs.log before the process exits
     non-zero; normal errors just exit non-zero."""
     try:
         app()

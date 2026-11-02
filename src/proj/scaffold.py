@@ -96,26 +96,23 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     # an empty PROJ_LOGS line documents the available config var
     add(".env", "# project config defaults (D6): OS env > .env > code default\n"
                 "# PROJ_LOGS=\n")
-    # B3: .proj.bugs is append-only and personal — never committed; S.2: the
-    # write-lock file is a runtime artifact (a dead holder's flock is released
-    # by the kernel, so a stale file is harmless — never commit it either).
-    # Idempotent: a pre-existing .gitignore (or one already listing them) is
-    # left as is.
-    gi = cfg.root / ".gitignore"
-    entries = [".proj.bugs", ".proj.write-lock"]
-    if gi.exists():
-        lines = gi.read_text(encoding="utf-8").splitlines()
-        added = False
-        for entry in entries:
-            if entry not in lines:
-                lines.append(entry)
-                added = True
-        if added:
-            fsio.write_atomic(gi, "\n".join(lines) + "\n")
-            created.append(".gitignore (updated)")
-    else:
-        fsio.write_atomic(gi, "\n".join(entries) + "\n")
-        created.append(".gitignore")
+    # S.10: project data lives in .proj/ (committed: cache.sqlite, lock.yaml,
+    # events.jsonl, README.md, .gitignore; never committed: bugs.log,
+    # write.lock, cache.sqlite-{wal,shm}). The .proj/ dir + its own .gitignore
+    # are created here (add() is idempotent); cache.sqlite is created by the
+    # open_db below and lock.yaml by write_lock (both mkdir .proj/ themselves).
+    add(".proj/README.md",
+        "# .proj - proj project data (do not delete)\n\n"
+        "- `cache.sqlite`: the database (committed for now; git collab C4 makes\n"
+        "  it a cache rebuilt from `events.jsonl`)\n"
+        "- `lock.yaml`: the pinned profiles / templates (committed)\n"
+        "- `events.jsonl`: the event log (git collab, committed)\n"
+        "- `bugs.log`: bug reports about proj itself (personal, not committed)\n"
+        "- `write.lock`: the project write lock (runtime, not committed)\n")
+    add(".proj/.gitignore",
+        "# never committed (personal / runtime)\n"
+        "bugs.log\nwrite.lock\ncache.sqlite-wal\ncache.sqlite-shm\n"
+        "# git collab (C4) stops committing the DB: add `cache.sqlite` once C4 lands\n")
     if zoo:
         copy_tpl("zoo-rule.md", ".roo/rules/proj-tools.md")
 

@@ -118,7 +118,7 @@ def proj_init(root: str | None = None, profile: str = "default") -> str:
     """Scaffold a new project: files, DB tables (lock wins over templates), seed,
     adopt. root: absolute project path (default: the current directory).
     profile: default plus additive names (cv, infra, quality, …); the choice is
-    pinned in .proj.lock — repeat inits append new profiles."""
+    pinned in .proj/lock.yaml — repeat inits append new profiles."""
     cfg = _cfg(root, strict=False)
     try:
         created = scaffold.init(cfg, [profile])
@@ -514,14 +514,14 @@ def proj_item_rm(item: str, items: str | None = None, root: str | None = None) -
 
 
 def proj_bug(text: str, command: str | None = None, root: str | None = None) -> str:
-    """Record a bug in the proj tool itself -> .proj.bugs (B2, DB-free). Returns
+    """Record a bug in the proj tool itself -> .proj/bugs.log (B2, DB-free). Returns
     the file path it was written to."""
     path = bugs.append_bug(text, "mcp", cmd=command, root=root)
     return f"recorded to {path}"
 
 
 def proj_bug_ls(root: str | None = None) -> str:
-    """List the .proj.bugs records (time · source · reporter · first line)."""
+    """List the .proj/bugs.log records (time · source · reporter · first line)."""
     recs = bugs.list_bugs(root)
     if not recs:
         return "(no bug reports)"

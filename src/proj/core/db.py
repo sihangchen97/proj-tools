@@ -1,4 +1,4 @@
-"""SQLite core (.proj.sqlite) — the single source of truth.
+"""SQLite core (.proj/cache.sqlite) — the single source of truth.
 
 Unified tables (schema v4):
 
@@ -14,7 +14,7 @@ other event), so a changelog line renders as `- `date - emoji status``;
 Plus the global changelog:
     changelog_entries(id PK, version, category, message, date)
 
-The lock file (.proj.lock) pins which templates built the DB so a fresh
+The lock file (.proj/lock.yaml, S.10) pins which templates built the DB so a fresh
 clone without the DB can rebuild the same schema.
 """
 from __future__ import annotations
@@ -34,7 +34,8 @@ import yaml
 from proj.core.templates import ItemsSpec, RecordTypeSpec
 
 SCHEMA_VERSION = 9
-LOCK_FILE = ".proj.lock"
+#: the profile lock (S.10): committed, in the .proj/ data directory
+LOCK_FILE = ".proj/lock.yaml"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
 
@@ -488,6 +489,7 @@ def parse_summary(arg: str, spec: ChangelogSpec | None = None) -> tuple[str, str
 
 def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]) -> Path:
     path = root / LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)  # S.10: the .proj/ dir
     data = {
         "schema_version": SCHEMA_VERSION,
         "profiles": profiles,

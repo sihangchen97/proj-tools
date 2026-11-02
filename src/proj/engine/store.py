@@ -1013,7 +1013,7 @@ Ops cheatsheet (RT = a type — name or code, case-insensitive; VERB = one from 
 
 
 def _bug_count(cfg: ProjConfig):
-    """Number of `.proj.bugs` records, or None when the file does not exist (B).
+    """Number of `.proj/bugs.log` records, or None when the file does not exist (B).
     DB-free (a file read) — safe even with a broken database."""
     from proj import bugs  # lazy
 
@@ -1048,7 +1048,7 @@ def info(cfg: ProjConfig) -> dict:
         "changelog": {"entries": len(cl), "versions": versions,
                       "latest": versions[-1] if versions else None},
         "views": views,
-        "bug_reports": _bug_count(cfg),  # B: .proj.bugs (DB-free; None = file absent)
+        "bug_reports": _bug_count(cfg),  # B: .proj/bugs.log (DB-free; None = file absent)
         "cheatsheet": CHEATSHEET.splitlines(),
     }
     db.close()
@@ -1056,7 +1056,7 @@ def info(cfg: ProjConfig) -> dict:
 
 
 def info_text(d: dict) -> str:
-    lines = [f"Project: {d['root']} — managed by proj (.proj.sqlite)", ""]
+    lines = [f"Project: {d['root']} — managed by proj (.proj/cache.sqlite)", ""]
     if d.get("journal_mode", "WAL").startswith("DELETE"):
         lines.append("Journal: DELETE (rollback journal — the project is on a network "
                      "filesystem; avoid several machines writing it at once)")
@@ -1071,7 +1071,7 @@ def info_text(d: dict) -> str:
     if cl["entries"]:
         lines.append(f"Changelog: {cl['entries']} entries, latest {cl['latest']}")
     if d.get("bug_reports"):
-        lines.append(f"Bug reports: {d['bug_reports']} (.proj.bugs)")
+        lines.append(f"Bug reports: {d['bug_reports']} (.proj/bugs.log)")
     lines.append("Views (rendered, never hand-edit): " + ", ".join(d["views"]))
     lines.append("")
     lines.append(CHEATSHEET)

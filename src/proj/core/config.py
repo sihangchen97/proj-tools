@@ -13,8 +13,16 @@ def reporter() -> str:
     """S.4: the agent that made a change — `PROJ_AGENT` (set when an agent
     launches the CLI/MCP) else the system username ('unknown' as a last
     resort). Written into every `record_changelog` row (the `actor` column)
-    and the `.proj.bugs` records, so a changelog line names who did it."""
+    and the `.proj/bugs.log` records, so a changelog line names who did it."""
     return os.environ.get("PROJ_AGENT") or getpass.getuser() or "unknown"
+
+
+#: the project data directory (S.10): cache.sqlite (committed until the git
+#: collab C4 turns it into a rebuilt cache), lock.yaml (committed), bugs.log /
+#: write.lock (never committed, .proj/.gitignore)
+PROJ_DIR = ".proj"
+#: the marker that a directory is a project root (S.10)
+LOCK = f"{PROJ_DIR}/lock.yaml"
 
 
 @dataclass
@@ -22,26 +30,32 @@ class ProjConfig:
     root: Path
 
     @property
+    def proj_dir(self) -> Path:
+        return self.root / PROJ_DIR
+
+    @property
     def db_path(self) -> Path:
-        # DB at the project root — committed by default (clone = ready)
-        return self.root / ".proj.sqlite"
+        # .proj/cache.sqlite — committed by default (clone = ready); the git
+        # collab C4 later stops committing it (rebuilt from events.jsonl)
+        return self.root / PROJ_DIR / "cache.sqlite"
 
 
 def find_root(start: Path | None = None, strict: bool = True) -> Path:
-    """Project root = the start directory (default: cwd) if it is an
-    initialized project, i.e. it holds a `.proj.lock` or `.proj.sqlite`
-    (both created by `proj init`). No walking up: run `proj` from the
-    project root, or pass `--root` for an explicit path. With
+    """Project root = the nearest ancestor of the start directory (default:
+    cwd, or the explicit --root value) that is an initialized project, i.e.
+    holds `.proj/lock.yaml` (created by `proj init`). S.10: walking up is
+    allowed — commands work from the project's subdirectories. With
     strict=False, fall back to the start directory unconditionally (used
     by `init` to bootstrap a brand-new project).
     """
     cur = (start or Path.cwd()).resolve()
-    if (cur / ".proj.lock").is_file() or (cur / ".proj.sqlite").is_file():
-        return cur
+    for d in (cur, *cur.parents):
+        if (d / LOCK).is_file():
+            return d
     if not strict:
         return cur
     raise FileNotFoundError(
-        f"no proj project in {cur} (needs .proj.lock / .proj.sqlite) — "
+        f"no proj project in {cur} or any ancestor (needs .proj/lock.yaml) — "
         f"run `proj init` here, or pass --root")
 
 

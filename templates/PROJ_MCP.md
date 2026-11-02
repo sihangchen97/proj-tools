@@ -7,7 +7,7 @@
 > （client cwd ≠ 项目）就给每个 tool 传 `root`，或设 `$PROJ_HOME`。
 > 校验失败不抛错，而是返回 `error: …` 文本（agent 可读）。
 > proj 行为不符合文档 / 出现未预期报错时，用 `proj_bug(text, command=…)` 记录
-> 现象和命令（写入项目的 `.proj.bugs`，不入库、不进 git）。
+> 现象和命令（写入项目的 `.proj/bugs.log`，不入库、不进 git）。
 > **操作者（S.4）**：每条 changelog 记录是谁改的——`PROJ_AGENT`（agent 启动 `proj-mcp`
 > 时设置）优先，否则取系统用户名；`proj_show` 的 `--history`/`as_json` 都带它。
 
@@ -18,7 +18,7 @@
 Scaffold a new project: files, DB tables (lock wins over templates), seed,
 adopt. root: absolute project path (default: the current directory).
 profile: default plus additive names (cv, infra, quality, …); the choice is
-pinned in .proj.lock — repeat inits append new profiles.
+pinned in .proj/lock.yaml — repeat inits append new profiles.
 
 ### `proj_new`
 
@@ -120,7 +120,8 @@ Add an item to a record's checklist (auto-numbered, appended to its
 group), or a whole new group. new_group=true: `text` is the GROUP name —
 the next free letter (A-Z, never reused) is assigned. group: the group
 letter L (default the ungrouped list); after: insert right after ITEM;
-state/note/owner/due optional. Returns the fresh item list.
+state/note/owner/due/task optional (task: reference a task, `T-…` — only
+tasks may be referenced). Returns the fresh item list.
 
 ### `proj_item_update`
 
@@ -128,8 +129,11 @@ Change an item or a group of a record's checklist (item = 'ID#nn'; a
 group = 'ID#L00', its X00 row — `text` on a group renames it). Pass only
 the fields to change. state: one of the checklist's states, or 'closed'
 (the first closed state) / 'open' (the first unclosed state); text/note/
-owner/due on an item (an empty string clears a field); commit: a git
-commit hash. Move: exactly one of group (into L, fresh number) / ungroup
+owner/due/task on an item (an empty string clears a field; task references
+a task `T-…`); commit: a git commit hash. reassign: hand the item to a
+different owner (or clear the owner) — required by S.3 when the item is
+owned and the owner changes.
+Move: exactly one of group (into L, fresh number) / ungroup
 (to the ungrouped list) / after (right after ITEM) / first (top of its
 group) — for a group, after/first moves the group. Returns the fresh item
 list. Refused when it would un-close an item on a record in a closed
@@ -153,14 +157,15 @@ first. A record not in WIP is an error. Returns what was returned.
 
 ### `proj_wip_ls`
 
-The WIP list: ID  status  title  n/m.
+The WIP list: ID  status  title  n/m. owner: only WIP entries that carry
+an OPEN item owned by that person (those items are listed).
 
 ### `proj_bug`
 
-Record a bug in the proj tool itself -> .proj.bugs (B2, DB-free). Returns
+Record a bug in the proj tool itself -> .proj/bugs.log (B2, DB-free). Returns
 the file path it was written to.
 
 ### `proj_bug_ls`
 
-List the .proj.bugs records (time · source · reporter · first line).
+List the .proj/bugs.log records (time · source · reporter · first line).
 

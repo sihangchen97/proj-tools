@@ -151,6 +151,7 @@ def test_project_lock_timeout_names_the_holder(tmp_path, monkeypatch):
 def test_stale_lock_file_is_not_fatal(tmp_path):
     """A dead holder's flock is released by the kernel — a leftover file must
     not block a fresh writer."""
+    (tmp_path / fsio.LOCK_NAME).parent.mkdir(parents=True, exist_ok=True)  # S.10: .proj/
     (tmp_path / fsio.LOCK_NAME).write_text("99999999 some dead command\n", encoding="utf-8")
     with fsio.project_lock(tmp_path, "fresh"):
         line = (tmp_path / fsio.LOCK_NAME).read_text(encoding="utf-8").strip()

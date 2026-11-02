@@ -20,7 +20,8 @@ def test_non_project_cwd_fails_with_init_hint(tmp_path, monkeypatch):
     assert "proj init" in r.output
     r = runner.invoke(app, ["init"])
     assert r.exit_code == 0, r.output
-    assert (empty / ".proj.sqlite").is_file()
+    assert (empty / ".proj" / "cache.sqlite").is_file()  # S.10
+    assert (empty / ".proj" / "lock.yaml").is_file()
 
 
 def test_root_points_at_project(proj, tmp_path, monkeypatch):

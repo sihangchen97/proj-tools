@@ -6,7 +6,7 @@ starting (`expect_mtime_ns`), it refuses to clobber a file that changed in the
 meantime (the original is kept and a ProjError is raised).
 
 `project_lock` serializes the project's write commands: an exclusive
-`fcntl.flock` on `<root>/.proj.write-lock` (pid + command written into it),
+`fcntl.flock` on `<root>/.proj/write.lock` (pid + command written into it),
 waited on up to `LOCK_TIMEOUT` seconds. Read commands take no lock; a lock held
 by a dead process is released by the kernel, so a stale file is harmless.
 """
@@ -22,7 +22,8 @@ from pathlib import Path
 
 from proj.core.db import ProjError
 
-LOCK_NAME = ".proj.write-lock"
+#: the write lock (S.10): a runtime artifact, never committed (.proj/.gitignore)
+LOCK_NAME = ".proj/write.lock"
 LOCK_TIMEOUT = 10.0
 
 _local = threading.local()
@@ -98,6 +99,7 @@ def project_lock(root: str | Path, cmd: str = ""):
         yield
         return
     lock_path = root / LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)  # S.10: .proj/ may not exist
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
     deadline = time.monotonic() + LOCK_TIMEOUT
     got = False

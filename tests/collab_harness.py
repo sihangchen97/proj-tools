@@ -139,9 +139,8 @@ def build_two_clones(tmp_path: Path, base_setup=None) -> TwoClones:
     base.run("init", "--profile", "default")
     if base_setup is not None:
         base_setup(base)
-    excl = base_dir / ".git" / "info" / "exclude"
-    excl.write_text(excl.read_text()
-                    + "\n.proj.bugs\n.proj.write-lock\n", encoding="utf-8")
+    # S.10: .proj/bugs.log + write.lock are excluded by the committed
+    # .proj/.gitignore (scaffold) — no local exclude entry needed
     # hooks install on the base: commits .gitattributes into the project (C5)
     # so A/B inherit it tracked; their own install only writes local git
     # config + hooks (both inside .git)

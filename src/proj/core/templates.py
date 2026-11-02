@@ -329,11 +329,11 @@ _LOCK_PROFILES: dict[tuple, list[str]] = {}
 
 
 def _lock_profiles(project_root: Path | None) -> list[str]:
-    """Profiles pinned in `.proj.lock` (no lock → []). Cached by lock mtime/size;
+    """Profiles pinned in `.proj/lock.yaml` (S.10; no lock → []). Cached by lock mtime/size;
     a lock rewrite changes the key, so a re-parse is always fresh."""
     if project_root is None:
         return []
-    path = project_root / ".proj.lock"
+    path = project_root / ".proj/lock.yaml"  # S.10 (== dbmod.LOCK_FILE)
     if not path.is_file():
         return []
     st = path.stat()
@@ -392,7 +392,7 @@ def _registry_key(project_root: Path | None, profiles: list[str] | None) -> tupl
     dirs = normalize_profiles(profiles) if profiles else default_profile_dirs(project_root)
     lock_stat: tuple = ()
     if project_root is not None:
-        lock = project_root / ".proj.lock"
+        lock = project_root / ".proj/lock.yaml"  # S.10 (== dbmod.LOCK_FILE)
         if lock.is_file():
             st = lock.stat()
             lock_stat = (st.st_mtime_ns, st.st_size)

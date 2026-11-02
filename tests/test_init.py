@@ -1,4 +1,6 @@
 """v3 init: scaffold, lock, seed, adoption, idempotence."""
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -11,18 +13,48 @@ from proj.engine import store as rec
 def test_init_creates_expected_files(proj):
     root = proj.root
     for expected in ["CHANGELOG.md", "WIP.md", "CONTRIBUTING.md",
-                     ".proj.lock",
+                     ".proj/lock.yaml",           # S.10 (was .proj.lock)
+                     ".proj/README.md",
+                     ".proj/.gitignore",
                      "docs/decisions/DEC-0001-record-architecture-decisions.md",
                      ".env.example"]:
         assert (root / expected).is_file(), expected
     # .github (issue/PR templates) is not scaffolded — project-specific
     assert not (root / ".github").exists()
-    # DB is .proj.sqlite at the project root (committed by default);
-    # nothing from profiles/ is copied (bundled fallback — record_type
-    # templates and the global changelog config alike)
+    # S.10: DB is .proj/cache.sqlite (committed by default); the root
+    # .gitignore no longer carries proj entries (.proj/.gitignore does);
+    # nothing from profiles/ is copied (bundled fallback)
     assert proj.db_path.is_file()
-    assert proj.db_path == root / ".proj.sqlite"
+    assert proj.db_path == root / ".proj" / "cache.sqlite"
+    assert not (root / ".gitignore").exists()
     assert not (root / "profiles").exists()
+
+
+def test_proj_gitignore_contents(proj):
+    """S.10: .proj/.gitignore excludes the personal/runtime files (and the
+    WAL sidecars); cache.sqlite itself is still committed (until git C4)."""
+    gi = (proj.root / ".proj" / ".gitignore").read_text()
+    for line in ("bugs.log", "write.lock", "cache.sqlite-wal", "cache.sqlite-shm"):
+        assert line in gi.splitlines(), line
+    assert "cache.sqlite" not in gi.splitlines()  # committed until C4
+
+
+def test_find_root_walks_up_to_subdir(proj, tmp_path, monkeypatch):
+    """S.10: a command run from a SUBDIRECTORY of the project finds the root."""
+    sub = proj.root / "docs" / "tasks"
+    sub.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(sub)
+    from proj.core.config import find_root
+    assert find_root() == proj.root
+    # from an unrelated tree (OUTSIDE the project — the proj fixture shares
+    # tmp_path, so an else dir below it would still walk up into the project):
+    # an error (nothing to find)
+    import tempfile
+
+    else_dir = Path(tempfile.mkdtemp())
+    monkeypatch.chdir(else_dir)
+    with pytest.raises(FileNotFoundError, match="no proj project"):
+        find_root()
 
 
 def test_seed_decision_content(proj):

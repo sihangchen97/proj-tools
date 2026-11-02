@@ -14,11 +14,11 @@ from proj.engine.record import record_for
 def check(cfg: ProjConfig) -> list[str]:
     problems: list[str] = []
     if not cfg.db_path.is_file():
-        return ["no .proj.sqlite — run `proj init`"]
+        return ["no .proj/cache.sqlite — run `proj init`"]
 
     lock = dbmod.read_lock(cfg.root)
     if lock is None:
-        problems.append("no .proj.lock — run `proj init`")
+        problems.append("no .proj/lock.yaml — run `proj init`")
     else:
         lock_specs = dbmod.specs_from_lock(lock)
         for record_type in lock_specs:
@@ -128,12 +128,12 @@ def check(cfg: ProjConfig) -> list[str]:
 
     # the event log (git collab E7): only checked when the file exists —
     # projects that have not started recording events are healthy without it.
-    # S.10 moves the file into .proj/; until then it sits next to the DB.
-    events_path = cfg.root / "events.jsonl"
+    # In .proj/ (S.10); committed, so a corrupted one surfaces in `check`.
+    events_path = cfg.root / ".proj" / "events.jsonl"
     if events_path.is_file():
         from proj import events  # lazy: events has no import cycle, kept late
         for msg in events.validate(events_path):
-            problems.append(f"events.jsonl: {msg}")
+            problems.append(f".proj/events.jsonl: {msg}")
 
     db.close()
     return problems

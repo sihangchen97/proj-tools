@@ -1,4 +1,4 @@
-"""A13 (§19): the `.proj.bugs` report mechanism (append-only, DB-free, auto)."""
+"""A13 (§19): the `.proj/bugs.log` report mechanism (append-only, DB-free, auto)."""
 from __future__ import annotations
 
 import pytest
@@ -93,20 +93,20 @@ def test_auto_record_unit(monkeypatch):
 
 
 def test_init_gitignore_idempotent(root):
+    """S.10: .proj/.gitignore lists the personal/runtime files; repeating init
+    leaves a user-edited .proj/.gitignore alone (no duplicate, no clobber), and
+    the project-root .gitignore is no longer created by init."""
     from proj import scaffold
     scaffold.init(ProjConfig(root=root), ["default"])
-    gi = (root / ".gitignore").read_text(encoding="utf-8")
-    assert bugs.BUGS_FILE in gi.split()
-    # a pre-existing gitignore without the entry gets it appended, once
-    (root / ".gitignore").write_text("node_modules/\n")
+    gi = (root / ".proj" / ".gitignore").read_text(encoding="utf-8")
+    assert "bugs.log" in gi.split()
+    # a user-edited .proj/.gitignore is left alone (add() is idempotent)
+    (root / ".proj" / ".gitignore").write_text("my-local-thing\n")
     scaffold.init(ProjConfig(root=root), ["default"])
-    lines = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert lines.count(bugs.BUGS_FILE) == 1
-    assert lines[0] == "node_modules/"
-    # repeating init does not duplicate
-    scaffold.init(ProjConfig(root=root), ["default"])
-    assert (root / ".gitignore").read_text(
-        encoding="utf-8").splitlines().count(bugs.BUGS_FILE) == 1
+    assert (root / ".proj" / ".gitignore").read_text(
+        encoding="utf-8").splitlines() == ["my-local-thing"]
+    # the project-root .gitignore is no longer created by init
+    assert not (root / ".gitignore").exists()
 
 
 def test_info_shows_bug_reports(proj):
@@ -115,7 +115,7 @@ def test_info_shows_bug_reports(proj):
     bugs.append_bug("x", "cli", root=proj.root)
     d = rec.info(proj)
     assert d["bug_reports"] == 1
-    assert "Bug reports: 1 (.proj.bugs)" in rec.info_text(d)
+    assert "Bug reports: 1 (.proj/bugs.log)" in rec.info_text(d)
 
 
 def test_cli_bug_and_ls(proj, monkeypatch):
