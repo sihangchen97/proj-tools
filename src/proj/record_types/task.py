@@ -52,7 +52,9 @@ class Task(Record):
                 db.begin()  # R3: one write transaction for the whole command
                 db.add_relation(canonical, row["id"], "parent")
                 db.add_log(row["id"], f"parent: {canonical}", "Added")
-            rec.render_all(cfg)
+            rec.render_affected(
+                cfg,
+                touched=db.touched, touched_views=db.touched_views)  # F6
         return row, p
 
     def _check_parent_for_new(self, cfg: ProjConfig, parent: str) -> str:
@@ -129,7 +131,7 @@ class Task(Record):
             new_s = rec.canonical_id(cfg, parent) if parent else None
             db.add_log(row["id"], f"parent: {old_s} → {new_s or 'none'}", "Changed")
             fresh = rec.by_id(cfg, self.spec, db, row["id"])
-        rec.render_all(cfg)
+        rec.render_affected(cfg, touched=db.touched, touched_views=db.touched_views)  # F6
         return fresh
 
     # ---- engine hooks ---------------------------------------------------------

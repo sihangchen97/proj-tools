@@ -1,6 +1,7 @@
 """`--root` default = cwd (no walking up) + bare `proj` project status."""
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 from proj.cli import app
@@ -121,6 +122,7 @@ def test_s_is_summary_on_new(proj, monkeypatch):
     r = runner.invoke(app, ["decision", "new", "S2", "--supersede", "DEC-0001", "-y"])
     assert r.exit_code == 0, r.output
 
+@pytest.mark.render_drift
 def test_unsynced_edit_survives_an_unrelated_write(proj, monkeypatch):
     """A1 (the original bug): hand-editing a record's md and running ANOTHER
     write command (task new) used to silently clobber the edit — every write

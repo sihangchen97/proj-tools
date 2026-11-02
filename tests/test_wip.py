@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from proj import check as checkmod
 from proj.engine import item_ops
 from proj.engine import store as rec
@@ -269,6 +271,7 @@ def test_sync_keeps_record_md_intro_when_writes_back(proj):
 
 # ---- check invariants --------------------------------------------------------
 
+@pytest.mark.render_drift
 def test_check_flags_terminal_record_in_wip(proj):
     row, _ = taskmod.new(proj, "Feat")
     item_ops.add(proj, row["id"], "step one")
@@ -283,6 +286,7 @@ def test_check_flags_terminal_record_in_wip(proj):
     assert any("terminal" in p and row["id"] in p for p in problems)
 
 
+@pytest.mark.render_drift
 def test_check_flags_wip_md_drift(proj):
     row, _ = taskmod.new(proj, "Feat")
     wipmod.wip_add(proj, [row["id"]])

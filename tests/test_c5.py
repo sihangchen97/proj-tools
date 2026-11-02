@@ -69,6 +69,7 @@ def test_git_in_progress_none_when_clean(git_project):
 
 # ---- C7: a write command is refused mid-merge (real git conflict) ---------
 
+@pytest.mark.render_drift
 def test_write_refused_while_merge_in_progress(git_project):
     root = git_project.root
     taskmod.new(git_project, "base")
@@ -101,6 +102,7 @@ def test_write_refused_while_merge_in_progress(git_project):
 
 # ---- conflict marker: sync points at the fix -------------------------------
 
+@pytest.mark.render_drift
 def test_sync_reports_conflict_marker(proj):
     taskmod.new(proj, "T1")
     p = next(proj.root.glob("docs/tasks/T-000001-*.md"))

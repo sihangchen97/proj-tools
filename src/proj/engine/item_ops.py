@@ -71,7 +71,9 @@ class _Ctx:
         notes = items.commit(self.db, self.spec, self.row, self.state, new, notes, it=self.it)
         # R3: render on the SAME connection — it reads the (still uncommitted)
         # item write; a fresh connection would not see it under WAL
-        rec.render_all(self.cfg, db=self.db)
+        rec.render_affected(
+            self.cfg, db=self.db,
+            touched=self.db.touched, touched_views=self.db.touched_views)  # F6
         row = self.db.get(self.spec, self.row["id"])
         state = _load_state(self.db, row, self.it)
         listing = items.render_section(state, self.it)

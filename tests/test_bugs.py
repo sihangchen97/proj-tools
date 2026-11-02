@@ -37,6 +37,7 @@ def test_multiline_and_indented_header(proj):
         "line1\n=== a line that looks like a header\nline3"
 
 
+@pytest.mark.render_drift
 def test_db_free_with_broken_database(proj, tmp_path):
     # B5: a corrupt DB file must never stop a report being written
     (proj.db_path).write_bytes(b"\x00\x01garbage")

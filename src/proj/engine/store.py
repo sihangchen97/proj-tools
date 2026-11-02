@@ -669,6 +669,136 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None,
             db.close()
 
 
+_render_verify_state: dict[str, bool] = {"suspended": False}
+
+
+@contextmanager
+def render_verify_suspended():
+    """F6.2: suspend the per-write render verification inside a multi-write
+    bootstrap (e.g. `scaffold.init`'s seed + render + adopt) — the views are only
+    consistent once the whole sequence lands, so the per-write check (which fires
+    on every post-commit `render_affected`) would be a false alarm. The
+    end-state is still verified by the caller's own hook (pytest teardown / the
+    e2e sweep) once the bootstrap returns."""
+    prev = _render_verify_state["suspended"]
+    _render_verify_state["suspended"] = True
+    try:
+        yield
+    finally:
+        _render_verify_state["suspended"] = prev
+
+
+def render_affected(cfg: ProjConfig, db: dbmod.Db | None = None,
+                    touched: set[str] | None = None,
+                    touched_views: set[str] | None = None) -> list[Path]:
+    """F6: incremental render — re-render only the files a write command
+    touched, expanded per the F6.1 table ("better too many than too few":
+    over-rendering is a little slow, under-rendering is wrong).
+
+    `touched`/`touched_views` are the X0 change-tracking sets of the write
+    transaction (Db.touched / Db.touched_views — kept in memory after the
+    `with open_db(...)` block commits). When both are empty, fall back to a
+    full `render_all` (a command with nothing tracked is a full render — the
+    safe side). `db` is the command's connection when the render happens
+    inside the write transaction (reads its uncommitted writes); otherwise a
+    fresh read connection is opened (the writes are committed by then).
+    """
+    touched = set(touched) if touched is not None else set()
+    touched_views = set(touched_views) if touched_views is not None else set()
+    if not touched and not touched_views:
+        return render_all(cfg, db=db)
+
+    from proj.engine.views import render_changelog_md
+    from proj.engine.wip import render_wip_md  # W1
+    reg = load_registry(cfg.root)
+    own_db = db is None
+    db = open_db(cfg) if own_db else db
+    try:
+        # F6.1: expand touched into the affected record set (over-render is ok).
+        records: set[str] = set(touched)
+        for r in list(touched):
+            # every ancestor task (the Tasks block shows the whole subtree)
+            cur = r
+            while (par := db.parent_of(cur)) is not None:
+                records.add(par["source"])
+                cur = par["source"]
+            # every edge neighbour: parent / children / related / supersede
+            # (both directions) / the records that pick this one / the tasks
+            # this one picks (their `picked by` shows this record's link)
+            for cid in (c["target"] for c in db.children_of(r)):
+                records.add(cid)
+            for other in (db.related_of(r)
+                          + [x["target"] for x in db.supersede_of(r)]
+                          + [x["source"] for x in db.superseded_by_of(r)]
+                          + db.picked_by(r)
+                          + db.tasks_referenced_by(r)):
+                records.add(other)
+        # WIP.md: a WIP member changed, or a touched record is in WIP
+        wip_dirty = ("wip" in touched_views
+                     or any(db.wip_has(r) for r in touched))
+        changelog_dirty = "changelog" in touched_views
+
+        written: list[Path] = []
+        task_rows = db.all(reg["task"]) if "task" in reg else []
+        for spec in reg.values():
+            d = cfg.root / spec.dir
+            d.mkdir(parents=True, exist_ok=True)
+            for row in db.all(spec):
+                if row["id"] not in records:
+                    continue
+                p = file_path(cfg, spec, row)
+                # F6.1: a title change renames the md — drop a stale
+                # same-id file under the old slug (rename already did this in
+                # update_record; this is the defensive fallback)
+                if d.is_dir():
+                    for stale in d.glob(f"{row['id']}-*.md"):
+                        if stale != p and stale.exists():
+                            stale.unlink()
+                text = render_record(spec, row, db, reg, task_rows=task_rows)
+                # F2: no read-back — skip when hash + (mtime, size) match
+                if not _render_unchanged(row.get("md_hash"), row.get("md_mtime_ns"),
+                                         row.get("md_size"), p, text):
+                    fsio.write_atomic(p, text)  # S.2: atomic
+                    written.append(p)
+                    _record_fresh(cfg, spec, db, p, row["id"], text)  # F1
+        if wip_dirty:
+            view = render_wip_md(cfg, db, reg)
+            if view is not None:
+                vfp = db.view_fp(view.path.name)
+                if not _render_unchanged(
+                        vfp[2] if vfp else None,
+                        vfp[0] if vfp else None, vfp[1] if vfp else None,
+                        view.path, view.text):
+                    fsio.write_atomic(view.path, view.text)  # S.2
+                    written.append(view.path)
+                    _view_fresh(db, view.path.name, view.path, view.text)  # F1
+        if changelog_dirty:
+            view = render_changelog_md(cfg, db)
+            if view is not None:
+                vfp = db.view_fp(view.path.name)
+                if not _render_unchanged(
+                        vfp[2] if vfp else None,
+                        vfp[0] if vfp else None, vfp[1] if vfp else None,
+                        view.path, view.text):
+                    fsio.write_atomic(view.path, view.text)  # S.2
+                    written.append(view.path)
+                    _view_fresh(db, view.path.name, view.path, view.text)  # F1
+        if own_db and os.environ.get("PROJ_RENDER_VERIFY") \
+                and not _render_verify_state["suspended"]:
+            # F6.2: after a post-commit incremental render, re-render everything
+            # in memory and compare with the disk — any difference is a bug.
+            # (In-transaction renders, db passed in, are skipped here: a fresh
+            # connection would not see the uncommitted writes — those paths are
+            # verified by the conftest hook after the commit instead.)
+            from proj import render_verify  # lazy
+            render_verify.assert_in_sync(cfg)
+        return written
+    finally:
+        if own_db:
+            db.close()
+
+
+
 # ---- parsing ----------------------------------------------------------------
 
 def parse_record(text: str):
@@ -793,7 +923,7 @@ def new_record(cfg: ProjConfig, record_type: str | RecordTypeSpec, title: str,
         p = file_path(cfg, spec, row)
         p.parent.mkdir(parents=True, exist_ok=True)
         fsio.write_atomic(p, render_record(spec, row, db))  # S.2: atomic
-    render_all(cfg)  # keep views (WIP.md etc.) in sync with the new record
+    render_affected(cfg, touched=db.touched, touched_views=db.touched_views)  # F6
     return row, p
 
 
@@ -831,7 +961,7 @@ def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
         fresh = db.get(spec, row["id"])
         p = file_path(cfg, spec, fresh)
         fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic
-    render_all(cfg)  # status changes affect rendered views
+    render_affected(cfg, touched=db.touched, touched_views=db.touched_views)  # F6
     return fresh
 
 
@@ -881,7 +1011,7 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
         if p != old_p and old_p.is_file():
             old_p.rename(p)
         fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic
-    render_all(cfg)
+    render_affected(cfg, touched=db.touched, touched_views=db.touched_views)  # F6
     return fresh
 
 

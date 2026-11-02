@@ -83,6 +83,7 @@ def test_show_history_and_json_carry_actor(proj, _agent, monkeypatch):
     assert all(e["actor"] == "sam" for e in data["changelog"])
 
 
+@pytest.mark.render_drift
 def test_old_rows_without_actor_render_unchanged(proj, _agent, monkeypatch):
     """A row written before S.4 (actor='') renders with no trailing `· ` suffix."""
     monkeypatch.setenv("PROJ_AGENT", "alex")

@@ -135,6 +135,7 @@ def test_task_move_refuses_cycle_self_missing(proj):
         taskmod.move(proj, child["id"], "PLN-9999")
 
 
+@pytest.mark.render_drift
 def test_relations_allow_parent_plus_related(proj):
     """PK (source, target, kind): the same record pair may hold a parent edge
     and a related edge at once (no more mutual clobbering); re-adding the same
@@ -194,6 +195,7 @@ def test_failed_task_rendered_checked_with_emoji(proj):
     assert "<summary>Tasks</summary>" not in plan_md
 
 
+@pytest.mark.render_drift
 def test_fk_rejects_dangling_parent(proj):
     """A parent edge to a nonexistent record is refused by the FK (the
     write-side guard rejects it before ever reaching the DB)."""
@@ -423,6 +425,7 @@ def test_p3_reopening_task_reopens_item(proj):
     assert _item_state(proj, inc["id"], "001") == "open"
 
 
+@pytest.mark.render_drift
 def test_p3_reverse_gate_blocks_manual_close(proj):
     """Reverse gate: you cannot MANUALLY close an item whose task is still not
     terminal — clear the ref (or finish the task) first."""

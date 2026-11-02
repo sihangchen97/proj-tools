@@ -162,6 +162,7 @@ def test_head_blockquote_shape(proj):
     assert rec.md_summary(text2) == ""
 
 
+@pytest.mark.render_drift
 def test_numbered_must_be_positive_int(proj):
     """D9: numbered must be an int > 0 (the id prefix resolves a record's type);
     0 and non-int are rejected when the registry loads."""

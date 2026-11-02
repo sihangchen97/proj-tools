@@ -283,7 +283,7 @@ def wip_add(cfg, record_ids: list[str], source: str = "manual") -> tuple[list[st
             db.wip_add(rid, source)
             db.add_log(rid, "added to WIP", category="Changed")
             added.append(rid)
-        rec.render_all(cfg, db)
+        rec.render_affected(cfg, db=db, touched=db.touched, touched_views=db.touched_views)
     return added, notes
 
 
@@ -312,7 +312,7 @@ def wip_return(cfg, record_ids: list[str]) -> tuple[list[str], list[str]]:
             db.wip_remove(rid)
             db.add_log(rid, "returned from WIP", category="Changed")
             returned.append(rid)
-        rec.render_all(cfg, db)
+        rec.render_affected(cfg, db=db, touched=db.touched, touched_views=db.touched_views)
     return returned, notes
 
 

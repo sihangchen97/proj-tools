@@ -37,6 +37,7 @@ def test_take_an_owned_item_is_refused_and_db_unchanged(proj):
     assert _owner(proj, rid, "001") == "alex"
 
 
+@pytest.mark.render_drift
 def test_reassign_succeeds_and_writes_changelog(proj):
     row, _ = taskmod.new(proj, "T")
     rid = row["id"]
@@ -46,6 +47,7 @@ def test_reassign_succeeds_and_writes_changelog(proj):
     assert "item #001 owner alex → billy" in _changelog(proj, rid)
 
 
+@pytest.mark.render_drift
 def test_clearing_the_owner_is_a_handover_and_needs_reassign(proj):
     row, _ = taskmod.new(proj, "T")
     rid = row["id"]

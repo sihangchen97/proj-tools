@@ -37,6 +37,7 @@ def _file(proj, rid: str, d: str = "docs/tasks") -> Path:
 
 # ---- K3: the → task reference -------------------------------------------------
 
+@pytest.mark.render_drift
 def test_task_ref_renders_and_roundtrips(proj):
     """The `→ T-xxxxxx` suffix: rendered right after the text (before the note),
     parsed back into the item's task field, and a --task "" edit clears it."""
@@ -255,6 +256,7 @@ def test_sync_delete_removed_and_noted(proj):
     db.close()
 
 
+@pytest.mark.render_drift
 def test_sync_unknown_and_duplicate_number_no_write(proj):
     row, _ = taskmod.new(proj, "T")
     p = _file(proj, row["id"])
@@ -317,6 +319,7 @@ def test_sync_cross_group_move_renumbers(proj, n_items, groups, md, moved,
     ops.add(proj, row["id"], "post-move")               # writes are not blocked
 
 
+@pytest.mark.render_drift
 def test_sync_unknown_group_letter_problem(proj):
     row, _ = taskmod.new(proj, "T")
     p = _file(proj, row["id"])
@@ -448,6 +451,7 @@ def test_promote_task_and_debt(proj):
 
 # ---- ops: drift refusal, group/after, move, remove, ls --------------------------
 
+@pytest.mark.render_drift
 def test_ops_auto_sync_unsynced_md(proj):
     """A1: an unsynced hand edit is ingested by the next write command (not
     refused, not clobbered) — the edit lands in the DB and the op proceeds."""
@@ -586,6 +590,7 @@ def test_refused_for_unknown_record_or_item(proj):
         ops.set_state(proj, row["id"], "done")
 
 
+@pytest.mark.render_drift
 def test_edit_clears_and_validates(proj):
     row, _ = taskmod.new(proj, "T")
     ops.add(proj, row["id"], "a", note="n", owner="o", due="2026-12-31")

@@ -43,6 +43,7 @@ def test_bump_base_is_highest_version_not_newest_date(proj):
     assert used == "v1.1.0"  # not v0.10.0 (newest-date base)
 
 
+@pytest.mark.render_drift
 def test_read_versions_numeric_order(proj):
     # 'v1.10.0' must sort above 'v1.9.0' (semver), not string order
     from proj.engine import views
@@ -80,6 +81,7 @@ def test_show_versions(proj):
     assert [v for v, _ in versions] == ["v0.2.0", "v0.1.0"]
 
 
+@pytest.mark.render_drift
 def test_incident_and_experiment_kinds(proj):
     # all record_types are digit-numbered (int > 0, D9) through the same engine
     row, _ = rec.new_record(proj, "incident", "DB down")

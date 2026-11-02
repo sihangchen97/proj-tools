@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from proj.engine import store as rec
 
 SECTION = "## Decision"  # a decision md's text section (profiles/default)
@@ -76,6 +78,7 @@ def test_touch_is_not_ingested(proj):
         assert db.fingerprint_of(row["id"])[0] != fp0[0]  # fp re-stat'd
 
 
+@pytest.mark.render_drift
 def test_md_drift_still_reads_content(proj):
     """F1.3: the fingerprint is cache — `proj check` (md_drift) reads the full
     content, so a hand edit is still caught even before any fingerprint would

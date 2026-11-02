@@ -130,7 +130,7 @@ class Record:
                 db.add_relation(row["id"], target["id"], "related")
             if related:
                 db.add_log(row["id"], "related: " + ", ".join(related), "Added")
-        rec.render_all(cfg)
+        rec.render_affected(cfg, touched=db.touched, touched_views=db.touched_views)
         with rec.open_db(cfg) as db:
             fresh = rec.by_id(cfg, rec.spec_of(cfg, self.record_type), db, row["id"])
         return fresh, p
@@ -153,7 +153,7 @@ class Record:
                     raise ValueError(f"cannot relate {self.record_type} {row['id']} to itself")
                 db.add_relation(row["id"], target["id"], "related")
             db.add_log(row["id"], "related: " + ", ".join(refs), "Added")
-        rec.render_all(cfg)
+        rec.render_affected(cfg, touched=db.touched, touched_views=db.touched_views)
         with rec.open_db(cfg) as db:
             fresh = rec.by_id(cfg, self.spec, db, id_)
         return fresh

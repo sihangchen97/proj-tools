@@ -1,6 +1,7 @@
 """tests/render_verify.verify: the disk must equal a full in-memory render."""
 from __future__ import annotations
 
+import pytest
 import render_verify
 
 
@@ -8,6 +9,7 @@ def test_clean_project_verifies_empty(proj):
     assert render_verify.verify(proj) == []
 
 
+@pytest.mark.render_drift
 def test_tampered_record_is_detected(proj):
     p = proj.root / "docs" / "decisions" / "DEC-0001-record-architecture-decisions.md"
     assert p.exists()

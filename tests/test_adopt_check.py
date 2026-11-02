@@ -1,4 +1,6 @@
 """v3 adoption (pre-existing files) and `proj check` invariants."""
+import pytest
+
 from proj import check as checkmod
 from proj import scaffold
 from proj.engine import store as rec
@@ -70,6 +72,7 @@ def test_check_clean_project_passes(proj):
     assert checkmod.check(proj) == []
 
 
+@pytest.mark.render_drift
 def test_check_detects_db_drift(proj):
     rec.new_record(proj, "decision", "D2")
     # delete the md file → DB has a record with no file
@@ -79,6 +82,7 @@ def test_check_detects_db_drift(proj):
     assert any("has no md file" in p for p in problems)
 
 
+@pytest.mark.render_drift
 def test_check_detects_orphans_when_dir_missing(proj):
     # whole record dir removed → DB rows are still flagged (dir gap must not skip)
     rec.new_record(proj, "incident", "DB down")
@@ -90,6 +94,7 @@ def test_check_detects_orphans_when_dir_missing(proj):
     assert any("has no md file" in p for p in problems)
 
 
+@pytest.mark.render_drift
 def test_check_detects_status_not_in_template(proj):
     # DB row whose status the template no longer allows (status rename scenario)
     rec.new_record(proj, "decision", "D2")
@@ -102,6 +107,7 @@ def test_check_detects_status_not_in_template(proj):
     assert any("no longer allowed" in p for p in problems)
 
 
+@pytest.mark.render_drift
 def test_check_detects_section_drift(proj):
     rec.new_record(proj, "decision", "D2")
     p = next((proj.root / "docs/decisions").glob("DEC-0002-*.md"))

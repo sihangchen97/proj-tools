@@ -477,6 +477,17 @@ class Db:
                 out.append(r["record_id"])
         return out
 
+    def tasks_referenced_by(self, record_id: str) -> list[str]:
+        """The distinct task ids referenced by this record's LIVE checklist items
+        (K4 `picked by`, deduped record-wide) — the reverse of `picked_by`."""
+        out: list[str] = []
+        for r in self.conn.execute(
+                "SELECT DISTINCT task FROM items "
+                "WHERE record_id=? AND deleted=0 AND task!=''", (record_id,)):
+            if r["task"] not in out:
+                out.append(r["task"])
+        return out
+
     def descendants_of(self, record_id: str) -> set[str]:
         """Every record id hanging below record_id via parent edges (any depth),
         cycle-safe: a record already on the walk is never re-queued."""

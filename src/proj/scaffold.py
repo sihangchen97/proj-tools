@@ -57,6 +57,9 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     else:
         specs = dbmod.specs_from_lock(lock)
 
+    add("CHANGELOG.md", "")      # rendered from DB on first update
+    add("WIP.md", "")           # rendered from DB on first update (replaces TASKLIST.md, W1)
+
     # dirs
     dirs = [s.dir for s in specs.values()]
     for prof in profiles:
@@ -73,8 +76,6 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     # project that wants to override a record_type or the changelog adds its
     # own profiles/<name>.yaml — those override the bundled ones.
 
-    add("CHANGELOG.md", "")      # rendered from DB on first update
-    add("WIP.md", "")           # rendered from DB on first update (replaces TASKLIST.md, W1)
 
     # real files copied from templates/ (user-editable afterwards; never
     # re-created once present)
@@ -125,24 +126,34 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
         dbmod.write_lock(cfg.root, specs, pinned)
         created.append(dbmod.LOCK_FILE)
 
-    # seed decision 0001 only if none exist yet
-    if "decision" in specs:
-        spec = specs["decision"]
-        with rec.open_db(cfg) as db:  # R3: read-only (the seed check)
-            if not db.all(spec) and not any(
-                    x for x in (cfg.root / spec.dir).glob("*.md")
-                    if not x.name.startswith("_")):
-                seed = texts["scaffold"]["seed_decision"]
-                row, p = rec.new_record(cfg, "decision", seed["title"],
-                                         summary=seed.get("summary", ""), spec=spec)
-                rec.status_set(cfg, "decision", row["id"], seed["status"])
-                # R3: the seed's section write + re-render are ONE transaction
-                with rec.open_db(cfg) as d:
-                    d.begin()
-                    d.set(spec, row["id"], sections=json.dumps(seed["sections"]))
-                    fresh = d.get(spec, row["id"])
-                    fsio.write_atomic(p, rec.render_record(spec, fresh, d))
-                created.append(str(p.relative_to(cfg.root)))
+    # F6.2: the seed + the views render are a MULTI-WRITE bootstrap — the views
+    # (WIP.md / CHANGELOG.md) are only consistent once the whole sequence lands
+    # (the seed may add a WIP member), so suspend the per-write render
+    # verification around them; the end-state is checked by the caller's hook.
+    with rec.render_verify_suspended():
+        # seed decision 0001 only if none exist yet
+        if "decision" in specs:
+            spec = specs["decision"]
+            with rec.open_db(cfg) as db:  # R3: read-only (the seed check)
+                if not db.all(spec) and not any(
+                        x for x in (cfg.root / spec.dir).glob("*.md")
+                        if not x.name.startswith("_")):
+                    seed = texts["scaffold"]["seed_decision"]
+                    row, p = rec.new_record(cfg, "decision", seed["title"],
+                                             summary=seed.get("summary", ""), spec=spec)
+                    rec.status_set(cfg, "decision", row["id"], seed["status"])
+                    # R3: the seed's section write + re-render are ONE transaction
+                    with rec.open_db(cfg) as d:
+                        d.begin()
+                        d.set(spec, row["id"], sections=json.dumps(seed["sections"]))
+                        fresh = d.get(spec, row["id"])
+                        fsio.write_atomic(p, rec.render_record(spec, fresh, d))
+                    created.append(str(p.relative_to(cfg.root)))
+        # the views now sit EMPTY (the `add` above) — render them once so the
+        # disk is in the state an incremental render maintains (a full render,
+        # with the F1 view fingerprints set); not added to `created`: the
+        # `Created:` output keeps the pre-F6 form (empty stubs).
+        rec.render_all(cfg)
 
     # adopt any pre-existing managed files, then render views
     problems, notes = rec.adopt(cfg)

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from proj import scaffold
@@ -48,21 +46,35 @@ def many_tasks(proj) -> int:
         db.close()
 
 
+render_verify = pytest.mark.render_verify
+
+
 @pytest.fixture(autouse=True)
-def _render_verify(tmp_path):
-    """PROJ_RENDER_VERIFY=1 (default OFF, PLAN §28.1 23:50): after every test,
-    the on-disk md must equal a full in-memory render of the DB (tests only)."""
+def _render_verify(tmp_path, request):
+    """F6.2: after EVERY test the on-disk md must equal a full in-memory render
+    of the DB — the incremental `render_affected` is cross-checked against
+    `render_all` (incremental must == full). Default ON. Mark a test
+    `@pytest.mark.render_drift` when it deliberately leaves the disk out of
+    sync (the `proj check` drift tests assert the tool DETECTS it, so
+    the disk is NOT supposed to match at teardown). e2e.py turns the same
+    verification on for the whole story (default, every write command + a
+    final sweep)."""
     yield
-    if not os.environ.get("PROJ_RENDER_VERIFY"):
-        return
+    if request.node.get_closest_marker("render_drift"):
+        return  # this test intentionally leaves the disk drifted
     if not (tmp_path / ".proj" / "lock.yaml").exists():
         return  # no proj project in this test
-    import render_verify
+    from proj.render_verify import verify
 
-    from proj.core.config import ProjConfig
-
-    diffs = render_verify.verify(ProjConfig(root=tmp_path))
+    diffs = verify(ProjConfig(root=tmp_path))
     if diffs:
         for rel, kind, detail in diffs[:5]:
             print(f"render-verify {kind}: {rel} ({detail})")
         raise AssertionError(f"disk not in sync with the DB render: {len(diffs)} file(s)")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "render_drift: the test leaves the disk drifted on purpose "
+        "(skip the F6.2 render check)")

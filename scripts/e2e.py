@@ -28,6 +28,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# F6.2: the incremental-render verification is ON by default for e2e — every
+# write command's `render_affected` re-renders everything in memory and
+# compares with the disk (subprocess mode inherits os.environ into each `proj`
+# run; in-process mode reads it directly). Set PROJ_RENDER_VERIFY=0 to opt out.
+os.environ.setdefault("PROJ_RENDER_VERIFY", "1")
+
 REPO = Path(__file__).resolve().parent.parent
 TMPDIR_TESTPROJ = REPO / ".testproj"
 # N4: the repo lives on NFS — the whole story runs in a LOCAL temp dir (tmpfs)
@@ -1058,6 +1064,7 @@ def main() -> int:
         for ch in (ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8, ch9, ch12):
             ch()
         rc = _summary()
+        rc = rc or _render_verify_sweep()
         # A12: refresh the reference e2e.sh after every run (pass OR fail)
         if _EMIT_ON:
             emit_sh(EMIT, emit_path)
@@ -1068,6 +1075,25 @@ def main() -> int:
         return rc
     finally:
         teardown()
+
+
+def _render_verify_sweep() -> int:
+    """F6.3: after the whole story, the on-disk project must equal a full
+    in-memory render (incremental == full, end-to-end)."""
+    if os.environ.get("PROJ_RENDER_VERIFY") in ("0", "off", "false"):
+        return 0
+    from proj.core.config import ProjConfig
+    from proj.render_verify import verify
+
+    diffs = verify(ProjConfig(root=Path(SANDBOX)))
+    if diffs:
+        print(f"\ne2e: RENDER VERIFY FAILED — {len(diffs)} file(s) out of sync:")
+        for rel, kind, detail in diffs[:10]:
+            print(f"  {rel}: {kind} — {detail}")
+        return 1
+    REP.checks += 1
+    print("✓ 渲染校验：磁盘与全量渲染逐文件一致（F6 增量 = 全量）")
+    return 0
 
 
 def _summary() -> int:

@@ -92,6 +92,7 @@ def test_fk_rejects_dangling_edge(proj):
     db.close()
 
 
+@pytest.mark.render_drift
 def test_check_flags_supersede_cycle(proj):
     from proj import check as checkmod
     dec_obj(proj).new(proj, "B")  # 0002
