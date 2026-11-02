@@ -810,7 +810,7 @@ open(f, 'w', encoding='utf-8').write(t[:start] + body + '\n\n' + t[stop:].lstrip
 """
 
 
-def emit_sh(steps: list, out: pathlib.Path) -> pathlib.Path:
+def emit_sh(steps: list, out: Path) -> Path:
     """Render the recorded steps as a human-readable scripts/e2e.sh (PLAN §18.3):
     the `set_section` helper + the sandbox bootstrap, then per-chapter sections,
     `shlex`-quoted `proj` commands, expected-fail commands that cannot abort the
