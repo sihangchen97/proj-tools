@@ -51,13 +51,19 @@ MCP calls appear in the sh as comments only (the sh runs CLI; MCP is covered by 
 
 Layers (`src/proj/`):
 
+- `core/config.py` — `ProjConfig` (root resolution: `--root` > `$PROJ_HOME` > cwd) and
+  `reporter()` (the changelog actor: `PROJ_AGENT` env, else the system username).
 - `core/templates.py` — loads YAML profiles into `RecordTypeSpec`s (record_type, `code`, dir,
-  `numbered`, `verbs` state machine, `status-allowed` with emoji/`done`, fields, sections,
-  `features`, `render` toggles). Docstring documents the profile format.
+  `numbered`, `verbs` state machine, `status-allowed` with emoji/`done`, fields, sections).
+  Docstring documents the profile format.
 - `core/db.py` — SQLite `Db` wrapper (one shared `records` table with a `type` column, plus
-  `record_changelog`, `items`, and a `relations` table for supersede/related/parent edges), id
-  allocation (`next_id`), and `.proj.lock` read/write (pins the templates/schema the DB was built
-  from; `proj init` follows an existing lock).
+  `record_changelog` (with the `actor` column), `items`, and a `relations` table for
+  supersede/related/parent edges), id allocation (`next_id`), and `.proj.lock` read/write (pins
+  the templates/schema the DB was built from; `proj init` follows an existing lock).
+- `core/fsio.py` — the multi-writer safety layer: `write_atomic` (temp file in the same dir +
+  `os.replace`, refuses to clobber a file whose mtime changed mid-command) and `project_lock`
+  (exclusive `fcntl.flock` on `.proj.write-lock`, re-entrant per thread, 10 s wait naming the
+  holder pid + command).
 - `engine/store.py` — module-level storage functions: md parsing (id marker on line 1, the
   tool-owned head fence `<!-- proj:head:start … -->` … `<!-- proj:head:end -->` with title,
   `> **key:** value` blockquote metadata and optional italic summary, rendered changelog table,
@@ -68,25 +74,42 @@ Layers (`src/proj/`):
   `@register` / `record_for` registry. Types without a subclass use the base class.
 - `record_types/` — behavior subclasses only where YAML isn't enough: `task` (parent refs /
   `task move` / re-open restriction under a closed ancestor), `changelog`. The checklists
-  and the `gates.tasks`/`gates.items` promotion live in `profiles/*.yaml` + `engine/items.py`,
+  and the gates/promotion rules live in `profiles/*.yaml` + `engine/items.py`,
   not in these subclasses. Importing the package registers them.
 - `engine/items.py` — the structured checklists (a record's `items:` section): parse/render
-  one item line (`- [ ] #NN text`), merge the md list on sync, the `item` ops (add/set/
-  check/uncheck/edit/mv/rm/ls), the `gates.items` block, the closed-state re-open
-  restriction, and the `n/m` progress suffix on task lines.
-- `engine/views.py` — generated views (`TASKLIST.md`, plan task trees, `CHANGELOG.md`).
+  one item line (`- [ ] #NN text`), merge the md list on sync, the transforms (add/set/
+  check/uncheck/edit/mv/rm) and the diff-log (changelog lines), and the `n/m` progress
+  suffix on task lines.
+- `engine/item_ops.py` — the `item` command entry points the CLI and MCP call (resolve ref,
+  ingest unsynced md, transform, commit + re-render, owner hand-over rules).
+- `engine/wip.py` — `WIP.md` (membership: a record's status in its type's `wip.enter`;
+  per-entry item sections edited there are written back into the record on sync).
+- `engine/present.py` — the shared record formatting (D5): `show` (text + JSON, incl.
+  `--history`/`--json`) and `ls` lines are rendered identically by the CLI and the MCP.
+- `engine/views.py` — generated views (`WIP.md`, `CHANGELOG.md`, the per-record `Tasks`
+  block rendered under the head fence).
 - `cli.py` — Typer app; per-record_type subcommands (`new/ls/show/update/<verb>`) are built
   dynamically from the registry, so a new record_type needs only a YAML file; plus cross-type
   `proj show/ls/open ID` (the id carries its type) and the static `item` group
-  (`proj item ls/add/set/check/uncheck/edit/mv/rm/group`).
-- `mcp.py` — `proj-mcp` stdio server exposing the same engine functions (one tool per CLI verb,
-  optional `root`, falls back to `$PROJ_HOME`); includes the `proj_item_*` tools.
-- `check.py` (invariants: md↔DB, filename↔id, schema↔template, nesting, relation consistency),
-  `scaffold.py` (`init`), `hooks.py` (pre-commit → `proj check`), `docs.py`.
+  (`proj item ls/add/set/check/uncheck/edit/mv/rm`), `wip` group, `changelog` group.
+- `mcp.py` — `proj-mcp` stdio server exposing the engine as tools (optional `root`,
+  falls back to `$PROJ_HOME` then cwd; every tool takes it). Tools cover the same
+  capabilities as the CLI — they are NOT a one-to-one mapping of commands (§9.3);
+  write tools hold the project write lock.
+- `bugs.py` — `.proj.bugs` (tool bug reports: append-only plain text, never committed,
+  O_APPEND writes; auto-records uncaught exceptions with the traceback).
+- `check.py` (invariants: md↔DB, filename↔id, schema↔template, relation consistency),
+  `scaffold.py` (`init`), `hooks.py` (pre-commit → `proj check`), `docs.py`
+  (regenerates `docs/CLI.md` / `docs/MCP.md`).
 
 Key invariants:
-- Sync conflict ownership: `##` section content → md wins; id/uuid/title/status/fields/changelog → DB wins.
+- Sync conflict ownership: `##` section content → md wins; id/title/status/fields/changelog → DB wins.
 - Rendered views and the head fence are never hand-edited; change them via `proj`.
+- Multi-writer: every write command holds the project write lock (`core/fsio.py` `project_lock`,
+  `.proj.write-lock` is gitignored) and all md writes go through `write_atomic` — concurrent
+  writers queue, a crash leaves no half-written file.
+- Every changelog row records the actor (`record_changelog.actor`, from `PROJ_AGENT` / the
+  system username via `config.reporter()`); `.proj.bugs` is append-only and personal.
 - Bundled profiles live in repo-root `profiles/` (`default/*.yaml`, plus top-level `task.yaml`,
   `changelog.yaml`, `texts.yaml` — the latter holds all human-facing text written into projects).
   A project's own `profiles/<record_type>.yaml` overrides the bundled one.
@@ -114,10 +137,10 @@ design plans are Chinese; the e2e demo project's prose is Chinese.
 
 ## Notes
 
-- The schema is in flux: `docs/unified-schema-plan.md` is an in-progress plan (unified `records`
-  table, `parent` as a relation, `features:` → `contain_task`). The README's id/status tables can
-  lag behind the code — trust `profiles/*.yaml` and the module docstrings.
-- Dev stage: no data migrations or backward compatibility for old `.proj.sqlite` files.
+- The README's id/status tables can lag behind the code — trust `profiles/*.yaml` and
+  the module docstrings.
+- Dev stage: no data migrations or backward compatibility for old `.proj.sqlite` files
+  (schema changes bump `SCHEMA_VERSION` and are picked up on a fresh `proj init`).
 - `plans/` (local design docs, e.g. `plans/PLAN.md`), `tobedelete/` (staging area for removed
   files — move rather than delete), `reference/`, `.roo/` are gitignored.
 - Ruff: line length 100, py310 target; `docs.py` intentionally contains Chinese prose.
