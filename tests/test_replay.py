@@ -479,10 +479,11 @@ def test_events_after_snapshot_still_apply(tmp_path):
     rp.replay(db, mk, _specs())
     snap = rp.snapshot_events(db)
     at = max(ev.sort_key(e)[0] for e in snap) + 1
-    # E2 stage bridge: the db has no uuid columns (C1), so the snapshot's
-    # `rec` is the record's ID; events appended after it reference that id.
-    # (C1 makes the snapshot carry the stored uuid and the bridge go away.)
-    added = ev.make("item.add", actor="alex", at=at, seq=1, rec="T-000001",
+    # C1: the snapshot carries the record's stored uuid — an event appended
+    # after it references that uuid (rec), not the id
+    rec_uuid = db.conn.execute(
+        "SELECT uuid FROM records WHERE id='T-000001'").fetchone()[0]
+    added = ev.make("item.add", actor="alex", at=at, seq=1, rec=rec_uuid,
                     item=_uuid(), no="003", section="Acceptance Criteria",
                     text="c")
     (tmp_path / "b").mkdir()

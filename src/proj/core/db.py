@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import uuid as uuid_mod
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +34,7 @@ import yaml
 
 from proj.core.templates import ItemsSpec, RecordTypeSpec
 
-SCHEMA_VERSION = 10  # F1/F2: + records.md_mtime_ns / md_size / md_hash (file fingerprint)
+SCHEMA_VERSION = 11  # C1: + records.uuid / items.uuid (event-log identity)
 #: the profile lock (S.10): committed, in the .proj/ data directory
 LOCK_FILE = ".proj/lock.yaml"
 
@@ -146,16 +147,25 @@ class Db:
             "CREATE TABLE IF NOT EXISTS records "
             "(id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, status TEXT, "
             "summary TEXT, \"commit\" TEXT, created TEXT, sections TEXT, "
-            "md_mtime_ns INTEGER, md_size INTEGER, md_hash TEXT)")
+            "md_mtime_ns INTEGER, md_size INTEGER, md_hash TEXT, "
+            "uuid TEXT NOT NULL DEFAULT '')")
         # F1: pre-F1 databases (schema < 10) lack the fingerprint columns —
         # add them in place (pure cache, NULL = "no fingerprint yet": the first
         # read of a file fills it in).
         for col, dtype in (("md_mtime_ns", "INTEGER"), ("md_size", "INTEGER"),
-                          ("md_hash", "TEXT")):
+                          ("md_hash", "TEXT"), ("uuid", "TEXT")):
             if col not in self.table_columns("records"):
                 self.conn.execute(
-                    f"ALTER TABLE records ADD COLUMN {col} {dtype}")
+                    f"ALTER TABLE records ADD COLUMN {col} {dtype}"
+                    + (" NOT NULL DEFAULT ''" if col == "uuid" else ""))
                 self.conn.commit()  # DDL is not transactional in SQLite
+                # C1: existing rows get a fresh uuid (events for them start after
+                # this migration)
+                if col == "uuid":
+                    for r in self.conn.execute("SELECT id FROM records WHERE uuid=''",):
+                        self.conn.execute(
+                            "UPDATE records SET uuid=? WHERE id=?",
+                            (uuid_mod.uuid4().hex, r[0]))
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS record_changelog "
             "(id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, date TEXT, "
@@ -179,7 +189,22 @@ class Db:
             "trailer TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, "
             "closed_at TEXT NOT NULL DEFAULT '', deleted INTEGER NOT NULL DEFAULT 0, "
             "section TEXT NOT NULL, task TEXT NOT NULL DEFAULT '', "
+            "uuid TEXT NOT NULL DEFAULT '', "
             "PRIMARY KEY (record_id, no))")  # section: which checklist (## section)
+        # C1: item identity for the event log. NO unique index — a move turns
+        # the old number into a tombstone that may briefly share a uuid with the
+        # renumbered live row (the replayer marks tombstones with _uuid=None).
+        # The PRIMARY KEY stays (record_id, no) so `no` is the display number.
+        # Pre-C1 databases: add the column + backfill existing rows (every live
+        # item and tombstone gets a fresh uuid on first read).
+        if "uuid" not in self.table_columns("items"):
+            self.conn.execute("ALTER TABLE items ADD COLUMN uuid TEXT NOT NULL DEFAULT ''")
+            self.conn.commit()  # DDL is not transactional in SQLite
+            for r in self.conn.execute(
+                    "SELECT record_id, no FROM items WHERE uuid=''",):
+                self.conn.execute(
+                    "UPDATE items SET uuid=? WHERE record_id=? AND no=?",
+                    (uuid_mod.uuid4().hex, r[0], r[1]))
         # WIP.md (plans §5): the hand/registered "in progress" list — any record
         # type may sit in it (manual add or an auto switch into wip.enter)
         self.conn.execute(
@@ -273,14 +298,23 @@ class Db:
 
     def insert(self, spec: RecordTypeSpec, id_: str, title: str,
                status: str, created: str, summary: str = "",
-               commit: str = "") -> None:
+               commit: str = "", uuid: str | None = None) -> str:
+        """C1: a record's uuid (event-log identity) is stored in the `uuid`
+        column — generated here when the caller does not supply one (the
+        replayer supplies it on replay). Returns the stored uuid so a caller
+        can reference the record in its events."""
+        if uuid is None:
+            uuid = uuid_mod.uuid4().hex
         self.conn.execute(
             "INSERT INTO records (id, type, title, status, summary, \"commit\", "
-            "created, sections) VALUES (?,?,?,?,?,?,?,?)",
-            (id_, spec.record_type, title, status, summary, commit, created, "{}"))
+            "created, sections, uuid) VALUES (?,?,?,?,?,?,?,?,?)",
+            (id_, spec.record_type, title, status, summary, commit, created,
+             "{}", uuid))
         self._touch(id_)
         self._emit("record.create", id_, type=spec.record_type, title=title,
-                   status=status)
+                   status=status, uuid=uuid, created=created,
+                   summary=summary, commit=commit)
+        return uuid
 
     def get(self, spec: RecordTypeSpec, id_: str) -> dict | None:
         row = self.conn.execute(
@@ -516,19 +550,31 @@ class Db:
     def items_save(self, record_id: str, rows: list[dict]) -> None:
         """One transaction: delete and re-insert all rows of the record
         (pos = the list index). The whole checklist is rewritten as a unit;
-        items.py is the only writer."""
+        items.py is the only writer.
+        C1: the `uuid` of every row is preserved across the delete/re-insert —
+        a row carrying a uuid keeps it; a fresh row (no uuid) gets one here,
+        so the item identity is stable for the event log (C2 diffs by uuid)."""
+        existing = {r["no"]: r["uuid"] for r in
+                    self.conn.execute("SELECT no, uuid FROM items WHERE record_id=?",
+                                      (record_id,))}
         self.conn.execute("DELETE FROM items WHERE record_id=?", (record_id,))
         for pos, it in enumerate(rows):
+            # the uuid rides under `uuid` (the items.py write path, via Item.to_row)
+            # or `_uuid` (the replayer's temporary carrier, C1); a row in neither
+            # keeps its stored uuid (matched by `no`) or gets a fresh one
+            it_uuid = it.get("uuid") or it.get("_uuid") or existing.get(it["no"], "")
+            if not it_uuid:
+                it_uuid = uuid_mod.uuid4().hex
             self.conn.execute(
                 "INSERT INTO items (record_id, no, pos, text, state, note, owner, "
                 "due, \"commit\", trailer, created, closed_at, deleted, section, "
-                "task) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "task, uuid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (record_id, it["no"], pos, it["text"], it.get("state", ""),
                  it.get("note", ""), it.get("owner", ""), it.get("due", ""),
                  it.get("commit", ""), it.get("trailer", ""),
                  it.get("created") or utc_now(), it.get("closed_at", ""),
                  1 if it.get("deleted") else 0,
-                 it.get("section", ""), it.get("task", "")))
+                 it.get("section", ""), it.get("task", ""), it_uuid))
         self._touch(record_id)
         self._emit("items.save", record_id, count=str(len(rows)))
 

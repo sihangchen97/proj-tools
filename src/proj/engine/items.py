@@ -139,6 +139,7 @@ class Item:
     deleted: bool = False         # tombstone: the number is never reused
     section: str = ""
     task: str = ""
+    uuid: str = ""               # C1: event-log identity (stable across saves)
 
     @property
     def is_group(self) -> bool:
@@ -151,7 +152,7 @@ class Item:
                 "commit": self.commit, "trailer": self.trailer,
                 "created": self.created, "closed_at": self.closed_at,
                 "deleted": self.deleted, "section": self.section,
-                "task": self.task}
+                "task": self.task, "uuid": self.uuid}
 
 
 @dataclass
@@ -933,7 +934,8 @@ def load(db, record_id: str, spec) -> ItemsState:
                                    created=r["created"], closed_at=r["closed_at"],
                                    deleted=bool(r["deleted"]),
                                    section=itspec.section,
-                                   task=r.get("task", "")))
+                                   task=r.get("task", ""),
+                                   uuid=r.get("uuid", "")))
         else:
             state.occupied.append(r["no"])
     return state

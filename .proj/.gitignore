@@ -1,0 +1,6 @@
+# never committed (personal / runtime)
+bugs.log
+write.lock
+cache.sqlite-wal
+cache.sqlite-shm
+# git collab (C4) stops committing the DB: add `cache.sqlite` once C4 lands

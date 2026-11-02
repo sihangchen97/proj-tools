@@ -144,7 +144,8 @@ def _apply(st: _State, db, e: dict) -> None:
         st.types[rec] = e["type"]
         db.insert(spec, rid, e["title"], e["status"],
                   e.get("created") or dbmod.utc_now(),
-                  summary=e.get("summary", ""), commit=e.get("commit", ""))
+                  summary=e.get("summary", ""), commit=e.get("commit", ""),
+                  uuid=rec)
         sections = e.get("sections") or {}
         if sections:
             db.set(spec, rid, sections=json.dumps(sections, ensure_ascii=False))
@@ -519,7 +520,8 @@ def _apply_snapshot(st: _State, db, e: dict) -> None:
     st.rows.pop(rid, None)
     db.insert(spec, rid, e["title"], e["status"],
               e.get("created") or dbmod.utc_now(),
-              summary=e.get("summary", ""), commit=e.get("commit", ""))
+              summary=e.get("summary", ""), commit=e.get("commit", ""),
+              uuid=rec)
     sections = e.get("sections") or {}
     if sections:
         db.set(spec, rid, sections=json.dumps(sections, ensure_ascii=False))
@@ -552,20 +554,27 @@ def snapshot_events(db, at: int | None = None, actor: str = "compact") -> list:
     by alex in C6) rewrites events.jsonl with exactly these events, the sort
     key taken from the original maximum, then replays and compares.
 
-    E2 stage: the db carries no uuid columns (C1), so `rec` is the id —
-    replay then maps rec -> id identity. C1 makes `rec` the stored uuid."""
+    C1: the db carries the uuid columns — `rec` is the record's stored uuid
+    (records.uuid / items.uuid), and the snapshot's items ride their uuid in
+    the `uuid` field (items_save persists it)."""
     at = at or int(time.time() * 1000)
     out: list = []
     for r in db.conn.execute("SELECT * FROM records ORDER BY id"):
         rid = r["id"]
+        uuid = r["uuid"]
         sections = json.loads(r["sections"] or "{}")
-        rels = [dict(row) for row in db.conn.execute(
-            "SELECT target, kind FROM relations WHERE source=? "
-            "ORDER BY target, kind", (rid,))]
+        # C1: the snapshot's relation targets ride as uuids (st.rid resolves
+        # them), not raw ids — the id of every referenced record
+        id_of = {row["id"]: row["uuid"] for row in
+                 db.conn.execute("SELECT id, uuid FROM records")}
+        rels = [{"target": id_of[row["target"]], "kind": row["kind"]}
+                for row in db.conn.execute(
+                    "SELECT target, kind FROM relations WHERE source=? "
+                    "ORDER BY target, kind", (rid,))]
         wip = db.conn.execute(
             "SELECT source FROM wip_entries WHERE record_id=?", (rid,)).fetchone()
         out.append(ev.make(
-            "snapshot", actor=actor, at=at, seq=len(out), rec=rid,
+            "snapshot", actor=actor, at=at, seq=len(out), rec=uuid,
             type=r["type"], id=rid, title=r["title"], status=r["status"],
             summary=r["summary"], commit=r["commit"], created=r["created"],
             sections=sections, relations=rels,
