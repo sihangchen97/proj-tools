@@ -33,7 +33,7 @@ import yaml
 
 from proj.core.templates import ItemsSpec, RecordTypeSpec
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 LOCK_FILE = ".proj.lock"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
@@ -158,7 +158,8 @@ class Db:
             "\"commit\" TEXT NOT NULL DEFAULT '', "
             "trailer TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, "
             "closed_at TEXT NOT NULL DEFAULT '', deleted INTEGER NOT NULL DEFAULT 0, "
-            "PRIMARY KEY (record_id, no))")
+            "section TEXT NOT NULL, task TEXT NOT NULL DEFAULT '', "
+            "PRIMARY KEY (record_id, no))")  # section: which checklist (## section)
         # WIP.md (plans §5): the hand/registered "in progress" list — any record
         # type may sit in it (manual add or an auto switch into wip.enter)
         self.conn.execute(
@@ -375,13 +376,14 @@ class Db:
         for pos, it in enumerate(rows):
             self.conn.execute(
                 "INSERT INTO items (record_id, no, pos, text, state, note, owner, "
-                "due, \"commit\", trailer, created, closed_at, deleted) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "due, \"commit\", trailer, created, closed_at, deleted, section, "
+                "task) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (record_id, it["no"], pos, it["text"], it.get("state", ""),
                  it.get("note", ""), it.get("owner", ""), it.get("due", ""),
                  it.get("commit", ""), it.get("trailer", ""),
                  it.get("created") or utc_now(), it.get("closed_at", ""),
-                 1 if it.get("deleted") else 0))
+                 1 if it.get("deleted") else 0,
+                 it.get("section", ""), it.get("task", "")))
 
     # ---- WIP.md (plans §5): the registered "in progress" list (wip_entries) ----
 
@@ -487,8 +489,8 @@ def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]
             "code": s.code,
             "status_done": list(s.status_done),
             "status_terminal": list(s.status_terminal),
-            "gates": {"tasks": list(s.gates_tasks), "items": list(s.gates_items)},
-            "items": (asdict(s.items) if s.items is not None else None),
+            "gates": {"tasks": list(s.gates_tasks)},
+            "items": [asdict(x) for x in s.items],
             "wip": {"enter": list(s.wip_enter)},
         } for s in specs.values()},
     }
@@ -524,7 +526,6 @@ def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
             # terminal set falls back to the done set (the pre-gate behavior)
             status_terminal=list(d.get("status_terminal", [])) or list(d.get("status_done", [])),
             gates_tasks=list(d.get("gates", {}).get("tasks", [])),
-            gates_items=list(d.get("gates", {}).get("items", [])),
             items=_items_from_lock(d.get("items")),
             # WIP: the lock may predate it (old projects) - manual-only default
             wip_enter=list(d.get("wip", {}).get("enter", [])),
@@ -532,15 +533,20 @@ def specs_from_lock(lock: dict) -> dict[str, RecordTypeSpec]:
     return out
 
 
-def _items_from_lock(d) -> ItemsSpec | None:
-    """The `items:` block back from the lock (None when the lock predates it).
-    A pre-P4 lock still carries `states` — ignored: item states are global."""
+def _items_from_lock(d) -> list[ItemsSpec]:
+    """The `items:` checklists back from the lock ([] when the lock predates
+    items, or before P1 — a pre-P1 lock carries ONE object: promote it to a
+    one-element list; `states` is ignored: item states are global)."""
     if not d:
-        return None
-    return ItemsSpec(
-        section=d["section"],
-        noun=d.get("noun", "item"),
-        fields=list(d.get("fields", [])),
-        promote_from=list(d.get("promote_from", [])),
-        promote_to=d.get("promote_to", ""),
-    )
+        return []
+    if isinstance(d, dict):
+        d = [d]
+    return [ItemsSpec(
+        section=x["section"],
+        noun=x.get("noun", "item"),
+        fields=list(x.get("fields", [])),
+        promote_from=list(x.get("promote_from", [])),
+        promote_to=x.get("promote_to", ""),
+        wip=bool(x.get("wip", False)),
+        gate=list(x.get("gate", [])),
+    ) for x in d]

@@ -65,15 +65,19 @@ class ChangelogSpec:
 
 @dataclass
 class ItemsSpec:
-    """The `items:` block: a record's structured checklist (one `##` section).
-    Item states are global (PLAN §10.3 P4): open/done/failed/dropped, defined
-    in engine.items — the profile no longer declares `states:`."""
+    """One checklist of a record (P1: `items:` is now a LIST of these, one per
+    `##` section). Item states are global (PLAN §10.3 P4): open/done/failed/
+    dropped — the profile no longer declares `states:`. `wip`: shown (and
+    editable) in WIP.md. `gate`: the record statuses to enter which require this
+    checklist fully closed (replaces the old top-level `gates.items`)."""
 
     section: str
     noun: str = "item"
     fields: list[str] = field(default_factory=list)   # subset of {owner, due}
     promote_from: list[str] = field(default_factory=list)
     promote_to: str = ""
+    wip: bool = False
+    gate: list[str] = field(default_factory=list)
 
     @property
     def closed_states(self) -> list[str]:
@@ -104,14 +108,26 @@ class RecordTypeSpec:
     # "finished" statuses: done: true + terminal: true (e.g. Failed) — a task in
     # one of these never blocks its ancestors' gates
     status_terminal: list[str] = field(default_factory=list)
-    # entering gates_tasks: all descendant tasks must be terminal; entering
-    # gates_items: all items must be closed (items come in phase 2)
+    # entering gates_tasks: all descendant tasks must be terminal (only task.yaml
+    # keeps this). The item gate lives PER-CHECKLIST in ItemsSpec.gate (P1).
     gates_tasks: list[str] = field(default_factory=list)
-    gates_items: list[str] = field(default_factory=list)
-    items: ItemsSpec | None = None
+    items: list[ItemsSpec] = field(default_factory=list)
     # WIP (plans §5): statuses that, when a record SWITCHES INTO them, add it to
     # WIP.md automatically. Empty = manual `proj wip add` only.
     wip_enter: list[str] = field(default_factory=list)
+
+    @property
+    def primary_items(self) -> ItemsSpec | None:
+        """The default checklist (first non-`wip`, else the first) — the target
+        of single-checklist ops (item add/check, show, sync). None when the type
+        has no checklist."""
+        return next((i for i in self.items if not i.wip), self.items[0] or None)
+
+    @property
+    def wip_items(self) -> ItemsSpec | None:
+        """The checklist shown (and editable) in WIP.md (its `wip: true` one).
+        At most one per type (enforced in _validate_items)."""
+        return next((i for i in self.items if i.wip), None)
     # (generated views are derived; no per-type render toggles)
 
     def emojify(self, status: str) -> str:
@@ -176,6 +192,10 @@ def parse_template(text: str) -> RecordTypeSpec:
             frm = str(frm)
         verbs[str(verb)] = (frm, str(v["to"]))
     gates = data.get("gates") or {}
+    if "items" in gates:
+        raise ValueError(
+            f"template {data['record_type']!r}: gates.items is gone (P1) — the "
+            f"item gate now lives per-checklist (items[].gate)")
     items = _parse_items(data["record_type"], data.get("items"))
     spec = RecordTypeSpec(
         record_type=data["record_type"],
@@ -192,7 +212,6 @@ def parse_template(text: str) -> RecordTypeSpec:
         # terminal adds non-done finals (e.g. Failed)
         status_terminal=sorted(set(status_done) | set(status_terminal)),
         gates_tasks=[str(s) for s in gates.get("tasks", [])],
-        gates_items=[str(s) for s in gates.get("items", [])],
         items=items,
         wip_enter=[str(s) for s in (data.get("wip") or {}).get("enter", [])],
     )
@@ -201,7 +220,7 @@ def parse_template(text: str) -> RecordTypeSpec:
         msg = (f"template {spec.record_type!r}: status done/terminal {unknown} "
                f"not in status-allowed")
         raise ValueError(msg)
-    for kind, listed in (("gates.tasks", spec.gates_tasks), ("gates.items", spec.gates_items)):
+    for kind, listed in (("gates.tasks", spec.gates_tasks),):
         bad = [s for s in listed if s not in spec.status_allowed]
         if bad:
             raise ValueError(
@@ -216,11 +235,7 @@ def parse_template(text: str) -> RecordTypeSpec:
     if bad:
         raise ValueError(
             f"template {spec.record_type!r}: wip.enter {bad} must not be terminal")
-    if spec.items is not None:
-        _validate_items(spec)
-    if spec.gates_items and spec.items is None:
-        raise ValueError(
-            f"template {spec.record_type!r}: gates.items declared but no items: block")
+    _validate_items(spec)
     # D9: numbered must be an int > 0 — every record id then carries a
     # resolvable {code}- prefix (relations FK rows resolve the type from the code,
     # the suffix after it is digits only — no letter overflow, see db.next_id)
@@ -238,42 +253,65 @@ def parse_template(text: str) -> RecordTypeSpec:
     return spec
 
 
-def _parse_items(record_type: str, data) -> ItemsSpec | None:
+def _parse_items(record_type: str, data) -> list[ItemsSpec]:
+    """The `items:` block -> a LIST of checklists (P1). A bare mapping is
+    accepted as a single-element list (the old shape); a list is used as-is."""
     if data is None:
-        return None
-    if not isinstance(data, dict) or not data.get("section"):
-        raise ValueError(f"template {record_type!r}: items: needs a section: key")
-    if "states" in data:
-        raise ValueError(
-            f"template {record_type!r}: items.states is gone (P4) — item states "
-            f"are global (open/done/failed/dropped)")
-    fields = [str(f) for f in data.get("fields", [])]
-    promote = data.get("promote") or {}
-    return ItemsSpec(
-        section=str(data["section"]),
-        noun=str(data.get("noun", "item")),
-        fields=fields,
-        promote_from=[str(s) for s in promote.get("from", [])],
-        promote_to=str(promote.get("to", "")),
-    )
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    out: list[ItemsSpec] = []
+    for one in data:
+        if not isinstance(one, dict) or not one.get("section"):
+            raise ValueError(f"template {record_type!r}: each items: entry needs a section: key")
+        if "states" in one:
+            raise ValueError(
+                f"template {record_type!r}: items.states is gone (P4) — item states "
+                f"are global (open/done/failed/dropped)")
+        promote = one.get("promote") or {}
+        out.append(ItemsSpec(
+            section=str(one["section"]),
+            noun=str(one.get("noun", "item")),
+            fields=[str(f) for f in one.get("fields", [])],
+            promote_from=[str(s) for s in promote.get("from", [])],
+            promote_to=str(promote.get("to", "")),
+            wip=bool(one.get("wip", False)),
+            gate=[str(s) for s in one.get("gate", [])],
+        ))
+    return out
 
 
 def _validate_items(spec: RecordTypeSpec) -> None:
-    """The items: rules (plan §2.1): known section, known fields, promote
-    statuses. (Item states are global since P4 — no per-checklist `states:`.)"""
+    """The items: rules (plan §10.3b / P1): each checklist has a known, unique
+    section; known fields; gate + promote statuses in status-allowed; at most
+    ONE `wip: true` checklist (the WIP.md one)."""
     rt = spec.record_type
-    it = spec.items
-    if it is None:
-        return
-    if it.section not in [s.name for s in spec.sections]:
-        raise ValueError(f"template {rt!r}: items.section {it.section!r} is not a section")
-    bad_fields = [f for f in it.fields if f not in ("owner", "due")]
-    if bad_fields:
-        raise ValueError(f"template {rt!r}: items.fields only owner/due allowed (got {bad_fields})")
-    bad = [s for s in it.promote_from + ([it.promote_to] if it.promote_to else [])
-           if s not in spec.status_allowed]
-    if bad:
-        raise ValueError(f"template {rt!r}: items.promote {bad} not in status-allowed")
+    sections = [s.name for s in spec.sections]
+    seen: set[str] = set()
+    wip_n = 0
+    for it in spec.items:
+        if it.section not in sections:
+            raise ValueError(f"template {rt!r}: items.section {it.section!r} is not a section")
+        if it.section in seen:
+            raise ValueError(f"template {rt!r}: two checklists share section {it.section!r}")
+        seen.add(it.section)
+        bad_fields = [f for f in it.fields if f not in ("owner", "due")]
+        if bad_fields:
+            raise ValueError(
+                f"template {rt!r}: items.fields only owner/due allowed (got {bad_fields})")
+        bad = [s for s in it.promote_from + ([it.promote_to] if it.promote_to else [])
+               if s not in spec.status_allowed]
+        if bad:
+            raise ValueError(f"template {rt!r}: items.promote {bad} not in status-allowed")
+        bad = [s for s in it.gate if s not in spec.status_allowed]
+        if bad:
+            raise ValueError(
+                f"template {rt!r}: items[{it.section!r}].gate {bad} not in status-allowed")
+        if it.wip:
+            wip_n += 1
+    if wip_n > 1:
+        raise ValueError(
+            f"template {rt!r}: at most one checklist may have wip: true (got {wip_n})")
 
 
 def bundled_dir() -> Path:

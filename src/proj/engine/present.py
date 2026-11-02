@@ -20,7 +20,7 @@ def show(spec, row: dict, db, history: bool = False) -> tuple[str, dict]:
     """One record, formatted once (D5): human lines + a JSON dict (same fields)."""
     parent = _parent_of(db, row)
     items_text = ""
-    if spec.items is not None:
+    if spec.primary_items is not None:
         state = items_mod.load(db, row["id"], spec)
         state.intro = items_mod._intro_of(spec, row)
         items_text = items_mod.render_section(state, spec) or ""
@@ -49,7 +49,7 @@ def show(spec, row: dict, db, history: bool = False) -> tuple[str, dict]:
     if parent:
         lines.append(f"parent: {parent}")
     if items_text:
-        lines += ["", f"{spec.items.section}:", items_text]
+        lines += ["", f"{spec.primary_items.section}:", items_text]
     if history:
         for e in logs:
             line = f"  {show_date(e['date'])}  [{e['category']}] {rec._log_body(e, spec)}"

@@ -18,14 +18,15 @@ verbs:
 # Waived（长期接受）故意不设门禁——放弃不要求任务树和清单处理完
 gates:
   tasks: [Repaid]
-  items: [Repaid]
 # items: Repayment Plan 节的结构化步骤清单；第一个 closed 步骤出现时
 # Draft/Open 自动升到 In Progress（promote）
 items:
-  section: Repayment Plan
-  noun: step
-  fields: [owner, due]
-  promote: {from: [Draft, Open], to: In Progress}
+  - section: Repayment Plan
+    wip: true
+    gate: [Repaid]
+    noun: step
+    fields: [owner, due]
+    promote: {from: [Draft, Open], to: In Progress}
 # status 按时间顺序排列：Draft → Open → In Progress → Repaid | Waived
 # Repaid/Waived 是 done 状态（done 即终止，不再阻塞任何门禁）
 status-allowed:

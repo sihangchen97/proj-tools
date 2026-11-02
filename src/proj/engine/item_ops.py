@@ -21,7 +21,7 @@ def _record_section_md(cfg: ProjConfig, spec, row: dict) -> str:
     if not p.is_file():
         return ""
     _mk, _u, raw = rec.parse_record(p.read_text(encoding="utf-8"))
-    return raw.get(spec.items.section.lower(), "") or ""
+    return raw.get(spec.primary_items.section.lower(), "") or ""
 
 
 def _load_state(db, spec, row: dict) -> items.ItemsState:
@@ -49,7 +49,7 @@ def _parse_ref(cfg: ProjConfig, ref: str, need_item: bool) -> tuple[object, obje
         db.close()
     if row is None:
         raise items.ItemsError(f"{rec_part!r} does not match any record")
-    if spec.items is None:
+    if spec.primary_items is None:
         raise items.ItemsError(f"{spec.record_type} has no items")
     return spec, row, no
 
@@ -88,7 +88,7 @@ def _editing(cfg: ProjConfig, ref: str, need_item: bool):
         rec.ensure_synced(cfg)  # A1: unsynced edits are ingested, never refused
         db = rec.open_db(cfg)
         try:
-            yield _Ctx(cfg, spec, db, row, spec.items, _load_state(db, spec, row), no)
+            yield _Ctx(cfg, spec, db, row, spec.primary_items, _load_state(db, spec, row), no)
         finally:
             db.close()
 
@@ -261,7 +261,7 @@ def ls_rows(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
         grp = group.upper() if group else None
 
         def scan(spec, row):
-            if spec.items is None:
+            if spec.primary_items is None:
                 return
             if record_type is not None and spec.record_type != record_type:
                 return
@@ -270,17 +270,17 @@ def ls_rows(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
                     continue
                 if grp and items.group_of(i.no) != grp:
                     continue
-                if open_only and i.state in spec.items.closed_states:
+                if open_only and i.state in spec.primary_items.closed_states:
                     continue
                 if owner and i.owner != owner:
                     continue
                 if overdue and (not i.due or i.due >= today
-                               or i.state in spec.items.closed_states):
+                               or i.state in spec.primary_items.closed_states):
                     continue
                 out.append({"ref": f"{row['id']}#{i.no}", "record": row["id"],
                             "no": i.no, "group": items.group_of(i.no),
                             "state": i.state,
-                            "closed": i.state in spec.items.closed_states,
+                            "closed": i.state in spec.primary_items.closed_states,
                             "text": i.text, "note": i.note, "owner": i.owner,
                             "due": i.due})
 
@@ -288,7 +288,7 @@ def ls_rows(cfg: ProjConfig, ref: str | None = None, group: str | None = None,
             spec, row = rec.ref_record(cfg, db, ref.partition("#")[0])
             if row is None:
                 raise items.ItemsError(f"{ref!r} does not match any record")
-            if spec.items is None:
+            if spec.primary_items is None:
                 raise items.ItemsError(f"{spec.record_type} has no items")
             scan(spec, row)
         else:

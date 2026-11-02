@@ -14,15 +14,16 @@ numbered: 6
 # gates.items — 进入 Done 前，Acceptance Criteria 里每条都必须已处理（closed）
 gates:
   tasks: [Done]
-  items: [Done]
 # items: Acceptance Criteria 节的结构化清单（engine/items.py 管理，md 里写
 # - [ ] #001 text；编号零填充三位、状态由工具维护）；第一个 closed item 出现时
 # Draft 自动升到 In Progress（promote）
 items:
-  section: Acceptance Criteria
-  noun: criterion
-  fields: [owner, due]
-  promote: {from: [Draft], to: In Progress}
+  - section: Acceptance Criteria
+    noun: criterion
+    fields: [owner, due]
+    wip: true
+    gate: [Done]
+    promote: {from: [Draft], to: In Progress}
 wip:
   enter: [In Progress]
 verbs:

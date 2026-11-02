@@ -202,7 +202,7 @@ plan 的 Success Criteria、debt 的 Repayment Plan、decision 的 Confirmation�
 分配下一个字母；`group rename` 改名称（字母不变）；`group rm REF L`
 （有成员须 `--ungroup-items`/`--delete-items`）；`group mv REF L --after B/--first`。
 - 操作前 md 必须与 DB 一致，否则报 `unsynced edits`（先 `proj sync`）。处于
-`gates.items` 门禁状态的记录（如 Archived plan）拒绝重开/新增未处理项。
+门禁清单（items[].gate，如 Archived plan 的 Success Criteria）里还有未处理项的记录会被拒绝。
 - 进度：任务带清单时，其行末在 Tasks 块与 `WIP.md` 显示 `n/m`（已处理/总数）。""",
     "changelog":
     """- category / unreleased 名 / 文件名全在 `profiles/changelog.yaml`（每项目一份）。

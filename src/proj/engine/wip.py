@@ -45,7 +45,7 @@ def _progress(row: dict, spec: RecordTypeSpec, db) -> str:
     """The metadata line's `n/m`: the checklist's closed/total items; for a task
     WITHOUT checklist items, its terminal/total sub-tasks."""
     from proj.engine import items as items_mod  # lazy: wip↔items cycle
-    if spec.items is not None:
+    if spec.wip_items is not None:
         live = items_mod.load(db, row["id"], spec).live()
         items = [i for i in live if not i.is_group]
         if items:
@@ -77,7 +77,7 @@ def entry_lines(row: dict, spec: RecordTypeSpec, cfg: ProjConfig,
     lines = [f"## {row['id']}. {row['title']}", ENTRY_MARK.format(id=row["id"]), meta, ""]
     if row.get("summary"):
         lines += [f"_{row['summary'].strip()}_", ""]
-    if spec.items is not None:
+    if spec.wip_items is not None:
         state = items_mod.load(db, row["id"], spec)
         state.intro = items_mod._intro_of(spec, row)
         sec = items_mod.render_section(state, spec)
@@ -173,7 +173,7 @@ def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> t
         if row is None:
             continue
         spec = registry[row["type"]]
-        if spec.items is None:
+        if spec.wip_items is None:
             continue
         section = entry_items_text(wip_text, rid)
         if not (section and _changed(db, spec, rid, section)):
@@ -184,7 +184,7 @@ def wip_sync_plan(db, registry: dict[str, RecordTypeSpec], cfg: ProjConfig) -> t
         if p.exists():
             _mk, _u, raw = rec.parse_record(p.read_text(encoding="utf-8"))
             rec_drift = items_mod.drift(db, spec, row,
-                                        raw.get(spec.items.section.lower(), ""))
+                                        raw.get(spec.wip_items.section.lower(), ""))
         if rec_drift:
             conflicts.append(rid)  # both sides edited — keep the DB, flag it
         else:

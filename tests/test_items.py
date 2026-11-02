@@ -326,7 +326,8 @@ def test_check_flags_gated_record_with_unclosed_items(proj):
     now = dbmod.utc_now()
     rows.append({"no": "002", "text": "late", "state": "open", "note": "",
                  "owner": "", "due": "", "created": now, "closed_at": "",
-                 "commit": "", "trailer": "", "deleted": 0})
+                 "commit": "", "trailer": "", "deleted": 0,
+                 "section": "Success Criteria", "task": ""})
     db.items_save(row, rows)
     db.close()
     rec.render_all(proj)
@@ -549,11 +550,42 @@ sections:
 
 
 def test_profile_items_validation(proj):
-    # P4: item states are global — `states:` is rejected, section must exist
+    # P4: item states are global — `states:` is rejected, section must exist;
+    # P1: items: is a LIST (a bare mapping is promoted to a one-element list)
     ok = BASE + "items:\n  section: List\n  fields: [owner]\n"
     spec = tmpl.parse_template(ok)
-    assert spec.items is not None and spec.items.section == "List"
-    assert spec.items.closed_states == ["done", "failed", "dropped"]
+    assert len(spec.items) == 1 and spec.items[0].section == "List"
+    assert spec.items[0].closed_states == ["done", "failed", "dropped"]
+    assert spec.primary_items is spec.items[0]
+
+
+def test_shared_numbering_across_checklists():
+    """P1: numbers (and group letters) are shared across a record's checklists —
+    a second checklist sees the first's numbers as `occupied` and never reuses
+    them, and allocating in the second sees the first's max."""
+    from proj.engine.items import Item, ItemsState
+
+    first = ItemsState(rows=[Item(no="001"), Item(no="002"),
+                            Item(no="A00", text="g"), Item(no="A01")])
+    second = ItemsState(
+        rows=[Item(no="A01", section="B")],
+        occupied=[r.no for r in first.rows])
+    # the next ungrouped number is past the first checklist's 002
+    assert second.next_no("") == "003"
+    # the next group letter is past the first's A
+    assert second.next_group() == "B"
+    # a duplicate of the first checklist's A01 is caught by check()
+    bad = ItemsState(rows=[Item(no="A02")], occupied=[r.no for r in first.rows])
+    bad.rows.insert(0, Item(no="A01"))
+    with pytest.raises(Exception, match=r"shared|duplicate"):
+        bad.check()
+    # a list with two entries: the first non-wip is primary, the wip one is wip_items
+    two = (BASE.replace("sections:\n  - {name: List}",
+                        "sections:\n  - {name: List}\n  - {name: A}")
+           + "items:\n  - {section: List, wip: true}\n"
+             "  - {section: A, gate: [Closed]}\n")
+    s2 = tmpl.parse_template(two)
+    assert s2.primary_items.section == "A" and s2.wip_items.section == "List"
     with pytest.raises(ValueError, match="not a section"):
         tmpl.parse_template(BASE + "items:\n  section: Nope\n")
     with pytest.raises(ValueError, match="states is gone"):
@@ -569,8 +601,9 @@ def test_lock_roundtrip_items_gates_terminal(proj):
     for _n, d in lock["record_types"].items():
         assert "items" in d and "gates" in d and "status_terminal" in d
     task = lock["record_types"]["task"]
-    assert task["items"]["section"] == "Acceptance Criteria"
-    assert task["gates"] == {"tasks": ["Done"], "items": ["Done"]}
+    assert task["items"][0]["section"] == "Acceptance Criteria"
+    assert task["items"][0]["gate"] == ["Done"]
+    assert task["gates"] == {"tasks": ["Done"]}  # the item gate is per-checklist
     assert task["status_terminal"] == ["Done", "Failed"]
     specs = dbmod.specs_from_lock(lock)
     assert specs == rec.load_registry(proj.root)

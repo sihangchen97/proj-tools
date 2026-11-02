@@ -157,20 +157,23 @@ class Record:
 
     # ---- extension points (subclasses override) ------------------------------
     def validate_transition(self, cfg: ProjConfig, row: dict, verb: str, db) -> None:
-        """Template-declared gates (profile `gates:`): entering a `gates.tasks`
-        status requires every DESCENDANT task (any depth) to sit in a terminal
-        task status (task's `status_terminal`: Done, Failed, ...); entering a
-        `gates.items` status requires every item of this record to be closed."""
+        """Template-declared gates: entering a checklist's `gate:` status (P1,
+        per-checklist — replaced the old top-level `gates.items`) requires every
+        item of THAT checklist to be closed; entering a `gates.tasks` status
+        requires every DESCENDANT task (any depth) to sit in a terminal task
+        status (task's `status_terminal`: Done, Failed, ...)."""
         to_s = self.verbs[verb][1]
-        if self.spec.items is not None and to_s in self.spec.gates_items:
+        for it in self.spec.items:  # per-checklist gate (P1)
+            if to_s not in it.gate:
+                continue
             from proj.engine import items as items_mod  # lazy: record↔items cycle
-            state = items_mod.load(db, row["id"], self.spec)
-            state.intro = items_mod._intro_of(self.spec, row)
-            un = items_mod.open_items(state, self.spec)
+            state = items_mod.load(db, row["id"], it)
+            state.intro = items_mod._intro_of(it, row)
+            un = items_mod.open_items(state, it)
             if un:
                 raise ValueError(
-                    f"{self.record_type} {row['id']}: {len(un)} unclosed {self.spec.items.noun}(s) "
-                    f"block {verb} (need a closed state: "
+                    f"{self.record_type} {row['id']}: {len(un)} unclosed {it.noun}(s) "
+                    f"in '{it.section}' block {verb} (need a closed state: "
                     f"{', '.join(items_mod.CLOSED_STATES)}):\n  "
                     + "\n  ".join(un))
         if to_s not in self.spec.gates_tasks:

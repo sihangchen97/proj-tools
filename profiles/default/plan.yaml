@@ -13,11 +13,11 @@ numbered: 4
 # Shelved（暂停）故意不设 item 门禁——暂停不要求清单处理完
 gates:
   tasks: [Pending Review, Shelved, Archived]
-  items: [Archived]
 # items: Success Criteria 节的结构化清单；评审时逐条 set met/missed 并留证据
 items:
-  section: Success Criteria
-  noun: criterion
+  - section: Success Criteria
+    gate: [Archived]
+    noun: criterion
 # 状态机 verbs（from 是具体状态，非 Any）：每个状态都有进入它的动词
 wip:
   enter: [Active]

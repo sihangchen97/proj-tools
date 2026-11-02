@@ -403,14 +403,16 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         lines += ["", "<details open>", "<summary>Tasks</summary>", ""]
         lines += [*block, "</details>", ""]
     from proj.engine import items as items_mod  # lazy: store↔items cycle
+    item_specs = {it.section: it for it in spec.items}
     for sec in spec.sections:
         lines += [f"## {sec.name}", ""]
-        if spec.items is not None and sec.name == spec.items.section:
-            # the items section renders entirely from the DB state (the intro
+        it = item_specs.get(sec.name)
+        if it is not None:
+            # a checklist section renders entirely from the DB state (its intro
             # lives in the sections JSON alongside the item lines)
-            state = items_mod.load(db, row["id"], spec)
-            state.intro = items_mod._intro_of(spec, row)
-            lines.append(items_mod.render_section(state, spec) or "")
+            state = items_mod.load(db, row["id"], it)
+            state.intro = items_mod._intro_of(it, row)
+            lines.append(items_mod.render_section(state, it) or "")
         else:
             lines.append(sections.get(sec.name.lower(), "").strip())
         lines.append("")
@@ -422,15 +424,15 @@ def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db) -> bool:
     the record_type has items)."""
     _mk, _u, raw = parse_record(p.read_text(encoding="utf-8"))
     stored = json.loads(row["sections"] or "{}")
-    if spec.items is not None:
-        from proj.engine import items as items_mod  # lazy: store↔items cycle
-        if items_mod.drift(db, spec, row, raw.get(spec.items.section.lower(), "")):
+    from proj.engine import items as items_mod  # lazy: store↔items cycle
+    item_sec = {it.section.lower() for it in spec.items}
+    for it in spec.items:  # each checklist section, its own drift
+        if items_mod.drift(db, it, row, raw.get(it.section.lower(), "")):
             return True
-    item_sec = spec.items.section.lower() if spec.items else None
     for s in spec.sections:
-        # R6: the items section is judged above via items_mod.drift — its raw
-        # list text never matches the stored section, so skip it there
-        if s.kind == "text" and s.name.lower() != item_sec and \
+        # the checklist sections are judged above via items_mod.drift — their
+        # raw list text never matches the stored section, so skip them there
+        if s.kind == "text" and s.name.lower() not in item_sec and \
                 normalize(raw.get(s.name.lower(), "")) != stored.get(s.name.lower(), ""):
             return True
     return False
@@ -774,34 +776,38 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         # item checklists (items.py): the items section's LIST is owned by the DB —
         # only its intro (text before the list) is stored in the section. Validate
         # fully before any write; the items write + changelog + promote follow.
-        if spec.items is not None:
-            sections.pop(spec.items.section.lower(), None)  # not stored separately
-            if skip_items:
-                # the WIP write-back stored the checklist's intro under the
-                # `<section>/intro` key — preserve it (this sections rewrite must
-                # not clobber it), since sync_section is skipped for this record.
-                from proj.engine import items as items_mod  # lazy: store↔items cycle
-                intro = (json.loads(row.get("sections") or "{}")
-                         .get(items_mod._intro_key(spec), ""))
-                if intro:
-                    sections[items_mod._intro_key(spec)] = intro
+        # each checklist section's LIST is DB-owned — only its intro is stored;
+        # the checklists themselves sync below (their own intro + changelog +
+        # promote), so drop them from the stored-sections rewrite here.
+        from proj.engine import items as items_mod  # lazy: store↔items cycle
+        for it in spec.items:
+            sections.pop(it.section.lower(), None)
         db.set(spec, u, sections=json.dumps(sections, ensure_ascii=False))
-        # the items section: sync last (after the text sections) — it writes
-        # its own intro into the sections JSON; a problem leaves everything untouched.
-        # skip_items: WIP.md just wrote this record's checklist back — the record
-        # md's (possibly stale) list must not clobber it.
-        if spec.items is not None and not skip_items:
+        # the checklists: sync last (after the text sections) — each writes its
+        # own intro into the sections JSON; a problem leaves everything untouched.
+        # skip_items: WIP.md just wrote this record's WIP checklist back — that
+        # one (its `wip: true`) must not be re-synced from the (possibly stale)
+        # record md; the other checklists sync as usual.
+        from proj.engine import item_ops as ops_mod  # lazy: store↔item_ops
+        for it in spec.items:
+            if skip_items and it.wip:
+                # preserve the intro the WIP write-back stored under
+                # `<section>/intro` (this sections rewrite must not clobber it)
+                intro = (json.loads(row.get("sections") or "{}")
+                         .get(items_mod._intro_key(it.section), ""))
+                if intro:
+                    sections[items_mod._intro_key(it.section)] = intro
+                db.set(spec, u, sections=json.dumps(sections, ensure_ascii=False))
+                continue
             # S.3: a hand-edited owner is a deliberate hand-over — accepted, but
             # named in the notes (`item #A01 owner alex → billy`)
-            from proj.engine import item_ops as ops_mod  # lazy: store↔item_ops
-            from proj.engine import items as items_mod  # lazy: store↔items cycle
             notes += ops_mod.sync_owner_notes(
                 db, spec, db.get(spec, u),
-                raw_sections.get(spec.items.section.lower(), ""))
+                raw_sections.get(it.section.lower(), ""))
             problems, n = items_mod.sync_section(
                 db, spec, db.get(spec, u),
-                raw_sections.get(spec.items.section.lower(), ""),
-                source=p.name)
+                raw_sections.get(it.section.lower(), ""),
+                source=p.name, it=it)
             if problems:
                 return problems, []
             notes += n
@@ -834,18 +840,19 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
     # adopted md: the items section is parsed the same way — every line becomes
     # a NEW item (items.adopt); the intro stays in the stored section
     notes: list[str] = []
-    if spec.items is not None:
-        sections.pop(spec.items.section.lower(), None)
+    if spec.items:
         from proj.engine import items as items_mod  # lazy: store↔items cycle
-        # adopted md: every line becomes a NEW item — the record is fresh, so
-        # no number can refer to it (adopt=True clears the numbers)
-        problems, n = items_mod.sync_section(
-            db, spec, db.get(spec, id_),
-            raw_sections.get(spec.items.section.lower(), ""),
-            source=p.name, adopt=True)
-        if problems:
-            return problems, []
-        notes += n
+        for it in spec.items:
+            sections.pop(it.section.lower(), None)
+            # adopted md: every line becomes a NEW item — the record is fresh, so
+            # no number can refer to it (adopt=True clears the numbers)
+            problems, n = items_mod.sync_section(
+                db, spec, db.get(spec, id_),
+                raw_sections.get(it.section.lower(), ""),
+                source=p.name, adopt=True, it=it)
+            if problems:
+                return problems, []
+            notes += n
     db.set(spec, id_, sections=json.dumps(sections, ensure_ascii=False))
     # adopt: same record_type hook, fresh row; promotion notes are dropped
     from proj.engine.record import record_for  # lazy: record↔store cycle
@@ -909,10 +916,13 @@ def sync(cfg: ProjConfig, files: list[Path] | None = None):
                 spec = reg[row["type"]]
                 from proj.engine import item_ops as ops_mod  # lazy: store↔item_ops
                 from proj.engine import items as items_mod  # lazy: store↔items cycle
+                it = spec.wip_items  # WIP.md only ever writes back the wip checklist
+                if it is None:
+                    continue
                 # S.3: a hand-edited owner in WIP.md is a hand-over too (a note)
                 notes += [f"WIP.md: {n}" for n in
-                          ops_mod.sync_owner_notes(db, spec, row, section)]
-                pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md")
+                          ops_mod.sync_owner_notes(db, it, row, section)]
+                pr, nt = items_mod.sync_section(db, spec, row, section, source="WIP.md", it=it)
                 if pr:
                     return pr, []
                 notes += [f"WIP.md: {n}" for n in nt]

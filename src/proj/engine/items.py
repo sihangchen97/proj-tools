@@ -52,18 +52,30 @@ class ItemsError(ProjError):
 
 
 def _spec(spec) -> ItemsSpec:
-    """The ItemsSpec behind a spec (a RecordTypeSpec passes its .items)."""
-    return spec.items if isinstance(spec, RecordTypeSpec) else spec
+    """The ItemsSpec behind a spec. An ItemsSpec passes through; a RecordTypeSpec
+    resolves to its PRIMARY checklist (the first non-`wip` one, else the first)
+    — the default target for single-checklist operations. Callers that deal with
+    a specific checklist (WIP, render, sync) pass that one explicitly (P1)."""
+    return spec.primary_items if isinstance(spec, RecordTypeSpec) else spec
 
 
-def _intro_key(spec) -> str:
-    """The sections key of the checklist intro (kept in records.sections)."""
-    return _spec(spec).section.lower() + "/intro"
+def _intro_key(section: str) -> str:
+    """The sections key of a checklist's intro (kept in records.sections) —
+    P1: one intro per checklist (per `##` section)."""
+    return section.lower() + "/intro"
 
 
 def _intro_of(spec, row: dict) -> str:
+    """The intro of THIS spec's checklist (single-checklist compat helper)."""
     sections = json.loads(row.get("sections") or "{}")
-    return sections.get(_intro_key(spec), "") or ""
+    return sections.get(_intro_key(_spec(spec).section), "") or ""
+
+
+def _set_intro(spec, row: dict, intro: str) -> dict:
+    """row with its (this checklist's) intro updated in the sections JSON."""
+    sections = json.loads(row.get("sections") or "{}")
+    sections[_intro_key(_spec(spec).section)] = intro
+    return {**row, "sections": json.dumps(sections)}
 
 
 # ---- numbers -------------------------------------------------------------
@@ -108,7 +120,10 @@ def norm_group(s: str) -> str:
 
 @dataclass
 class Item:
-    """One row of the `items` table (including `X00` group rows and tombstones)."""
+    """One row of the `items` table (including `X00` group rows and tombstones).
+    `section`: which checklist (`##` section) the row belongs to (P1, multi-
+    checklist); `task`: the referenced task id (P1 column; parsed from the md
+    `→ T-…` suffix in K3, '' = none)."""
     no: str
     text: str = ""
     state: str = ""
@@ -120,6 +135,8 @@ class Item:
     created: str = ""
     closed_at: str = ""
     deleted: bool = False         # tombstone: the number is never reused
+    section: str = ""
+    task: str = ""
 
     @property
     def is_group(self) -> bool:
@@ -131,18 +148,29 @@ class Item:
                 "note": self.note, "owner": self.owner, "due": self.due,
                 "commit": self.commit, "trailer": self.trailer,
                 "created": self.created, "closed_at": self.closed_at,
-                "deleted": self.deleted}
+                "deleted": self.deleted, "section": self.section,
+                "task": self.task}
 
 
 @dataclass
 class ItemsState:
-    """A record's whole checklist: `rows` in display order (tombstones at the
-    end, not shown). `intro` is the text before the first element."""
+    """One checklist of a record (P1: a record may have several, one per `##`
+    section): `rows` in display order (tombstones at the end, not shown).
+    `intro` is the text before the first element (stored per section).
+    `occupied`: the numbers (incl. group letters) used by the record's OTHER
+    checklists — numbering is shared across the whole record (PLAN §10.3b), so
+    next_no/next_group/check must see them."""
     intro: str = ""
     rows: list[Item] = field(default_factory=list)
+    occupied: list[str] = field(default_factory=list)
 
     def by_no(self, no: str) -> Item | None:
         return next((r for r in self.rows if r.no == no), None)
+
+    def _all_nos(self) -> list[str]:
+        """Every number of the record: this checklist's rows (tombstones
+        included) plus the numbers the other checklists use (shared)."""
+        return [r.no for r in self.rows] + list(self.occupied)
 
     def live(self) -> list[Item]:
         """The non-deleted rows, in display order."""
@@ -154,11 +182,12 @@ class ItemsState:
 
     def next_no(self, letter: str) -> str:
         """The next number of a group (letter '' = ungrouped): the max of ALL
-        rows of that group (tombstones included) + 1. ItemsError when the
-        capacity is reached."""
+        numbers of that group record-wide (tombstones + the other checklists
+        included — the numbering is shared) + 1. ItemsError when the capacity
+        is reached."""
         cap = GROUP_CAP if letter else UNGROUPED_CAP
-        seqs = [int(r.no[1:] if letter else r.no)
-                for r in self.rows if group_of(r.no) == letter]
+        seqs = [int(n[1:] if letter else n)
+                for n in self._all_nos() if group_of(n) == letter]
         nxt = max(seqs, default=0) + 1
         if nxt > cap:
             where = f"group {letter}" if letter else "the ungrouped list"
@@ -168,10 +197,10 @@ class ItemsState:
         return (letter or "") + f"{nxt:0{width}d}"
 
     def next_group(self) -> str:
-        """The next free group letter: the max of all `X00` rows (tombstones
-        included) + 1. ItemsError past Z."""
-        tops = [r.no[0] for r in self.rows
-                if r.no.endswith("00") and r.no[0].isalpha()]
+        """The next free group letter: the max of all `X00` numbers record-wide
+        (tombstones + the other checklists included) + 1. ItemsError past Z."""
+        tops = [n[0] for n in self._all_nos()
+                if n.endswith("00") and n[0].isalpha()]
         nxt = max((LETTERS.index(t) for t in tops), default=-1) + 1
         if nxt >= len(LETTERS):
             raise ItemsError(f"at most {len(LETTERS)} groups — split the record")
@@ -181,8 +210,10 @@ class ItemsState:
         """Invariants (asserted before every save):
         - display order: all ungrouped items, then each group as a block
           (its `X00` row immediately followed by that group's items);
-        - numbers unique within the record (tombstones included);
-        - every `Xnn` item has a non-deleted `X00` row;
+        - numbers unique record-wide (tombstones and the other checklists
+          included — the numbering is shared, PLAN §10.3b);
+        - every `Xnn` item has a live `X00` row (this checklist or the other
+          ones — groups are shared record-wide too);
         - tombstones come last.
         """
         rows = self.rows
@@ -190,11 +221,12 @@ class ItemsState:
                           len(rows))
         if any(not r.deleted for r in rows[first_tomb:]):
             raise ItemsError("tombstones must come last")
-        seen: set[str] = set()
+        seen: set[str] = set(self.occupied)   # the other checklists' numbers
         cur_group: str | None = None      # None = the ungrouped section
         for r in rows[:first_tomb]:
             if r.no in seen:
-                raise ItemsError(f"duplicate item number #{r.no}")
+                raise ItemsError(f"duplicate item number #{r.no} (numbers are "
+                                 f"shared across the record's checklists)")
             seen.add(r.no)
             grp = group_of(r.no)
             if r.is_group:
@@ -206,10 +238,9 @@ class ItemsState:
                 where = grp or "the ungrouped list"
                 raise ItemsError(f"out-of-order item #{r.no} ({where} after "
                                  f"group {cur_group})")
-            if grp:
-                g = self.group(grp)
-                if g is None or g.deleted:
-                    raise ItemsError(f"item #{r.no} has no live group row #{grp}00")
+            if grp and self.group(grp) is None \
+                    and (grp + "00") not in self.occupied:
+                raise ItemsError(f"item #{r.no} has no live group row #{grp}00")
 
 
 def _new_item(no: str, text: str, **kw) -> Item:
@@ -831,28 +862,45 @@ def open_items(state: ItemsState, spec) -> list[str]:
 
 
 def load(db, record_id: str, spec) -> ItemsState:
-    """The whole checklist from the DB (intro from records.sections)."""
-    rows = db.items_load(record_id)
-    state = ItemsState()  # the intro is set by the caller from records.sections
-    for r in rows:
-        state.rows.append(Item(no=r["no"], text=r["text"], state=r["state"],
-                               note=r["note"], owner=r["owner"], due=r["due"],
-                               commit=r["commit"], trailer=r["trailer"],
-                               created=r["created"], closed_at=r["closed_at"],
-                               deleted=bool(r["deleted"])))
+    """One checklist (its `##` section) from the DB: its rows, plus
+    `occupied` = the numbers used by the record's other checklists (numbering
+    is shared record-wide). The intro is set by the caller (records.sections)."""
+    itspec = _spec(spec)
+    state = ItemsState()
+    for r in db.items_load(record_id):
+        if r.get("section") == itspec.section:
+            state.rows.append(Item(no=r["no"], text=r["text"], state=r["state"],
+                                   note=r["note"], owner=r["owner"], due=r["due"],
+                                   commit=r["commit"], trailer=r["trailer"],
+                                   created=r["created"], closed_at=r["closed_at"],
+                                   deleted=bool(r["deleted"]),
+                                   section=itspec.section,
+                                   task=r.get("task", "")))
+        else:
+            state.occupied.append(r["no"])
     return state
 
 
 def commit(db, spec, row: dict, old: ItemsState, new: ItemsState,
-           notes: list[str]) -> list[str]:
+           notes: list[str], it=None) -> list[str]:
     """The single write path: validate → diff_log → items_save → add_log →
-    (auto-promote). `spec`: the RecordTypeSpec; returns the notes."""
-    itspec = _spec(spec)
-    gates = spec.gates_items if isinstance(spec, RecordTypeSpec) else []
-    validate(old, new, itspec, row["status"], gates)
+    (auto-promote). `spec`: the RecordTypeSpec (for the record-level writes);
+    `it`: the checklist being written (its gate/promote) — default the primary
+    one. Returns the notes."""
+    itspec = it if it is not None else _spec(spec)
+    validate(old, new, itspec, row["status"], itspec.gate)
     for cat, msg in diff_log(old, new, notes):
         db.add_log(row["id"], msg, category=cat)
-    db.items_save(row["id"], [r.to_row() for r in new.rows])
+    # P1: stamp this checklist's section on rows that don't carry it yet (fresh
+    # items / tombstones / group rows are built without one); items_save then
+    # rewrites the WHOLE record, so the other checklists' rows (untouched here)
+    # must go back in too, or they vanish from the table.
+    for r in new.rows:
+        if not r.section:
+            r.section = itspec.section
+    others = [r for r in db.items_load(row["id"])
+              if r.get("section") != itspec.section]
+    db.items_save(row["id"], [r.to_row() for r in new.rows] + others)
     if (itspec.promote_to and itspec.promote_from
             and row["status"] in itspec.promote_from
             and any(not i.is_group and i.state in itspec.closed_states
@@ -872,14 +920,17 @@ def commit(db, spec, row: dict, old: ItemsState, new: ItemsState,
 
 
 def sync_section(db, spec, row: dict, md_text: str,
-                 source: str = "", adopt: bool = False) -> tuple[list[str], list[str]]:
+                 source: str = "", adopt: bool = False,
+                 it=None) -> tuple[list[str], list[str]]:
     """Store's sync entry: parse → apply_md → commit. On problems nothing is
-    written and the md stays as-is. `source`: the filename each note is
-    prefixed with. adopt=True: every line is treated as a NEW item (the stored
-    record is fresh, so no number can refer to it — the numbers are cleared).
-    The notes reported to the user are the sync-level ones (new/deleted items
-    plus moves/emoji/promote from commit), each prefixed with source."""
-    itspec = _spec(spec)
+    written and the md stays as-is. `spec`: the RecordTypeSpec; `it`: the
+    checklist this md section belongs to (default the primary one). `source`:
+    the filename each note is prefixed with. adopt=True: every line is treated
+    as a NEW item (the stored record is fresh, so no number can refer to it —
+    the numbers are cleared). The notes reported to the user are the
+    sync-level ones (new/deleted items plus moves/emoji/promote from commit),
+    each prefixed with source."""
+    itspec = it if it is not None else _spec(spec)
     parsed = parse_section(md_text, itspec)
     if adopt:
         for it in _all_items(parsed):
@@ -891,7 +942,7 @@ def sync_section(db, spec, row: dict, md_text: str,
     old_nos = {i.no for i in old.live()}
     try:
         new, notes = apply_md(old, parsed, itspec)
-        notes = commit(db, spec, row, old, new, notes)
+        notes = commit(db, spec, row, old, new, notes, it=itspec)
     except ItemsError as e:
         return [str(e)], []
     new_nos = {i.no for i in new.live()}
@@ -907,9 +958,8 @@ def sync_section(db, spec, row: dict, md_text: str,
                    if not i.is_group and i.no not in new_nos
                    and i.no not in moved_from]
     sync_notes += notes  # groups, moves, emoji defaults, promote (from commit)
-    sections = json.loads(row.get("sections") or "{}")
-    sections[_intro_key(spec)] = new.intro
-    db.set(spec, row["id"], sections=json.dumps(sections))
+    db.set(spec, row["id"],
+           sections=_set_intro(itspec, row, new.intro)["sections"])  # already dumped
     return [], [f"{source}: {n}" for n in sync_notes]
 
 

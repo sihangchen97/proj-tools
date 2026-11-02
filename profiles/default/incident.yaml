@@ -18,12 +18,13 @@ verbs:
 # Mitigated（已止血）故意不设门禁——恢复不要求复盘和清单完成
 gates:
   tasks: [Closed]
-  items: [Closed]
 # items: Action Items 节的结构化清单；owner/due 用字段表示（· owner: x · due: d）
 items:
-  section: Action Items
-  noun: action
-  fields: [owner, due]
+  - section: Action Items
+    wip: true
+    gate: [Closed]
+    noun: action
+    fields: [owner, due]
 # status 按时间顺序排列：Draft → Open → Mitigated → Closed
 # （Mitigated = 已止血/服务恢复，复盘与 Action Items 未完成；Closed = 复盘完成）
 # Closed 是 done 状态（done 即终止）

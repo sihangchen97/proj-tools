@@ -311,11 +311,10 @@ def _verb_help(spec, verb: str) -> str:
     parts: list[str] = []
     if to in spec.gates_tasks:
         parts.append("all tasks finished")
-    if to in spec.gates_items:
-        # the item noun's plural (criterion -> criteria; else the bare -s)
-        noun = spec.items.noun if spec.items else "criterion"
-        noun = {"criterion": "criteria"}.get(noun, noun + "s")
-        parts.append(f"all {noun} closed")
+    for it in spec.items:  # per-checklist gate (P1)
+        if to in it.gate:
+            noun = {"criterion": "criteria"}.get(it.noun, it.noun + "s")
+            parts.append(f"all {noun} closed")
     gate = f" (gate: {', '.join(parts)})" if parts else ""
     return f"{frm_txt} → {to}{gate}"
 

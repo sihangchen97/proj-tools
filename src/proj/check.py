@@ -64,11 +64,12 @@ def check(cfg: ProjConfig) -> list[str]:
                     problems.append(f"{p.name}: status {row['status']!r} no longer allowed "
                                     f"by the template ({', '.join(spec.status_allowed)})")
                 db_sections = json.loads(row["sections"] or "{}")
+                # P1: every checklist section renders entirely from the DB state
+                item_secs = {it.section for it in spec.items}
                 for s in spec.sections:
                     if s.kind != "text":
                         continue
-                    if spec.items is not None and s.name == spec.items.section:
-                        # the items section renders entirely from the DB state
+                    if s.name in item_secs:
                         from proj.engine import items as items_mod  # lazy
                         if items_mod.drift(db, spec, row,
                                            raw_sections.get(s.name.lower(), "")):
@@ -79,15 +80,19 @@ def check(cfg: ProjConfig) -> list[str]:
                     if rec.normalize(raw_sections.get(s.name.lower(), "")) != stored:
                         problems.append(f"{p.name}: section '{s.name}' differs from DB "
                                         f"— run `proj sync`")
-                if spec.items is not None and row["status"] in spec.gates_items:
+                # per-checklist gate (P1): a record in one of a checklist's gate
+                # statuses must have that checklist fully closed
+                for it in spec.items:
+                    if row["status"] not in it.gate:
+                        continue
                     from proj.engine import items as items_mod  # lazy
-                    state = items_mod.load(db, row["id"], spec)
-                    state.intro = items_mod._intro_of(spec, row)
-                    un = items_mod.open_items(state, spec)
+                    state = items_mod.load(db, row["id"], it)
+                    state.intro = items_mod._intro_of(it, row)
+                    un = items_mod.open_items(state, it)
                     if un:
                         problems.append(
                             f"{p.name}: {spec.record_type} {row['id']} is {row['status']!r} "
-                            f"(a closed state) but has unclosed {spec.items.noun}(s): "
+                            f"(in the '{it.section}' gate) but has unclosed {it.noun}(s): "
                             f"{', '.join(un)}")
             for row in db.all(spec):
                 if row["id"] not in seen:

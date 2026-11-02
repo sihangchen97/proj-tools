@@ -18,8 +18,8 @@ verbs:
 # items: Confirmation 节的结构化核查清单（engine/items.py 管理）；无门禁，
 # 仅作"采纳后是否仍成立"的跟踪
 items:
-  section: Confirmation
-  noun: check
+  - section: Confirmation
+    noun: check
 status-allowed:
   - {name: Draft, emoji: ✏️}           # 起草中（new 默认）
   - {name: Proposed, emoji: 🌱}        # 提案中，等待讨论/评审

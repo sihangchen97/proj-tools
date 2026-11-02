@@ -21,11 +21,11 @@ verbs:
 # inconclusive）；Abandoned（未出结论即放弃）故意不设门禁——放弃不要求清单处理完
 gates:
   tasks: [Closed]
-  items: [Closed]
 # items: Success Criteria 节的结构化清单；关实验时逐条 set met/missed/inconclusive
 items:
-  section: Success Criteria
-  noun: criterion
+  - section: Success Criteria
+    gate: [Closed]
+    noun: criterion
 # status 按时间顺序排列：Draft → Proposed → Running → Closed | Abandoned
 # Closed/Abandoned 是 done 状态（done 即终止）
 status-allowed:
