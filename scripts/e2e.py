@@ -802,6 +802,94 @@ def ch9() -> None:
     REP.ok("WIP.md：plan + 独立任务两条目（任务条目带清单，可直接勾）")
 
 
+# ---- ch12: the agent takes over through a REAL MCP stdio session (S.8) -------
+# §S.8: an earlier version of this chapter called `proj.mcp` functions
+# in-process, bypassing the tool dispatch (§21.2's bug slipped through that
+# hole). Now the chapter spawns the `proj-mcp` entry point and drives it with
+# the `mcp` client SDK over stdio — exactly what a client (Claude, ...) does.
+# The session runs on a SECOND, throwaway project (not the story sandbox):
+# e2e-full's equivalence check compares the generated e2e.sh (MCP steps are
+# comments there, CLI only) against the story sandbox's final `proj ls
+# --json` / `item ls --json` — so the MCP session must not leave a different
+# final state on that project.
+
+MCP_AGENT = "agent-mcp"        # S.4: every changelog row records this actor
+
+
+def _mcp_text(res) -> str:
+    """An MCP tool result -> its text parts joined (empty for none)."""
+    return "\n".join(getattr(c, "text", "") for c in res.content
+                     if getattr(c, "text", None) is not None)
+
+
+def ch12() -> None:
+    REP.chapter("第 12 章 agent 接手：真实 MCP stdio 会话（proj-mcp 子进程 + 客户端 SDK）")
+    import asyncio
+
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    # a one-off project (its own temp dir): the stdio session's writes stay
+    # here, so the story sandbox's final state (compared by e2e-full) is untouched
+    home = Path(tempfile.mkdtemp(prefix="proj-e2e-mcp-"))
+    env = dict(os.environ)
+    env["PROJ_HOME"] = str(home)
+    env["PROJ_AGENT"] = MCP_AGENT
+    subprocess.run([str(REPO / ".pixi" / "envs" / "dev" / "bin" / "proj"),
+                    "init", "--profile", "default"],
+                   cwd=home, env=env, check=True, capture_output=True)
+    try:
+        params = StdioServerParameters(
+            command=str(REPO / ".pixi" / "envs" / "dev" / "bin" / "proj-mcp"),
+            env=env)
+
+        def ok(desc, needle, tool, out):
+            if needle not in out:
+                REP.fail(desc, f"({tool})\n{out}")
+            else:
+                REP.tool(tool)
+                REP.ok(desc)
+
+        async def call(s, tool, **kw):
+            # one call through the live stdio session (the real tool dispatch —
+            # the hole S.21.2's bug slipped through); recorded for the sh's comments
+            res = await s.call_tool(tool, kw)
+            _emit("mcp", (tool, (), kw))  # sh: MCP steps stay comments (CLI-only sh)
+            return _mcp_text(res)
+
+        async def drive() -> None:
+            async with stdio_client(params) as (r, w):  # noqa: SIM117 (r, w feed the session)
+                async with ClientSession(r, w) as s:
+                    await s.initialize()
+                    names = {t.name for t in (await s.list_tools()).tools}
+                    assert {"proj_info", "proj_wip_ls", "proj_item_update",
+                            "proj_verb", "proj_new", "proj_item_add"} <= names, names
+                    REP.ok(f"list_tools：{len(names)} 个工具，含本章用到的 6 个")
+                    ok("proj_info 项目状态（stdio 会话）", "managed by proj", "proj_info",
+                       await call(s, "proj_info"))
+                    ok("proj_wip_ls 空 WIP（stdio 会话）", "no records", "proj_wip_ls",
+                       await call(s, "proj_wip_ls"))
+                    out = await call(s, "proj_new", record_type="task", title="MCP 接手任务")
+                    ok("proj_new 建任务（stdio 会话，工具分发）", "Created", "proj_new", out)
+                    tid = _id_of(out)
+                    ok("proj_item_add 加验收项（stdio 会话）", "#001", "proj_item_add",
+                       await call(s, "proj_item_add", ref=tid, text="由 MCP 会话接手"))
+                    out = await call(s, "proj_item_update", item=f"{tid}#001",
+                                     state="done", note="备注：stdio 会话完成")
+                    ok("proj_item_update 勾选 + 备注（stdio 会话）", "备注",
+                       "proj_item_update", out)
+                    ok("proj_verb(done) 任务完成（stdio 会话）", "→ Done", "proj_verb",
+                       await call(s, "proj_verb", id=tid, verb="done"))
+                    # S.4: the session's own writes carry the PROJ_AGENT actor
+                    out = await call(s, "proj_show", id=tid, history=True)
+                    ok("proj_show --history（stdio 会话）", "created:", "proj_show", out)
+                    assert f"· {MCP_AGENT}" in out, out
+                    REP.ok(f"changelog 记录操作者（· {MCP_AGENT}，PROJ_AGENT 生效）")
+        asyncio.run(drive())
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 # ---- A12: render the reference scripts/e2e.sh (PLAN §18.3) ----------------------
 
 def _sh_line(cmd: list) -> str:
@@ -955,7 +1043,7 @@ def main() -> int:
     print(f"e2e: PCB 缺陷检测模型 v1  ({'子进程模式' if SUBPROCESS else '进程内模式'}，沙盒 {where})")
     try:
         reset_sandbox()
-        for ch in (ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8, ch9):
+        for ch in (ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8, ch9, ch12):
             ch()
         rc = _summary()
         # A12: refresh the reference e2e.sh after every run (pass OR fail)
