@@ -1,8 +1,9 @@
 # proj
 
 Project governance CLI: decisions (ADR), tasks, plans, changelog, tech debt,
-incidents, experiments. One generic engine, YAML templates as schema,
-SQLite as source of truth, Markdown as the human/LLM input channel.
+incidents, experiments. One generic engine, YAML templates as schema, an
+append-only event log as source of truth (a SQLite cache derived by replay),
+Markdown as the human/LLM input channel.
 
 Design doc (kept outside the git repo, in `plans/` locally):
 `plans/PLAN.md` — architecture, record types, CLI surface, release state and
@@ -52,9 +53,11 @@ proj check                       # invariants; also runs in the pre-commit hook
 
 ## Core model
 
-- **Source of truth = `.proj/cache.sqlite`** (one table per record_type + the shared
-  `record_changelog`, committed by default so a clone is ready to use — see the
-  `.proj/` layout below).
+- **Source of truth = `.proj/events.jsonl`** (the append-only event log; the
+  whole project state is a deterministic replay of it — see "Collaborating over
+  git" below). **`.proj/cache.sqlite`** (one table per record_type + the shared
+  `record_changelog`) is a *derived local cache* that any command rebuilds by
+  replay when missing — git-ignored.
   The md files are **input channel + rendered output**: edit `##` section
   content → `proj sync` reads it back, then re-renders every md from the DB.
 - **Templates are YAML schema** (bundled with the package; the project's own
@@ -68,10 +71,10 @@ proj check                       # invariants; also runs in the pre-commit hook
   from. `proj init` with a lock follows the lock; without, it builds from the
   bundled profiles and writes the lock.
 - **The `.proj/` directory** (S.10) holds all project data, keeping the repo root
-  clean: `cache.sqlite` (the DB, committed by default) + `lock.yaml` (committed)
-  are the source of truth; `events.jsonl` (the git-collab event log) and
-  `write.lock` / `bugs.log` (runtime, git-ignored by `.proj/.gitignore`) are
-  never committed. A fresh clone is ready to use — the DB ships with it.
+  clean: `lock.yaml` (the template/schema pin) + `events.jsonl` (the event log)
+  are committed and are the source of truth; `cache.sqlite` (the derived cache)
+  and `write.lock` / `bugs.log` (runtime) are never committed (git-ignored by
+  `.proj/.gitignore`) — a fresh clone rebuilds the cache on its first command.
 - **IDs live in the filename and the md** (e.g. `T-000001`); each md carries
   an invisible first line `<!-- proj:<record_type> <id> -->` for cross-validation
   (the id must match the filename prefix).
@@ -202,6 +205,55 @@ proj wip add|return|ls [--owner <you>]
 
 > 完整参考：[`docs/CLI.md`](docs/CLI.md)（`proj docs` 从代码生成，永不漂移）。
 
+## Collaborating over git
+
+Multiple people or agents can share one repo: the committed state is an
+append-only **event log** (`.proj/events.jsonl`) — `cache.sqlite` is a
+*derived local cache* rebuilt by replay (git-ignored), so there is nothing
+binary to merge. Design: `plans/git-collab-design.md`.
+
+**Setup — once per clone:**
+
+```bash
+proj hooks install    # git hooks + .gitattributes + a keep-ours merge driver
+```
+
+What it installs (and why it works without conflicts):
+
+- **`.gitattributes`** (committed, so every clone gets it): the event log is
+  merged with `merge=union` — two people appending events keep **both**
+  line-sets, and the append-only log never conflicts. The rendered md files
+  (`docs/**/*.md`, `WIP.md`, `CHANGELOG.md`) use a `proj-render` merge driver
+  that keeps *ours* on conflict — the md is re-rendered from the merged log
+  anyway, so the "lose the other side" conflict is harmless.
+- **`pre-commit`** hook → `proj check` (invariants; refuse to push a broken state).
+- **`post-merge` / `post-checkout` / `post-rewrite`** hooks → `proj sync --quiet`:
+  replay the merged event log into the cache and re-render. After a merge you do
+  nothing by hand — the replay is deterministic, so both clones converge.
+
+**What the replay guarantees (P2):**
+
+- **Renumbering, never a lost write.** If two people both claim the next id
+  (e.g. both create `T-000003`), replay keeps the first and renumbers the
+  later to the next free number, then *reports the rename* in the sync output —
+  follow the note to update your references.
+- **Field conflicts survive, deterministically.** Both sides' edits to a field
+  are kept; the replay's total order (not file order) decides the winner.
+- **Business-rule drift is reported, not auto-fixed.** A merge can leave e.g. a
+  task `Done` whose referencing checklist item is still open (replay runs no
+  business logic). `proj check` flags it and prints the exact fixing command
+  (`proj item set …`); run it to emit a normal event — the two clones must not
+  each "auto-fix" and fork the log.
+
+**Daily commands:**
+
+- `proj check` — the log is well-formed, a full replay reproduces the cache,
+  ids/numbers are unique, no dangling refs, gate states are consistent.
+- `proj compact` — shrink a grown log to one `snapshot` event per record
+  (requires a clean tree; it replays and verifies before replacing, then
+  reminds you to commit the result and let others sync first).
+- `proj info` — event count / log size / last full replay (post-replay).
+
 ## MCP
 
 `proj-mcp` ships a stdio MCP server (`mcp` 2.x) exposing the engine as tools —
@@ -251,11 +303,13 @@ the engine is fully generic.
   write command holds the project write lock and waits (up to 10 s) for the
   current writer, then proceeds; md files are written atomically, so no reader
   ever sees a half-written file.
-- **Multiple people in separate git clones: not supported yet.** Ids would
-  collide on merge and `.proj/cache.sqlite` cannot be merged. A git-based
-  collaboration design (event log as the committed source of truth, the
-  sqlite kept as a local cache) is ready for post-release implementation —
-  see `plans/git-collab-design.md`.
+- **Multiple people in separate git clones: supported.** The committed source
+  of truth is the append-only `.proj/events.jsonl` (merged with `merge=union`),
+  and `cache.sqlite` is a derived local cache that any command rebuilds by
+  replay — so there is nothing binary to merge and colliding ids are renumbered
+  deterministically on replay. Set up a clone with `proj hooks install` and
+  merge/checkout/rebase replay automatically; see "Collaborating over git"
+  above. Design: `plans/git-collab-design.md`.
 - **Network filesystems (NFS/CIFS):** SQLite WAL is unsafe there, so proj
   detects the filesystem and falls back to `journal_mode=DELETE`
   (`proj info` shows the mode and a hint). Avoid writing the same project from

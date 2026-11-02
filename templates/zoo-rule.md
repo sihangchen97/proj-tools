@@ -69,6 +69,30 @@ files manually — use the `proj` CLI (or the `proj_*` MCP tools if available).
   `proj item set <ID>#A01 <state> --note "<evidence>"`) — a note with the
   evidence (PR, commit, numbers) helps the next person.
 
+## Collaborating over git (one repo, several people/agents)
+
+The committed truth is the append-only **event log** (`.proj/events.jsonl`);
+`cache.sqlite` is a derived local cache rebuilt by replay, so there is nothing
+binary to merge.
+
+- **Once per clone, before you start**: `proj hooks install` — it writes the git
+  hooks (pre-commit `proj check`; post-merge/post-checkout/post-rewrite
+  `proj sync --quiet`), the committed `.gitattributes` (event log `merge=union`;
+  rendered md `merge=proj-render` keep-ours), and the keep-ours merge driver.
+- **After a merge / branch checkout / rebase you do nothing by hand**: the
+  post-* hook replays the merged log (deterministic — both clones converge) and
+  re-renders. If replay renumbered an id it reports the rename — follow the note.
+- **Renumbering, never a lost write**: if two of you claim the next id, replay
+  keeps the first and moves the later to the next free number; the sync output
+  tells you which reference to update.
+- **A merge can leave business-rule drift** (e.g. a task `Done` whose referencing
+  item is still open — replay runs no business logic). `proj check` flags it and
+  prints the fixing command; **run that command to emit a normal event** — never
+  "auto-fix" in the DB, or the two clones fork the log.
+- **Don't push a broken state**: the pre-commit hook runs `proj check`; fix any
+  FAIL first. `proj compact` shrinks a grown log to snapshots (clean tree
+  required; commit the result and let others sync first).
+
 ## Commands you reach for
 
 - `proj ls [--type T] [--status S]` / `proj show <ID> [--history]` (any type)
