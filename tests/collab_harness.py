@@ -124,7 +124,8 @@ class TwoClones:
         return False
 
 
-def build_two_clones(tmp_path: Path, base_setup=None) -> TwoClones:
+def build_two_clones(tmp_path: Path, base_setup=None,
+                     install_hooks: bool = True) -> TwoClones:
     """Bare repo → `proj init` + commit the base → clone into A and B (each
     runs `proj hooks install`). `base_setup` optionally mutates one clone
     before the first push (e.g. add a task) so A and B start divergent."""
@@ -144,8 +145,9 @@ def build_two_clones(tmp_path: Path, base_setup=None) -> TwoClones:
     # hooks install on the base: commits .gitattributes into the project (C5)
     # so A/B inherit it tracked; their own install only writes local git
     # config + hooks (both inside .git)
-    base.run("hooks", "install")
-    base.hooks = True
+    if install_hooks:
+        base.run("hooks", "install")
+        base.hooks = True
     base.commit("base project")
     _git("push", "-q", "origin", "HEAD", cwd=base_dir)
 
@@ -155,6 +157,8 @@ def build_two_clones(tmp_path: Path, base_setup=None) -> TwoClones:
     clones = [Clone(path=a, proj=proj), Clone(path=b, proj=proj)]
     for c in clones:
         _configure(c.path)
+        if not install_hooks:
+            continue  # the no-hooks scenario: a clone without any hook
         try:
             c.run("hooks", "install")
             c.hooks = True

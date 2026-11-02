@@ -18,9 +18,14 @@ import json
 import collab_harness as ch
 import pytest
 
-# the one harness test is NOT xfailed (it must hold already); the rest wait
-# on C2/C4. strict=True so a pass while xfailed is reported.
-WAIT_C2C4 = pytest.mark.xfail(strict=True, reason="C2/C4 not wired yet")
+# the harness test and the trailing-newline check are NOT xfailed (they must
+# hold already); the merge scenarios wait on C2 (event emitter) + C4 (replay
+# on write / cache rebuild), the merge-in-progress one on C5. strict=True so a
+# pass while xfailed is reported.
+WAIT_C2C4 = pytest.mark.xfail(
+    strict=True, reason="needs C2 (event emitter) + C4 (replay/cache rebuild)")
+WAIT_C5 = pytest.mark.xfail(
+    strict=True, reason="needs C5 (refuse write commands mid-merge/rebase)")
 
 
 @pytest.fixture(scope="module")
@@ -150,3 +155,321 @@ def test_disjoint_checklists_and_wip_merge(tmp_path, proj_binary):
     assert not t.merge_conflict()
     listing = a.run("item", "ls", tid)
     assert "步骤一" in listing and "步骤二" in listing
+
+
+# ---------------------------------------------------------------------------
+# §10 + C7 追加场景 (2026-11-03 00:10): merge-order independence,
+# trailing newline, merge-in-progress refusal, rebase == merge, cache rebuild.
+# Scenarios needing C2 (event emitter) / C4 (replay on write + cache
+# rebuild) are xfail(strict) until those land; C5 (merge-in-progress
+# refusal) likewise. The trailing-newline check holds TODAY (E7 + the C6
+# check wiring, 33bb9c5) — it is NOT xfailed.
+
+def _states_equal(t) -> None:
+    sa, sb = t.a.state(), t.b.state()
+    assert sa == sb, "the two sides differ after the merge"
+    assert sa["md"], "no md data found"
+
+
+def _event_line(op, at, actor, seq, rec="", **payload) -> str:
+    """One canonical events.jsonl line (the same writer C2 will use)."""
+    from proj.events import make, to_line
+    return to_line(make(op, actor=actor, at=at, seq=seq, rec=rec, **payload))
+
+
+# ---- §10.1 / C7 merge-order independence -----------------------------------
+
+@WAIT_C2C4
+def test_id_collision_renumbers_and_both_sides_agree(tmp_path):
+    """§10.1: both propose the same next task id (T-000002) → one keeps it
+    (the earlier), the other is renumbered (T-000003); BOTH sides agree and
+    the renumbering is reported."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    # base holds T-000001 (the seed); both clones next propose T-000002
+    assert _task_ids(a) == ["T-000001"]
+    tid_a = _new_task_id(a, "A 建")
+    assert tid_a == "T-000002"
+    a.commit("A: T-000002")
+    t.push(a)
+    tid_b = _new_task_id(b, "B 建")
+    assert tid_b == "T-000002"          # B collided with A's proposal
+    b.commit("B: T-000002")
+    t.push(b)
+    t.rebase(a)
+    assert not t.merge_conflict()
+    ids = set(_task_ids(a))
+    assert {"T-000002", "T-000003"} <= ids and "T-000004" not in ids
+    assert sorted(_task_ids(a)) == sorted(_task_ids(b))
+    _states_equal(t)
+
+
+@WAIT_C2C4
+def test_merge_order_is_irrelevant(tmp_path):
+    """C7: A merges B first vs B merges A first → byte-identical results
+    (proj ls --json, item ls --json, every md) on both sides."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    _new_task_id(a, "A 独有")
+    a.commit("A")
+    t.push(a)
+    _new_task_id(b, "B 独有")
+    b.commit("B")
+    t.push(b)
+    t.rebase(a)
+    assert not t.merge_conflict()
+    sa, sb = a.state(), b.state()
+    assert sa == sb, "A-first merge: the sides differ"
+
+
+# ---- §10.2 field-level merge -----------------------------------------------
+
+@WAIT_C2C4
+def test_disjoint_fields_both_survive(tmp_path):
+    """§10.4: A changes the title, B changes the summary of the same task →
+    both changes survive (field-level, not whole-record LWW)."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    tid = _new_task_id(a, "原")
+    a.commit("base")
+    t.push(a)
+    t.rebase(b)
+    md_a = next(a.path.rglob(f"{tid}-*.md"))
+    md_a.write_text(md_a.read_text(encoding="utf-8").replace(
+        f"# {tid}. 原", f"# {tid}. 新标题"), encoding="utf-8")
+    a.run("sync")
+    a.commit("title")
+    md_b = next(b.path.rglob(f"{tid}-*.md"))
+    md_b.write_text(md_b.read_text(encoding="utf-8") + "\n> **summary:** B 写的摘要\n",
+                    encoding="utf-8")
+    b.run("sync")
+    b.commit("summary")
+    t.push(a)
+    t.rebase(b)
+    assert not t.merge_conflict()
+    final = next(b.path.rglob(f"{tid}-*.md")).read_text(encoding="utf-8")
+    assert "新标题" in final and "B 写的摘要" in final
+
+
+# ---- §10.5 item number collision -------------------------------------------
+
+@WAIT_C2C4
+def test_item_number_collision_renumbers(tmp_path):
+    """§10.5: both add a checklist item to the same group (both propose
+    #A03) → one is #A03, the other #A04; both sides agree."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    tid = _new_task_id(a, "原")
+    for grp, txt in (("A", "甲一"), ("B", "乙一"), ("A", "甲二"), ("B", "乙二")):
+        a.run("item", "add", tid, txt, "--group", grp)
+    a.commit("base items (A01-A02 in A, A03-A04 in B)")
+    t.push(a)
+    t.rebase(b)
+    a.run("item", "add", tid, "A 新", "--group", "A")
+    a.commit("A item")
+    b.run("item", "add", tid, "B 新", "--group", "A")
+    b.commit("B item")
+    t.push(a)
+    t.rebase(b)
+    assert not t.merge_conflict()
+    listing = b.run("item", "ls", tid)
+    assert "A 新" in listing and "B 新" in listing
+    _states_equal(t)
+
+
+# ---- §10.6 gate violation survives the merge -------------------------------
+
+@WAIT_C2C4
+def test_closed_plan_plus_new_item_reports_gate_violation(tmp_path):
+    """§10.6: A archives a plan while B adds an open item to it → the merge
+    succeeds (no git conflict) and `proj check` reports the gate violation."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    out = a.run("plan", "new", "收尾", "-y")
+    pid = [ln for ln in out.splitlines() if ln.startswith("Created:")][-1] \
+        .split(":", 1)[1].strip()
+    a.commit("base plan")
+    t.push(a)
+    t.rebase(b)
+    a.run("plan", "activate", pid)
+    a.run("plan", "review", pid)
+    a.run("plan", "archive", pid)
+    a.commit("archive plan")
+    b.run("item", "add", pid, "漏掉的一项")
+    b.commit("B open item")
+    t.push(a)
+    t.rebase(b)
+    assert not t.merge_conflict()
+    out = b.run("check", expect=1)
+    assert "gate" in out.lower() or pid in out
+
+
+# ---- §10.7 delete (tombstone) vs modify ------------------------------------
+
+@WAIT_C2C4
+def test_tombstone_vs_modify_replays_in_order(tmp_path):
+    """§10.7: A deletes an item (tombstone) while B modifies the same one →
+    replayed in event order: the surviving state is 'deleted' either way, and
+    both sides agree."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    tid = _new_task_id(a, "原")
+    a.run("item", "add", tid, "会变的项")
+    a.commit("base item")
+    t.push(a)
+    t.rebase(b)
+    a.run("item", "rm", f"{tid}#001")
+    a.commit("A delete")
+    a_md = next(a.path.rglob(f"{tid}-*.md"))
+    a_md.write_text(a_md.read_text(encoding="utf-8").replace(
+        "- [ ] #001 会变的项", "- [ ] #001 会变的项-改过"), encoding="utf-8")
+    b.run("item", "edit", f"{tid}#001", "--text", "改过的文本")
+    b.commit("B modify")
+    t.push(a)
+    t.rebase(b)
+    assert not t.merge_conflict()
+    listing = b.run("item", "ls", tid)
+    assert "改过的文本" not in listing.split("B 修改", 1)[0] or "会变的项" in listing
+    _states_equal(t)
+
+
+# ---- C7 rebase == merge ----------------------------------------------------
+
+@WAIT_C2C4
+def test_rebase_equals_merge(tmp_path):
+    """C7: the same divergent edits produced by a rebase and by a merge give
+    byte-identical results (two independent harness runs)."""
+    def make_side(diverge):
+        d = tmp_path / f"rm-{diverge}"
+        d.mkdir(exist_ok=True)
+        t = ch.build_two_clones(d)
+        a, b = t.a, t.b
+        _new_task_id(a, "A 独有")
+        a.commit("A")
+        t.push(a)
+        _new_task_id(b, "B 独有")
+        b.commit("B")
+        t.push(b)
+        (t.rebase if diverge == "rebase" else t.pull)(a)
+        assert not t.merge_conflict()
+        return a.state()
+    assert make_side("rebase") == make_side("merge")
+
+
+# ---- C7 write refused while a merge is in progress -------------------------
+
+@WAIT_C5
+def test_write_refused_while_merge_in_progress(tmp_path):
+    """C7: with a merge mid-flight (conflict left unresolved), a write command
+    must be refused — no event may be appended to a half-merged tree."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    did = _new_task_id(a, "冲突")
+    a.commit("base")
+    t.push(a)
+    t.rebase(b)
+    md = next(a.path.rglob(f"{did}-*.md"))
+    conflict = ("\n## 冲突段\n\n<<<<<<< .mine\nA 行\n"
+                "=======\nB 行\n>>>>>>> .their\n")
+    md.write_text(md.read_text(encoding="utf-8") + conflict, encoding="utf-8")
+    a.commit("both touch the same line")
+    t.push(a)
+    # start the merge and leave it in conflict (do not resolve)
+    a.run_sh("git pull origin HEAD --no-rebase", expect=1)
+    assert (a.path / ".git" / "MERGE_HEAD").exists()
+    # a write command must now be refused
+    out = a.run("task", "new", "不该成", "-y", expect=1)
+    assert "merge" in out.lower() or "MERGE" in out or "refus" in out.lower()
+
+
+# ---- C7 cache rebuild after deletion ---------------------------------------
+
+@WAIT_C2C4
+def test_cache_deleted_rebuilds_identical(tmp_path):
+    """C7: delete `.proj/cache.sqlite` in one clone, run any write command →
+    the DB is rebuilt from events.jsonl and equals the other side's."""
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    _new_task_id(a, "A 独有")
+    a.commit("A")
+    t.push(a)
+    t.rebase(b)
+    db = b.path / ".proj" / "cache.sqlite"
+    assert db.exists()
+    db.unlink()
+    b.run("task", "ls")          # any command rebuilds the cache (C4)
+    assert db.exists()
+    assert b.ls_json() == a.ls_json()
+    _states_equal(t)
+
+
+# ---- C7 events.jsonl must end with a newline (holds TODAY) ------------------
+
+def test_events_file_without_trailing_newline_fails_check(tmp_path):
+    """C7: an events.jsonl that does not end with `\\n` (a torn/corrupt tail)
+    is reported by `proj check` — this already holds (E7 + the C6 wiring)."""
+    d = tmp_path / "nl"
+    d.mkdir()
+    c = ch.Clone(path=d, proj=ch._find_proj())
+    c.run("init", "--profile", "default")
+    ev_path = d / ".proj" / "events.jsonl"
+    ev_path.write_text(
+        _event_line("create", 1, "x", 1, rec="T-000001",
+                    type="task", id="T-000001", title="t", status="Draft",
+                    summary="", sections={})[:-1],   # strip the trailing \n
+        encoding="utf-8")
+    out = c.run("check", expect=1)
+    assert "does not end with a newline" in out
+
+
+# ---- design §10: a clone without hooks -------------------------------------
+
+@WAIT_C2C4
+def test_clone_without_hooks_auto_replays(tmp_path):
+    """design §10 (last row): a clone that never ran `proj hooks install` —
+    its first write command auto-replays the pulled events; a conflicting md
+    gets a hint to run hooks install / `proj sync --rerender`."""
+    t = ch.build_two_clones(tmp_path, install_hooks=False)
+    a, b = t.a, t.b
+    assert not a.hooks and not b.hooks
+    _new_task_id(a, "A 独有")
+    a.commit("A")
+    t.push(a)
+    # b's next command replays A's events (C2/C4) — then b's tree matches a's
+    b.run("task", "ls")
+    assert set(_task_ids(a)) == set(_task_ids(b))
+    _states_equal(t)
+
+
+# ---- C7 (optional) random two-clone test ------------------------------------
+
+@WAIT_C2C4
+def test_random_ops_both_merge_orders_agree(tmp_path):
+    """C7 (optional): 20 seed-driven ops per side (new task / add item),
+    merged → byte-identical. The seed is fixed so a failure is reproducible.
+    A and B run the same op *sequence* (same seed) with only the content
+    differing, which is what merge-order independence must survive."""
+    import random
+    rng = random.Random(20261103)
+    steps = [rng.randrange(2) for _ in range(20)]  # 0 = new task, 1 = add item
+
+    def drive(clone, tag):
+        last = _new_task_id(clone, f"{tag} root")
+        for i, step in enumerate(steps):
+            if step == 0:
+                last = _new_task_id(clone, f"{tag} 步 {i}")
+            else:
+                clone.run("item", "add", last, f"{tag} 项 {i}")
+        return last
+
+    t = ch.build_two_clones(tmp_path)
+    a, b = t.a, t.b
+    drive(a, "A")
+    a.commit("A random")
+    t.push(a)
+    drive(b, "B")
+    b.commit("B random")
+    t.push(b)
+    t.rebase(a)
+    assert not t.merge_conflict()
+    _states_equal(t)
