@@ -33,7 +33,7 @@ import yaml
 
 from proj.core.templates import ItemsSpec, RecordTypeSpec
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10  # F1/F2: + records.md_mtime_ns / md_size / md_hash (file fingerprint)
 #: the profile lock (S.10): committed, in the .proj/ data directory
 LOCK_FILE = ".proj/lock.yaml"
 
@@ -140,10 +140,22 @@ class Db:
             "CREATE UNIQUE INDEX IF NOT EXISTS relations_one_parent "
             "ON relations(target) WHERE kind='parent'")
         # unified record storage: one table per type was replaced by a type column
+        # F1: + the md file's fingerprint columns (local cache only — never part
+        # of the data: no event, no --json, no lock)
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS records "
             "(id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, status TEXT, "
-            "summary TEXT, \"commit\" TEXT, created TEXT, sections TEXT)")
+            "summary TEXT, \"commit\" TEXT, created TEXT, sections TEXT, "
+            "md_mtime_ns INTEGER, md_size INTEGER, md_hash TEXT)")
+        # F1: pre-F1 databases (schema < 10) lack the fingerprint columns —
+        # add them in place (pure cache, NULL = "no fingerprint yet": the first
+        # read of a file fills it in).
+        for col, dtype in (("md_mtime_ns", "INTEGER"), ("md_size", "INTEGER"),
+                          ("md_hash", "TEXT")):
+            if col not in self.table_columns("records"):
+                self.conn.execute(
+                    f"ALTER TABLE records ADD COLUMN {col} {dtype}")
+                self.conn.commit()  # DDL is not transactional in SQLite
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS record_changelog "
             "(id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, date TEXT, "
@@ -206,6 +218,56 @@ class Db:
     def _touch_view(self, view: str) -> None:
         self.touched_views.add(view)
         self._emit("touched-view", None, view=view)
+
+    # ---- F1/F2: md file fingerprints (local cache, not project data) -------
+    # Spec F1.1: written through the plain connection but deliberately
+    # OUTSIDE the X0 write methods — no `touched`, no `_emit`: the fingerprint
+    # is pure cache (never an event, never --json, never the lock); git
+    # collab (C4) keeps it local to the cache.
+
+    def set_fingerprint(self, record_id: str, mtime_ns: int | None,
+                        size: int | None, h: str) -> None:
+        """F1: remember a record md's (mtime_ns, size, content sha1) after a
+        write or an ingest (a pure cache write: no `touched`, no `_emit`)."""
+        self.conn.execute(
+            "UPDATE records SET md_mtime_ns=?, md_size=?, md_hash=? WHERE id=?",
+            (mtime_ns, size, h, record_id))
+
+    def fingerprints_all(self, spec: RecordTypeSpec) -> dict[str, tuple[int, int, str]]:
+        """F1: every stored md fingerprint of a type in ONE query
+        (record_id -> (mtime_ns, size, sha1)); rows never written (NULL hash)
+        are absent — callers treat a missing key as "no fingerprint yet"."""
+        return {r["id"]: (r["md_mtime_ns"], r["md_size"], r["md_hash"])
+                for r in self.conn.execute(
+                    "SELECT id, md_mtime_ns, md_size, md_hash FROM records "
+                    "WHERE type=? AND md_hash IS NOT NULL", (spec.record_type,))}
+
+    def fingerprint_of(self, record_id: str) -> tuple[int, int, str] | None:
+        """F1: a record md's stored fingerprint (mtime_ns, size, sha1), or None
+        when never written (fresh init / pre-F1 rows are NULL)."""
+        row = self.conn.execute(
+            "SELECT md_mtime_ns, md_size, md_hash FROM records WHERE id=?",
+            (record_id,)).fetchone()
+        if row is None or row["md_hash"] is None:
+            return None
+        return (row["md_mtime_ns"], row["md_size"], row["md_hash"])
+
+    def view_fp(self, name: str) -> tuple[int, int, str] | None:
+        """F1: a rendered view file's fingerprint (WIP.md / CHANGELOG.md) — the
+        views have no records row, so theirs live in `meta` under `fp:<name>`
+        as "mtime_ns,size,hash"."""
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key=?", (f"fp:{name}",)).fetchone()
+        if row is None:
+            return None
+        mtime_ns, size, h = row["value"].split(",")
+        return (int(mtime_ns), int(size), h)
+
+    def set_view_fp(self, name: str, mtime_ns: int, size: int, h: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (f"fp:{name}", f"{mtime_ns},{size},{h}"))
 
     # ---- record rows -------------------------------------------------------
 

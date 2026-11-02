@@ -55,6 +55,7 @@ sync: md → DB (sections win) → render all md (tool-owned parts win).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -432,10 +433,14 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db) -> bool:
+def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db,
+               text: str | None = None) -> bool:
     """One record file vs the DB (its text sections, and the items section when
-    the record_type has items)."""
-    _mk, _u, raw = parse_record(p.read_text(encoding="utf-8"))
+    the record_type has items). `text`: content already read (F1 — avoid a
+    second read); None = read here."""
+    if text is None:
+        text = p.read_text(encoding="utf-8")
+    _mk, _u, raw = parse_record(text)
     stored = json.loads(row["sections"] or "{}")
     from proj.engine import items as items_mod  # lazy: store↔items cycle
     item_sec = {it.section.lower() for it in spec.items}
@@ -471,12 +476,82 @@ def md_drift(cfg: ProjConfig) -> list[str]:
         db.close()
 
 
+# ---- F1/F2: file fingerprints (stat-first; read only on change) --------------
+
+def _fp_hash(text: str) -> str:
+    """F1: the content sha1 (hex) of a record/view file."""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _stat(p: Path) -> tuple[int, int] | None:
+    """F1: (mtime_ns, size) of a file, or None when it does not exist."""
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _record_fresh(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db,
+                  p: Path, record_id: str, text: str | None = None) -> None:
+    """F1: after the DB matches a record file, refresh its stored fingerprint
+    (a cache write, no touched/event). `text=None` = mtime/size-only update,
+    keeping the stored hash (a `touch` / `git checkout` that moved the stat but
+    not the content); `text` = store its sha1 too (right after a write/ingest)."""
+    st = _stat(p)
+    if st is None:
+        return
+    h = _fp_hash(text) if text is not None else db.fingerprint_of(record_id)
+    if h is not None:
+        db.set_fingerprint(record_id, st[0], st[1], h)
+
+
+def _view_fresh(db: dbmod.Db, name: str, p: Path, text: str | None = None) -> None:
+    """F1: refresh a rendered view's fingerprint (meta, key `fp:<name>`); same
+    stat-first rule as `_record_fresh` (None text = mtime/size-only update)."""
+    st = _stat(p)
+    if st is None:
+        return
+    fp = db.view_fp(name)
+    h = _fp_hash(text) if text is not None else (fp[2] if fp else None)
+    if h is not None:
+        db.set_view_fp(name, st[0], st[1], h)
+
+
+def _render_unchanged(h: str | None, mtime_ns: int | None, size: int | None,
+                      p: Path, text: str) -> bool:
+    """F2: a rendered file needs no write when its text hash matches the stored
+    fingerprint AND the file's current (mtime_ns, size) matches — WITHOUT reading
+    the file (F2: render does not read back). No stored hash, a stat mismatch,
+    or a hash mismatch → write (宁多勿少: an extra identical write is just slow,
+    a missed one is wrong)."""
+    st = _stat(p)
+    if st is None or h is None:
+        return False
+    if st[0] != mtime_ns or st[1] != size:
+        return False
+    return _fp_hash(text) == h
+
+
+def _id_from_name(p: Path, spec: RecordTypeSpec) -> str | None:
+    """F1: the record id a file's NAME encodes (`<ID>-<slug>.md`) WITHOUT
+    reading the file. None = the name is not this type's id (the caller reads
+    to inspect the marker and report a problem)."""
+    m = _id_prefix_re(spec).match(p.name)
+    return m.group(1).upper() if m else None
+
+
 def ensure_synced(cfg: ProjConfig) -> None:
     """A1 (Q4): before a write command overwrites record files, ingest every
     file with unsynced hand edits (md → DB). No-op when nothing drifted.
     Problems abort the whole operation — nothing is rendered or half-written.
     S.2: holds the project write lock (re-entrant when nested under a
-    write command that already holds it)."""
+    write command that already holds it).
+    F1 (stat-first, per known record): the record id comes from the file NAME.
+    A file whose (mtime_ns, size) match its stored fingerprint is skipped with
+    NO read. A mismatch (or no fingerprint, fresh/pre-F1) reads the file ONCE
+    and compares the content hash: a pure mtime/size change (touch, checkout)
+    only refreshes the fingerprint — no ingest; a content change ingests."""
     with write_lock(cfg, "sync"):
         reg = load_registry(cfg.root)
         # R3: one write transaction — the hand edits are ingested atomically (or
@@ -500,21 +575,45 @@ def ensure_synced(cfg: ProjConfig) -> None:
                 # write the pre-edit checklist back, clobbering the user's edit.
                 render_all(cfg, db=db)
             for spec in reg.values():
+                fpx = db.fingerprints_all(spec)  # F1: one query per type
                 for p in _scan_files(cfg, spec, None):
-                    (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
-                    if mk != spec.record_type or not u:
-                        continue
+                    u = _id_from_name(p, spec)
+                    if u is None:  # the name is not this type's id → read to check the marker
+                        (mk, u2), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
+                        if mk != spec.record_type or not u2:
+                            continue
+                        u = u2
                     row = db.get(spec, u)
-                    if row is None or not _md_drifts(p, row, spec, db):
+                    if row is None:  # not a record of this type → a problem is reported elsewhere
                         continue
-                    # the checklist was just written back from WIP.md: the stale
-                    # md list must not clobber it in this same ingest
+                    # F1: stat-first — unchanged (stat matches the fingerprint)
+                    # → no read at all
+                    st = _stat(p)
+                    fp = fpx.get(u)
+                    if st is not None and fp is not None and st == (fp[0], fp[1]):
+                        continue
+                    # stat/size mismatch or no fingerprint: read once, hash, decide
+                    text = p.read_text(encoding="utf-8")
+                    if fp is not None and _fp_hash(text) == fp[2]:
+                        _record_fresh(cfg, spec, db, p, u, text)  # F1: refresh only
+                        continue  # a pure mtime/size change — same content, no ingest
+                    if not _md_drifts(p, row, spec, db, text=text):
+                        _record_fresh(cfg, spec, db, p, u, text)  # store the fingerprint
+                        continue
+                    # B2: the checklist was just written back from WIP.md: the
+                    # stale md list must not clobber it in this same ingest
                     skip = u in written
                     problems, _ = _ingest_md(cfg, spec, db, p, strict=True,
-                                             skip_items=skip)
+                                             text=text, skip_items=skip)
                     if problems:
                         raise ProjError("unsynced md edits with problems — fix and retry:\n"
                                         + "\n".join(f"  {x}" for x in problems))
+                    # F1: ingested (a title change may have renamed the file) —
+                    # re-derive the path from the DB and fingerprint its content
+                    new_p = file_path(cfg, spec, db.get(spec, u))
+                    _record_fresh(cfg, spec, db, new_p, u,
+                                  new_p.read_text(encoding="utf-8")
+                                  if new_p.exists() else None)
 
 
 def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
@@ -543,17 +642,24 @@ def render_all(cfg: ProjConfig, db: dbmod.Db | None = None) -> list[Path]:
             for row in db.all(spec):
                 p = file_path(cfg, spec, row)
                 text = render_record(spec, row, db, reg, task_rows=task_rows)
-                if p.exists() and p.read_text(encoding="utf-8") == text:
-                    continue  # unchanged (B1)
-                fsio.write_atomic(p, text)  # S.2: atomic (no half-written file)
-                written.append(p)
+                # F2: no read-back — skip when the rendered text's hash matches
+                # the stored fingerprint AND the file's (mtime_ns, size) does too
+                if not _render_unchanged(row.get("md_hash"), row.get("md_mtime_ns"),
+                                         row.get("md_size"), p, text):
+                    fsio.write_atomic(p, text)  # S.2: atomic (no half-written file)
+                    written.append(p)
+                    _record_fresh(cfg, spec, db, p, row["id"], text)  # F1: fresh fp
         for view in (render_wip_md(cfg, db, reg), render_changelog_md(cfg, db)):
             if view is None:
                 continue
-            if view.path.exists() and view.path.read_text(encoding="utf-8") == view.text:
-                continue  # unchanged (B1)
-            fsio.write_atomic(view.path, view.text)  # S.2
-            written.append(view.path)
+            vfp = db.view_fp(view.path.name)
+            if not _render_unchanged(
+                    vfp[2] if vfp else None,
+                    vfp[0] if vfp else None, vfp[1] if vfp else None,
+                    view.path, view.text):
+                fsio.write_atomic(view.path, view.text)  # S.2
+                written.append(view.path)
+                _view_fresh(db, view.path.name, view.path, view.text)  # F1: fresh fp
         return written
     finally:
         if own_db:
@@ -779,11 +885,15 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
 # ---- sync / adopt --------------------------------------------------------------
 
 def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
-               strict: bool, skip_items: bool = False) -> tuple[list[str], list[str]]:
+               strict: bool, skip_items: bool = False,
+               text: str | None = None) -> tuple[list[str], list[str]]:
     """Read one md into the DB. strict=True (sync): id marker required.
     skip_items: leave the record's checklist alone (WIP.md just wrote it back —
-    the record md's stale list must not clobber it). Returns (problems, notes)."""
-    text = p.read_text(encoding="utf-8")
+    the record md's stale list must not clobber it). `text`: content already
+    read (F1 — read once in ensure_synced); None = read here. Returns
+    (problems, notes)."""
+    if text is None:
+        text = p.read_text(encoding="utf-8")
     (mk, u), title, raw_sections = parse_record(text)
     if strict:
         if mk != spec.record_type or not u:
