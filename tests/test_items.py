@@ -35,6 +35,48 @@ def _file(proj, rid: str, d: str = "docs/tasks") -> Path:
     return next((proj.root / d).glob(f"{rid}-*.md"))
 
 
+# ---- K3: the → task reference -------------------------------------------------
+
+def test_task_ref_renders_and_roundtrips(proj):
+    """The `→ T-xxxxxx` suffix: rendered right after the text (before the note),
+    parsed back into the item's task field, and a --task "" edit clears it."""
+    rid = _new(proj, "task", "X")
+    other = _new(proj, "task", "Y")
+    ops.add(proj, rid, "build it", note="details here", task=other)
+    md = _file(proj, rid).read_text(encoding="utf-8")
+    assert f"- [ ] #001 build it → {other} — details here" in md
+    # roundtrip: the parse keeps the ref (the DB row carries it)
+    db = rec.open_db(proj)
+    try:
+        rows = db.items_load(rid)
+    finally:
+        db.close()
+    assert rows[0]["task"] == other
+    # clearing the ref
+    ops.edit(proj, f"{rid}#001", task="")
+    md = _file(proj, rid).read_text(encoding="utf-8")
+    assert f" → {other}" not in md
+    assert "- [ ] #001 build it — details here" in md
+
+
+def test_task_ref_must_name_an_existing_task(proj):
+    """K3/P5: the ref must be an EXISTING record of type task — a plan id, a
+    missing id, or a non-T- string are all refused."""
+    rid = _new(proj, "task", "X")
+    plan = _new(proj, "plan", "P")
+    with pytest.raises(Exception, match=r"only tasks may be referenced"):
+        ops.add(proj, rid, "c", task=plan)
+    with pytest.raises(Exception, match=r"does not match any record|does not name"):
+        ops.add(proj, rid, "c", task="T-999999")
+    with pytest.raises(Exception, match=r"does not match any record|must be a task id"):
+        ops.add(proj, rid, "c", task="not-a-task")
+    # a valid ref works, and edit keeps validating the new ref
+    t2 = _new(proj, "task", "Y")
+    ops.add(proj, rid, "c", task=t2)
+    with pytest.raises(Exception, match=r"does not match any record|does not name"):
+        ops.edit(proj, f"{rid}#001", task="T-888888")
+
+
 def _section(p: Path, name: str) -> str:
     lines = p.read_text(encoding="utf-8").splitlines()
     start = next(i for i, x in enumerate(lines) if x == f"## {name}")

@@ -267,6 +267,8 @@ def _show_emoji(state_name: str) -> str:
 def render_item_line(item: Item, spec) -> str:
     box = "x" if item.state in CLOSED_STATES else " "
     line = f"- [{box}] #{item.no} {_show_emoji(item.state)}{item.text}"
+    if item.task:  # K3: the structured task reference (PLAN §10.3 K3)
+        line += f" → {item.task}"
     if item.note:
         line += f"{NOTE_SEP}{item.note}"
     if item.owner:
@@ -324,6 +326,10 @@ INDENT_ITEM_RE = re.compile(r"^\s+- \[[ xX]\]")
 NO_RE = re.compile(r"^#([A-Za-z0-9]+)\s*(.*)$")
 DUE_RE = re.compile(r" · due: (\d{4}-\d{2}-\d{2})$")
 OWNER_RE = re.compile(r" · owner: (.+)$")
+# K3: the structured task reference — a right-anchored ` → T-xxxxxx` suffix,
+# parsed right-to-left AFTER due/owner/note (PLAN §22.1 D2). Rendered right
+# after the text, before the note.
+TASK_REF_RE = re.compile(r" → (T-\d{4,})$")
 EMOJI_RE = re.compile(r"^(\S)\s+(.+)$")
 
 
@@ -336,6 +342,7 @@ class PItem:
     note: str = ""
     owner: str = ""
     due: str = ""
+    task: str = ""                 # K3: the referenced task id (the `→ T-xxxxxx` suffix)
     trailer: str = ""
     line: str = ""
     from_emoji: bool = False       # the state came from an emoji (conflict check)
@@ -427,6 +434,14 @@ def parse_section(text: str, spec) -> Parsed:
                 idx = rest.index(NOTE_SEP)
                 it.note = rest[idx + len(NOTE_SEP):].strip()
                 rest = rest[:idx].rstrip()
+            tm = TASK_REF_RE.search(rest)  # K3: strip the `→ T-xxxxxx` ref
+            if tm:
+                it.task = tm.group(1)
+                rest = rest[:tm.start()].rstrip()
+            if rest.count(" → T-") > (1 if it.task else 0):
+                p.problems.append(
+                    f"line {ln!r}: an item references at most one task "
+                    f"(use related for more, or write the ids in the text)")
             nm = NO_RE.match(rest)
             if nm:
                 try:
@@ -517,7 +532,7 @@ def _insert_pos(new: ItemsState, letter: str, first: bool) -> int:
 
 def add(state: ItemsState, spec, text: str, *, group: str | None = None,
         after: str | None = None, state_name: str = "", note: str = "",
-        owner: str = "", due: str = "") -> tuple[ItemsState, list[str]]:
+        owner: str = "", due: str = "", task: str = "") -> tuple[ItemsState, list[str]]:
     """Append to the end of the target group (or right after `after`, which
     must be in the same group). Returns (new_state, notes)."""
     spec = _spec(spec)
@@ -536,9 +551,11 @@ def add(state: ItemsState, spec, text: str, *, group: str | None = None,
     if state_name and state_name not in ITEM_STATES:
         raise ItemsError(f"state {state_name!r} is not a valid item state "
                          f"({', '.join(ITEM_STATES)})")
+    if task and not task.startswith("T-"):
+        raise ItemsError(f"task ref {task!r} must be a task id (T-…)")
     it = _new_item(new.next_no(letter), text.strip(),
                    state=state_name or OPEN, note=note,
-                   owner=owner, due=due)
+                   owner=owner, due=due, task=task)
     _validate_item(it, spec)
     if a is not None:
         new.rows.insert(new.rows.index(a) + 1, it)
@@ -581,15 +598,15 @@ def set_state(state: ItemsState, spec, no: str, state_name: str,
 
 def edit(state: ItemsState, spec, no: str, *, text: str | None = None,
          note: str | None = None, owner: str | None = None,
-         due: str | None = None) -> tuple[ItemsState, list[str]]:
-    """Edit fields; '' clears a field. No change → no notes."""
+         due: str | None = None, task: str | None = None) -> tuple[ItemsState, list[str]]:
+    """Edit fields; '' clears a field (incl. the task ref, K3). No change → no notes."""
     spec = _spec(spec)
     no = norm_no(no)
     new = _clone(state)
     it = _live_no(new, no)
     changed = False
     for name, val in (("text", text), ("note", note),
-                      ("owner", owner), ("due", due)):
+                      ("owner", owner), ("due", due), ("task", task)):
         if val is None:
             continue
         cur = val.strip() if name == "text" else val
@@ -1039,6 +1056,7 @@ def apply_md(state: ItemsState, parsed: Parsed, spec
         new.rows.append(row)
         row.text, row.note = it.text, it.note
         row.owner, row.due = it.owner, it.due
+        row.task = it.task  # K3: the → task reference
         row.trailer = it.trailer
         if it.state and row.state != it.state:
             row.state = it.state

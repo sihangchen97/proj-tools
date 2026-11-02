@@ -447,31 +447,34 @@ def proj_item_ls(ref: str | None = None, group: str | None = None, open_only: bo
 
 def proj_item_add(ref: str, text: str, group: str | None = None,
                   after: str | None = None, state: str | None = None, note: str = "",
-                  owner: str = "", due: str = "", new_group: bool = False,
+                  owner: str = "", due: str = "", task: str = "", new_group: bool = False,
                   root: str | None = None) -> str:
     """Add an item to a record's checklist (auto-numbered, appended to its
     group), or a whole new group. new_group=true: `text` is the GROUP name —
     the next free letter (A-Z, never reused) is assigned. group: the group
     letter L (default the ungrouped list); after: insert right after ITEM;
-    state/note/owner/due optional. Returns the fresh item list."""
+    state/note/owner/due/task optional (task: reference a task, `T-…` — only
+    tasks may be referenced). Returns the fresh item list."""
     if new_group:
         return _item_call(item_ops.group_add, ref, text, root=root)
     return _item_call(item_ops.add, ref, text, group=group, after=after, state=state,
-                      note=note, owner=owner, due=due, root=root)
+                      note=note, owner=owner, due=due, task=task, root=root)
 
 
 def proj_item_update(item: str, state: str | None = None, text: str | None = None,
                      note: str | None = None, owner: str | None = None, due: str | None = None,
-                     commit: str = "", reassign: bool = False, group: str | None = None,
+                     task: str | None = None, commit: str = "", reassign: bool = False,
+                     group: str | None = None,
                      ungroup: bool = False, after: str | None = None, first: bool = False,
                      root: str | None = None) -> str:
     """Change an item or a group of a record's checklist (item = 'ID#nn'; a
     group = 'ID#L00', its X00 row — `text` on a group renames it). Pass only
     the fields to change. state: one of the checklist's states, or 'closed'
     (the first closed state) / 'open' (the first unclosed state); text/note/
-    owner/due on an item (an empty string clears a field); commit: a git
-    commit hash. reassign: hand the item to a different owner (or clear the
-    owner) — required by S.3 when the item is owned and the owner changes.
+    owner/due/task on an item (an empty string clears a field; task references
+    a task `T-…`); commit: a git commit hash. reassign: hand the item to a
+    different owner (or clear the owner) — required by S.3 when the item is
+    owned and the owner changes.
     Move: exactly one of group (into L, fresh number) / ungroup
     (to the ungrouped list) / after (right after ITEM) / first (top of its
     group) — for a group, after/first moves the group. Returns the fresh item
@@ -494,9 +497,9 @@ def proj_item_update(item: str, state: str | None = None, text: str | None = Non
         if state is not None:
             return _item_call(item_ops.set_state, item, state, note=note, commit=commit,
                               root=root)
-        if any(v is not None for v in (text, note, owner, due)):
+        if any(v is not None for v in (text, note, owner, due, task)):
             return _item_call(item_ops.edit, item, text=text, note=note, owner=owner,
-                              due=due, reassign=reassign, root=root)
+                              due=due, task=task, reassign=reassign, root=root)
         if group is not None or ungroup or after is not None or first:
             return _item_call(item_ops.move, item, group=group, ungroup=ungroup,
                               after=after, first=first, root=root)

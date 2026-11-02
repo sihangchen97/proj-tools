@@ -93,6 +93,23 @@ def _editing(cfg: ProjConfig, ref: str, need_item: bool):
             db.close()
 
 
+def _check_task_ref(ctx: _Ctx, task: str) -> None:
+    """K3/P5: a `→ task` reference must name an EXISTING record that is a task —
+    anything else is an error (use `related` for other types, or write the id
+    in the item text, which links without a state tie)."""
+    if not task:
+        return
+    canonical = rec.canonical_id(ctx.cfg, task)
+    row = ctx.db.conn.execute(
+        "SELECT type FROM records WHERE id=?", (canonical,)).fetchone()
+    if row is None:
+        raise items.ItemsError(f"task ref {task!r} does not name an existing record")
+    if row[0] != "task":
+        raise items.ItemsError(
+            f"task ref {task!r} is a {row[0]} — only tasks may be referenced "
+            f"(use related, or write the id in the item text)")
+
+
 def _parse_after(ctx: _Ctx, s: str) -> str:
     """The --after value: '#003' / 'A01' (same record) or 'T-000001#003' —
     returned as the normalized number of THIS record."""
@@ -114,12 +131,14 @@ def _parse_after(ctx: _Ctx, s: str) -> str:
 
 def add(cfg: ProjConfig, ref: str, text: str, group: str | None = None,
         after: str | None = None, state: str | None = None,
-        note: str = "", owner: str = "", due: str = "") -> str:
+        note: str = "", owner: str = "", due: str = "",
+        task: str = "") -> str:
     with _editing(cfg, ref, need_item=False) as c:
         after_no = _parse_after(c, after) if after is not None else None
+        _check_task_ref(c, task)  # K3/P5: the ref must be an existing task
         new, notes = items.add(c.state, c.it, text, group=group, after=after_no,
                                state_name=state or "", note=note,
-                               owner=owner, due=due)
+                               owner=owner, due=due, task=task)
         return c.save(new, notes)
 
 
@@ -143,9 +162,11 @@ def uncheck(cfg: ProjConfig, ref: str) -> str:
 
 
 def edit(cfg: ProjConfig, ref: str, text: str | None = None, note: str | None = None,
-         owner: str | None = None, due: str | None = None,
+         owner: str | None = None, due: str | None = None, task: str | None = None,
          reassign: bool = False) -> str:
     with _editing(cfg, ref, need_item=True) as c:
+        if task:
+            _check_task_ref(c, task)  # K3/P5: the new ref must be an existing task
         # S.3: handing an item to a DIFFERENT owner (or clearing the owner) is
         # refused by default — the current owner keeps it unless the taker
         # passes --reassign. First claim (no owner yet) and re-asserting the
@@ -156,7 +177,7 @@ def edit(cfg: ProjConfig, ref: str, text: str | None = None, note: str | None = 
                 raise items.ItemsError(
                     f"#{c.no} is owned by {old.owner} — pass --reassign to hand it over")
         new, notes = items.edit(c.state, c.it, c.no, text=text, note=note,
-                                owner=owner, due=due)
+                                owner=owner, due=due, task=task)
         out = c.save(new, notes)
         if owner is not None and reassign:
             nxt = new.by_no(c.no)

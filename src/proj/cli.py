@@ -654,12 +654,13 @@ def item_add(ref: str, text: str,
                  None, "--state", help="state to start in (default: the first)"),
              note: str = typer.Option("", "--note", help="free text after ' — '"),
              owner: str = typer.Option("", "--owner", help="the owner field (if enabled)"),
-             due: str = typer.Option("", "--due", help="a YYYY-MM-DD date (if enabled)")):
+             due: str = typer.Option("", "--due", help="a YYYY-MM-DD date (if enabled)"),
+             task: str = typer.Option("", "--task", help="reference this task (T-…; → T-xxxx)")):
     """Add an item to a record's list (auto-numbered; appended at the end of its group)."""
     cfg = _cfg()
     try:
         typer.echo(item_ops.add(cfg, ref, text, group=group, after=after, state=state,
-                                note=note, owner=owner, due=due).rstrip())
+                                note=note, owner=owner, due=due, task=task).rstrip())
     except ValueError as e:
         _fail(str(e))
 
@@ -704,16 +705,18 @@ def item_edit(item: str,
               note: str | None = typer.Option(None, "--note", help="new note (empty clears)"),
               owner: str | None = typer.Option(None, "--owner", help="new owner (empty clears)"),
               due: str | None = typer.Option(None, "--due", help="new due date (empty clears)"),
+              task: str | None = typer.Option(
+                  None, "--task", help="referenced task (T-…; empty clears the reference)"),
               reassign: bool = typer.Option(
                   False, "--reassign",
                   help="hand the item to a different owner (or clear it); "
                        "refused without this when the item is owned")):
-    """Edit an item's text / note / owner / due (pass an empty string to clear a
+    """Edit an item's text / note / owner / due / task reference (empty clears a
     field). S.3: changing or clearing an owned item's owner needs --reassign."""
     cfg = _cfg()
     try:
         typer.echo(item_ops.edit(cfg, item, text=text, note=note, owner=owner, due=due,
-                                 reassign=reassign).rstrip())
+                                 task=task, reassign=reassign).rstrip())
     except ValueError as e:
         _fail(str(e))
 
