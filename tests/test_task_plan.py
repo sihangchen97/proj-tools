@@ -4,6 +4,7 @@ import pytest
 
 from proj import check as checkmod
 from proj.core import db as dbmod
+from proj.engine import item_ops as ops
 from proj.engine import store as rec
 from proj.engine.record import record_for
 from proj.record_types import task as taskmod
@@ -350,3 +351,98 @@ def test_mid_command_exception_leaves_no_half_rows(proj, monkeypatch):
         assert not db.conn.execute(
             "SELECT 1 FROM record_changelog lc WHERE lc.record_id NOT IN "
             "(SELECT id FROM records)").fetchone()
+
+
+# ---- P3: the task ↔ item auto-sync (PLAN §10.3 K3 / §26.2) ------------------
+
+def _item_state(proj, rid: str, no: str) -> str:
+    db = rec.open_db(proj)
+    try:
+        r = db.conn.execute(
+            "SELECT state FROM items WHERE record_id=? AND no=?",
+            (rid, no)).fetchone()
+    finally:
+        db.close()
+    return r["state"]
+
+
+def test_p3_task_done_closes_referencing_item(proj):
+    """Forward sync: the task goes Done → every live item referencing it
+    (→ T-…) is set to done, with the cause logged on the REFERRING record."""
+    t, _ = taskmod.new(proj, "Rerun eval")
+    taskmod._obj(proj).transition(proj, "start", t["id"])
+    inc, _ = record_for("incident", rec.load_registry(proj.root)).new(proj, "Eval flake")
+    ops.add(proj, inc["id"], "refile after the rerun", task=t["id"])
+    assert _item_state(proj, inc["id"], "001") == "open"
+    taskmod.done(proj, t["id"])
+    assert _item_state(proj, inc["id"], "001") == "done"
+    # the cause is logged on the incident side, not a bare `edited` line
+    db = rec.open_db(proj)
+    try:
+        logs = [e for e in db.logs(inc["id"])
+                if "item #001" in e["message"] and "auto:" in e["message"]]
+    finally:
+        db.close()
+    assert logs and f"→ done (auto: {t['id']} Done" in logs[0]["message"]
+    # the incident md re-rendered: the item shows its closed emoji + the ref
+    inc_md = next((proj.root / "docs" / "incidents").glob(f"{inc['id']}-*.md")).read_text(encoding="utf-8")
+    assert f"- [x] #001 ✅ refile after the rerun → {t['id']}" in inc_md
+
+
+def test_p3_task_failed_marks_item_failed(proj):
+    t, _ = taskmod.new(proj, "Deploy")
+    taskmod._obj(proj).transition(proj, "start", t["id"])
+    inc, _ = record_for("incident", rec.load_registry(proj.root)).new(proj, "Outage")
+    ops.add(proj, inc["id"], "roll forward once deploy is safe", task=t["id"])
+    taskmod.fail(proj, t["id"])
+    assert _item_state(proj, inc["id"], "001") == "failed"
+
+
+def test_p3_reopening_task_reopens_item(proj):
+    """A task moved back to a non-terminal status reopens the item it closed."""
+    t, _ = taskmod.new(proj, "Rerun")
+    taskmod._obj(proj).transition(proj, "start", t["id"])
+    inc, _ = record_for("incident", rec.load_registry(proj.root)).new(proj, "Flake")
+    ops.add(proj, inc["id"], "re-check after the rerun", task=t["id"])
+    taskmod.done(proj, t["id"])
+    assert _item_state(proj, inc["id"], "001") == "done"
+    # move it back to a running (non-terminal) status: the item reopens
+    rec.status_set(proj, "task", t["id"], "In Progress")
+    assert _item_state(proj, inc["id"], "001") == "open"
+
+
+def test_p3_reverse_gate_blocks_manual_close(proj):
+    """Reverse gate: you cannot MANUALLY close an item whose task is still not
+    terminal — clear the ref (or finish the task) first."""
+    t, _ = taskmod.new(proj, "Rerun")
+    taskmod._obj(proj).transition(proj, "start", t["id"])  # still In Progress
+    inc, _ = record_for("incident", rec.load_registry(proj.root)).new(proj, "Flake")
+    ops.add(proj, inc["id"], "re-check", task=t["id"])
+    with pytest.raises(Exception, match=r"still In Progress"):
+        ops.set_state(proj, f"{inc['id']}#001", "done")
+    # the item is unchanged (the refused op left it open)
+    assert _item_state(proj, inc["id"], "001") == "open"
+    # but closing is fine once the ref is cleared
+    ops.edit(proj, f"{inc['id']}#001", task="")
+    ops.set_state(proj, f"{inc['id']}#001", "done")
+    assert _item_state(proj, inc["id"], "001") == "done"
+
+
+def test_p3_auto_close_triggers_promote(proj):
+    """A referenced task Done closes the item; that first closed item then
+    promotes the record Draft → In Progress (promote rides the auto close)."""
+    t, _ = taskmod.new(proj, "Rerun")
+    taskmod._obj(proj).transition(proj, "start", t["id"])
+    # a debt whose Repayment Plan references the task
+    debt, _ = record_for("debt", rec.load_registry(proj.root)).new(proj, "Slow path")
+    assert debt["status"] == "Draft"
+    ops.add(proj, debt["id"], "profile the hot loop", task=t["id"])
+    assert _item_state(proj, debt["id"], "001") == "open"
+    taskmod.done(proj, t["id"])
+    assert _item_state(proj, debt["id"], "001") == "done"
+    assert debt["id"] is not None
+    db = rec.open_db(proj)
+    try:
+        assert db.get(rec.load_registry(proj.root)["debt"], debt["id"])["status"] == "In Progress"
+    finally:
+        db.close()

@@ -31,11 +31,12 @@ proj init --profile default          # additive: add more with --profile quality
 proj decision new "Use pixi" -y     # docs/decisions/DEC-0002-*.md (the -y skips the editor)
 proj task new "Data pipeline" -y    # docs/tasks/T-000001-*.md (status: Draft)
 proj plan new "Ship v1" -y
-proj task new "Baseline" --parent PLN-0001   # drawn in the plan's Tasks block
+proj task new "Baseline" --parent PLN-0001   # links to the plan (parent edge;
+                                             # drawn in the plan's Tasks block)
 proj plan activate PLN-0001      # Active → auto-registered in WIP.md
 proj item add T-000001 "tests pass" --owner alex
 proj item check T-000001#001     # first closed criterion → Draft auto-promotes to
-                                 # In Progress (the task joins WIP.md)
+                                  # In Progress (the task joins WIP.md)
 proj item edit T-000001#001 --owner billy --reassign   # taking over an owned item
 proj task done T-000001          # needs every criterion closed + sub-tasks terminal
 proj plan review PLN-0001 && proj plan shelve PLN-0001
@@ -55,7 +56,9 @@ proj check                       # invariants; also runs in the pre-commit hook
 - **Templates are YAML schema** (bundled with the package; the project's own
   `profiles/<record_type>.yaml` overrides them per record_type). A template
   declares: record_type, dir, numbering, allowed statuses, verbs (state
-  machine), sections (+ hints), a structured checklist (`items`), gates.
+  machine), sections (+ hints), one or more structured checklists (`items`,
+  each bound to a `##` section — one per type with `wip: true`, editable in
+  WIP.md), gates.
   New record_type = one YAML file, zero code changes.
 - **`.proj.lock`** (committed) pins which templates + schema the DB was built
   from. `proj init` with a lock follows the lock; without, it builds from the
@@ -78,7 +81,7 @@ proj check                       # invariants; also runs in the pre-commit hook
 
 | record_type | dir | id | statuses |
 |---|---|---|---|
-| `decision` | `docs/decisions/` | DEC-NNNN | Draft, Proposed, Accepted, Rejected, Deprecated (supersede = fields, see below) |
+| `decision` | `docs/decisions/` | DEC-NNNN | Draft, Proposed, Accepted, Rejected, Deprecated (supersede is a relation, see below) |
 | `task` | `docs/tasks/` | T-NNNNNN | Draft, In Progress, Failed, Done |
 | `plan` | `docs/plans/` | PLN-NNNN | Draft, Active, Pending Review, Shelved, Archived |
 | `debt` | `docs/debts/` | DEB-NNNN | Draft, Open, In Progress, Repaid, Waived |
@@ -88,9 +91,9 @@ proj check                       # invariants; also runs in the pre-commit hook
 Statuses show an emoji in views (`proj ls`, WIP.md) when the template defines
 one; the md `Status:` line stays plain text.
 
-> The plan↔task relationship and the checklist model are about to change
-> (multi-checklist support) — see `plans/PLAN.md` §10. The commands in the
-> quick start above reflect the current behavior.
+> The parent-edge rules (only task→task parents, the "task tree") are about to
+> change — see `plans/PLAN.md` §10. The commands in the quick start above
+> reflect the current behavior.
 
 ### Decisions supersede (multi-valued)
 
@@ -102,41 +105,55 @@ old ones, and one old one can be replaced by several new ones.
   `superseded_by`.
 - `proj check` enforces: no dangling refs, A↔B mutual consistency, no cycles.
 
-### Tasks link to any record via `parent`
+### Tasks link to records via `parent`
 
-Tasks are independent records; `task --parent` (a relation, any record type)
-links them to a plan, a parent task (sub-task), or an experiment. No file
-moving; children are resolved at render time, any depth, drawn in the parent's
-`Tasks` block (e.g. the plan's md shows its task tree).
+Tasks are independent records; `task --parent` (a relation) links them to a
+plan, a parent task (sub-task), or an experiment. No file moving; children are
+resolved at render time, any depth, drawn in the parent's `Tasks` block
+(e.g. the plan's md shows its task tree), and the task's head shows a
+`parent:` link.
 
 - **WIP.md membership is derived from status, not from the link**: a record
   joins WIP.md when it switches into a status listed in its type's
   `wip.enter` (a task's In Progress, a plan's Active) and leaves when it
   moves out. `proj wip add` / `proj wip return` / `proj wip ls` manage it
   explicitly.
-- A task without a parent is just an independent entry (docs call the
-  grouping *Unparented*); `proj task move T-… --parent P` re-homes it and
-  `--detach` removes the edge.
+- A task without a parent is just an independent entry (the CLI reports it as
+  *Unparented*); `proj task move T-… --parent P` re-homes it and `--detach`
+  removes the edge.
 
 Plan state machine: `Draft →(activate) Active →(review: all its tasks Done)
 Pending Review →(shelve) Shelved →(resume) Active`;
 `Pending Review →(archive) Archived` and `Shelved →(freeze) Archived`.
 
-### Task criteria (checklist)
+### Checklists (items)
+
+Every record type has one or more checklists, each bound to a `##` section
+(a task's `Acceptance Criteria`, a plan's `Success Criteria`, …). All
+checklists of one record share **one numbering space** — `#001`, `#A01`
+in a group — so a reference like `PLN-0001#A01` is unambiguous.
 
 ```markdown
 ## Acceptance Criteria
-- [x] `pixi run test` passes
-- [ ] deploy script · owner: alex · due: 2026-12-01
+- [x] ✅ `pixi run test` passes
+- [ ] deploy script → T-000003 · owner: alex · due: 2026-12-01
 ```
 
-- Numbers (`#001`, `#A01` in a group) are assigned by the tool; states are
-  `open` / `done` / `failed` / `dropped` (`[x]` is done, `[x] ❌` failed, …).
-- First closed criterion → task auto-promotes Draft → In Progress.
-- `proj item add|check|uncheck|set|edit|mv|rm T-…#NNN`, `proj item ls`
+- States are global and unified: `open` (`[ ]`), `done` (`[x] ✅`),
+  `failed` (`[x] ❌`), `dropped` (`[x] 🚫`). Numbers are assigned by the
+  tool and never reused (a removed number is a tombstone).
+- An item can reference a task (`→ T-000003`, via `--task`); the reference
+  renders as a link, and every record whose items reference a task is listed
+  in that task's head as `picked by:`.
+- A record's checklist is editable in WIP.md only for the one
+  `wip: true` checklist; ticking items there is written back by `proj sync`.
+- `proj item add|set|check|uncheck|edit|mv|rm T-…#NNN`, `proj item ls`
   (filter `--owner`, `--open`, …).
 - Taking an owned item over needs `--reassign` (`--owner <you> --reassign`);
   the hand-over is logged in the record's changelog.
+- Gates are per-checklist: entering a gated status (e.g. a task's `Done`)
+  needs every item in that checklist closed; for tasks, the whole
+  descendant task tree must be terminal too.
 - `proj task done` → refuses while any criterion is still open, or while any
   sub-task in the tree is not terminal (Done/Failed).
 
@@ -149,7 +166,7 @@ proj adopt [FILE…]         # absorb pre-existing md
 proj render [record_type [ID]]    # DB → md only
 proj check                 # md↔DB, filename↔id, schema↔template, refs
 proj info [--json]         # what this dir manages + ops cheatsheet
-proj show ID / proj ls [--status S] / proj open ID
+proj show ID / proj ls [--status S] [--json]
 proj docs                  # regenerate docs/CLI.md + docs/MCP.md
 proj changelog add|version|release-notes|list
 proj hooks install         # pre-commit → proj check
@@ -182,8 +199,8 @@ server also reads `PROJ_HOME` and falls back to its working directory:
 ```json
 {
  "mcpServers": {
-   "proj": { "command": "proj-mcp",
-             "env": { "PROJ_AGENT": "claude" } }
+    "proj": { "command": "proj-mcp",
+              "env": { "PROJ_AGENT": "claude" } }
  }
 }
 ```
@@ -221,23 +238,24 @@ the engine is fully generic.
   current writer, then proceeds; md files are written atomically, so no reader
   ever sees a half-written file.
 - **Multiple people in separate git clones: not supported yet.** Ids would
-  collide on merge and `.proj.sqlite` cannot be merged. Git-based collaboration
-  is post-release work (md as the mergeable source of truth — see
-  `plans/PLAN.md` §S.5).
+  collide on merge and `.proj.sqlite` cannot be merged. A git-based
+  collaboration design (event log as the committed source of truth, the
+  sqlite kept as a local cache) is ready for post-release implementation —
+  see `plans/git-collab-design.md`.
 - **Network filesystems (NFS/CIFS):** SQLite WAL is unsafe there, so proj
   detects the filesystem and falls back to `journal_mode=DELETE`
   (`proj info` shows the mode and a hint). Avoid writing the same project from
-  several machines at once.
+  several machines at once; on NFS the extra cost is mostly in the Python
+  startup — keep the pixi/uv environment on local disk (§13 of
+  `plans/PLAN.md`).
 - **Who made a change:** set `PROJ_AGENT` (e.g. `PROJ_AGENT=claude proj …`, or
   `env` in the MCP server entry above) — every changelog entry records the
   actor; unset falls back to the system username. Also use it as the name you
   claim checklist items with (`--owner <you>`).
 - **Tool bugs:** `proj bug "what happened"` (or the MCP `proj_bug` tool)
   appends to `.proj.bugs` in the project (never committed, `gitignore`d) —
-  auto-recorded with the traceback on unexpected errors too.
-- **Performance:** commands are single-transaction by design; to speed up
-  startup, install the pixi/uv environment on local disk rather than on the
-  network mount (see `plans/PLAN.md` §13).
+  auto-recorded with the traceback on unexpected errors too; `proj bug ls`
+  lists the reports.
 
 ## Tests / lint
 

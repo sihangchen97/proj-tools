@@ -682,6 +682,14 @@ def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
             # by a same-status op — only a real switch triggers here.
             from proj.engine import wip as wipmod  # lazy: store↔wip cycle
             wipmod.auto_status_wip(db, spec, row["id"], old, status)
+            # P3: a task's status change drives the checklist items that
+            # reference it (→ T-…) to the same terminal state, in this same
+            # transaction (their record md re-renders below via render_all)
+            if record_type == "task":
+                from proj.engine import items as items_mod  # lazy: store↔items
+                # the changelog cause is written on the REFERENCING record (its
+                # side); the task itself needs no extra line
+                items_mod.sync_task_ref(db, spec, row["id"], status)
         fresh = db.get(spec, row["id"])
         p = file_path(cfg, spec, fresh)
         fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic

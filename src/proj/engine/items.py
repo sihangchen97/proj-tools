@@ -25,6 +25,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 from proj.core import db as dbmod
 from proj.core.db import ProjError
@@ -906,6 +907,7 @@ def commit(db, spec, row: dict, old: ItemsState, new: ItemsState,
     one. Returns the notes."""
     itspec = it if it is not None else _spec(spec)
     validate(old, new, itspec, row["status"], itspec.gate)
+    _check_task_refs_closed(db, old, new, itspec)  # P3 reverse gate
     for cat, msg in diff_log(old, new, notes):
         db.add_log(row["id"], msg, category=cat)
     # P1: stamp this checklist's section on rows that don't carry it yet (fresh
@@ -918,22 +920,109 @@ def commit(db, spec, row: dict, old: ItemsState, new: ItemsState,
     others = [r for r in db.items_load(row["id"])
               if r.get("section") != itspec.section]
     db.items_save(row["id"], [r.to_row() for r in new.rows] + others)
-    if (itspec.promote_to and itspec.promote_from
+    _maybe_promote(db, spec, row, new.live(), notes, itspec)
+    return list(notes)
+
+
+def _maybe_promote(db, spec, row: dict, live, notes: list, itspec) -> None:
+    """The record's checklist promote (PLAN §10.3b): entering promote_to as
+    soon as the record is in promote_from and at least one item is closed.
+    Shared by commit (a hand edit) and P3's task→item sync (an auto close)."""
+    if not (itspec.promote_to and itspec.promote_from
             and row["status"] in itspec.promote_from
             and any(not i.is_group and i.state in itspec.closed_states
-                    for i in new.live())):
-            old_status = row["status"]
-            db.set(spec, row["id"], status=itspec.promote_to)
-            db.add_log(row["id"],
-                       f"promoted {old_status} → {itspec.promote_to}",
-                       category="Changed")
-            notes.append(f"{row['id']} promoted {old_status} → {itspec.promote_to}")
-            # W3: the promoted status may be the record's wip.enter (a task's first
-            # closed item promotes Draft -> In Progress) - the automatic WIP entry
-            # rides this switch exactly like a manual one (status_set).
-            from proj.engine import wip as wipmod  # lazy: items<->wip cycle
-            wipmod.auto_status_wip(db, spec, row["id"], old_status, itspec.promote_to)
-    return list(notes)
+                    for i in live)):
+        return
+    old_status = row["status"]
+    db.set(spec, row["id"], status=itspec.promote_to)
+    db.add_log(row["id"],
+               f"promoted {old_status} → {itspec.promote_to}",
+               category="Changed")
+    notes.append(f"{row['id']} promoted {old_status} → {itspec.promote_to}")
+    # W3: the promoted status may be the record's wip.enter (a task's first
+    # closed item promotes Draft -> In Progress) - the automatic WIP entry
+    # rides this switch exactly like a manual one (status_set).
+    from proj.engine import wip as wipmod  # lazy: items<->wip cycle
+    wipmod.auto_status_wip(db, spec, row["id"], old_status, itspec.promote_to)
+
+
+def _check_task_refs_closed(db, old: ItemsState, new: ItemsState, itspec) -> None:
+    """P3 reverse gate: manually CLOSING an item (into a closed state) whose
+    `→ task` reference still points at a NON-TERMINAL task is refused — the
+    task owns that item's closure (a terminal task closes it, §10.3 K3).
+    Editing an already-closed item, and closing items with no reference (or a
+    terminal one), are fine."""
+    old_state = {i.no: i.state for i in old.live()}
+    newly_closed = [i for i in new.live()
+                    if not i.is_group and i.task
+                    and i.state in itspec.closed_states
+                    and old_state.get(i.no, OPEN) not in itspec.closed_states]
+    if not newly_closed:
+        return
+    from proj.engine import store as rec  # lazy: items<->store cycle
+    tspec = rec.load_registry(Path(db.path).parent)["task"]
+    for i in newly_closed:
+        trow = db.conn.execute(
+            "SELECT status FROM records WHERE id=?", (i.task,)).fetchone()
+        if trow is None:
+            raise ItemsError(
+                f"#{i.no} references {i.task} which does not exist any more — "
+                f"clear the ref first (item edit … --task '')")
+        if trow["status"] not in tspec.status_terminal:
+            raise ItemsError(
+                f"#{i.no} references {i.task} which is still {trow['status']} — "
+                f"finish the task (it closes this item) or clear the ref first "
+                f"(item edit … --task '')")
+
+
+def sync_task_ref(db, task_spec, task_id: str, new_status: str,
+                  registry=None) -> list[str]:
+    """P3 forward sync: the task changed status — every LIVE checklist item
+    that references it (`→ task`) follows its terminal state (PLAN §26.2):
+    task Done → item done, task Failed → item failed, task moved back to an
+    open status → item open. Runs inside the caller's transaction (the task
+    status_set); the changelog line names the cause. An auto-CLOSE also rides
+    the record's checklist promote (a referenced task closing its item can move
+    the record Draft → In Progress). Returns the notes."""
+    if new_status in task_spec.status_done:
+        target = DONE
+    elif new_status in task_spec.status_terminal:
+        target = FAILED
+    else:
+        target = OPEN
+    emoji = task_spec.status_emoji.get(new_status, "")
+    cause = f"auto: {task_id} {new_status} {emoji}".rstrip()
+    notes: list[str] = []
+    if registry is None:
+        from proj.engine import store as rec  # lazy
+        registry = rec.load_registry(Path(db.path).parent)
+    changed_records: dict[str, list[str]] = {}
+    for r in db.conn.execute(
+            "SELECT record_id, no, section, state FROM items "
+            "WHERE task=? AND deleted=0", (task_id,)):
+        if r["state"] == target:
+            continue
+        db.conn.execute(
+            "UPDATE items SET state=?, closed_at=? WHERE record_id=? AND no=?",
+            (target, dbmod.utc_now() if target in CLOSED_STATES else "",
+             r["record_id"], r["no"]))
+        db.add_log(r["record_id"],
+                   f"item #{r['no']} {r['state']} → {target} ({cause})",
+                   category="Changed")
+        notes.append(f"{r['record_id']}: item #{r['no']} → {target} ({cause})")
+        changed_records.setdefault(r["record_id"], []).append(r["section"])
+    # promote: a record whose item just auto-CLOSED may hit its promote trigger
+    if target in CLOSED_STATES:
+        for record_id, sections in changed_records.items():
+            rspec = registry[db.conn.execute(
+                "SELECT type FROM records WHERE id=?",
+                (record_id,)).fetchone()["type"]]
+            for section in dict.fromkeys(sections):
+                itspec = next(it for it in rspec.items if it.section == section)
+                frow = db.get(rspec, record_id)
+                state = load(db, record_id, itspec)
+                _maybe_promote(db, rspec, frow, state.live(), notes, itspec)
+    return notes
 
 
 def sync_section(db, spec, row: dict, md_text: str,
