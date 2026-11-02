@@ -53,6 +53,7 @@ files manually — use the `proj` CLI (or the `proj_*` MCP tools if available).
   automatically when they start (e.g. a task going In Progress) and leave when
   they finish; add or remove one by hand with `proj wip add|return <ID>`.
   Items in WIP.md show their owner and can be ticked there too.
+- **Who did it (S.4)**: set `PROJ_AGENT=<name>` when you start the CLI/MCP so every changelog line records you as the actor; without it the system username is used.
 - **When you finish an item**, close it (`proj item check <ID>#A01`, or
   `proj item set <ID>#A01 <state> --note "<evidence>"`) — a note with the
   evidence (PR, commit, numbers) helps the next person.

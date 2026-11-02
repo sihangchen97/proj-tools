@@ -299,8 +299,12 @@ def _log_body(e: dict, spec: RecordTypeSpec) -> str:
 
 def _log_entry(e: dict, spec: RecordTypeSpec) -> str:
     """One changelog line: a backticked ``- DATE - <body>`` (body per
-    `_log_body`)."""
-    return f"- `{dbmod.show_date(e['date'])} - {_log_body(e, spec)}`"
+    `_log_body`), S.4: `· <actor>` appended when the row records one (rows
+    written before S.4 have no actor and render as before)."""
+    line = f"- `{dbmod.show_date(e['date'])} - {_log_body(e, spec)}`"
+    if e.get("actor"):
+        line += f" · {e['actor']}"
+    return line
 
 
 def _head_lines(fm: dict) -> list[str]:

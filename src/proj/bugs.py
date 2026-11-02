@@ -6,20 +6,15 @@ don't interleave. Auto-records uncaught exceptions (source `auto`).
 """
 from __future__ import annotations
 
-import getpass
 import os
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 from proj import __version__
-from proj.core.config import find_root
+from proj.core.config import find_root, reporter
 
 BUGS_FILE = ".proj.bugs"
-
-
-def _reporter() -> str:
-    return os.environ.get("PROJ_AGENT") or getpass.getuser() or "unknown"
 
 
 def _utc() -> str:
@@ -39,7 +34,7 @@ def append_bug(text: str, source: str, cmd: str | None = None,
     stripped; a body line starting with `=== ` gets two leading spaces so it can
     never read as the next record's header (B2/§19.2). One O_APPEND os.write."""
     path = bug_path(root)
-    lines = [f"=== {_utc()} · proj {__version__} · {source} · {_reporter()}"]
+    lines = [f"=== {_utc()} · proj {__version__} · {source} · {reporter()}"]
     if cmd:
         lines.append(f"cmd: {cmd}")
     lines.extend("  " + ln if ln.startswith("=== ") else ln

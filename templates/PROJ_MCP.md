@@ -8,6 +8,8 @@
 > 校验失败不抛错，而是返回 `error: …` 文本（agent 可读）。
 > proj 行为不符合文档 / 出现未预期报错时，用 `proj_bug(text, command=…)` 记录
 > 现象和命令（写入项目的 `.proj.bugs`，不入库、不进 git）。
+> **操作者（S.4）**：每条 changelog 记录是谁改的——`PROJ_AGENT`（agent 启动 `proj-mcp`
+> 时设置）优先，否则取系统用户名；`proj_show` 的 `--history`/`as_json` 都带它。
 
 ## Tools
 

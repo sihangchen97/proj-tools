@@ -33,7 +33,7 @@ import yaml
 
 from proj.core.templates import ItemsSpec, RecordTypeSpec
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 LOCK_FILE = ".proj.lock"
 
 CATEGORY_RE = re.compile(r"^([A-Za-z][A-Za-z ]*):\s*(.+)$")
@@ -139,7 +139,8 @@ class Db:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS record_changelog "
             "(id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, date TEXT, "
-            "category TEXT, message TEXT, status TEXT)")
+            "category TEXT, message TEXT, status TEXT, "
+            "actor TEXT NOT NULL DEFAULT '')")  # S.4: who made the change
         # item checklists (items.py): ONE table. `no` is the 3-char number:
         # '001'..'999' ungrouped, 'A01'..'Z99' inside group A (the first letter IS
         # the group), 'A00' = group A itself (its text is the group name). Deleted
@@ -231,14 +232,17 @@ class Db:
         # status first (a change) or leave it untouched (any other event)
         row = self.conn.execute("SELECT status FROM records WHERE id=?",
                                 (record_id,)).fetchone()
+        # S.4: the actor is taken HERE (the single write entry point, all 23
+        # call sites) from PROJ_AGENT / the system username
+        from proj.core.config import reporter  # lazy: db<->config
         status = row[0] if row else ""
         self.conn.execute(
             "INSERT INTO record_changelog (record_id, date, category, message, "
-            "status) VALUES (?,?,?,?,?)",
-            (record_id, when or utc_now(), category, message, status))
+            "status, actor) VALUES (?,?,?,?,?,?)",
+            (record_id, when or utc_now(), category, message, status, reporter()))
 
     def logs(self, record_id: str, limit: int | None = None) -> list[dict]:
-        q = ("SELECT date, category, message, status "
+        q = ("SELECT date, category, message, status, actor "
              "FROM record_changelog WHERE record_id=? ORDER BY date DESC, id DESC")
         if limit:
             q += f" LIMIT {int(limit)}"

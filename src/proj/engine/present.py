@@ -36,7 +36,8 @@ def show(spec, row: dict, db, history: bool = False) -> tuple[str, dict]:
         "commit": row.get("commit") or None,
         "parent": parent,
         "changelog": [{"date": show_date(e["date"]), "category": e["category"],
-                       "text": rec._log_body(e, spec)} for e in logs],
+                       "text": rec._log_body(e, spec),
+                       "actor": e.get("actor") or None} for e in logs],
     }
 
     lines = [f"id: {row['id']}", f"title: {row['title']}",
@@ -50,8 +51,11 @@ def show(spec, row: dict, db, history: bool = False) -> tuple[str, dict]:
     if items_text:
         lines += ["", f"{spec.items.section}:", items_text]
     if history:
-        lines += [f"  {e['date']}  [{e['category']}] {rec._log_body(e, spec)}"
-                  for e in logs]
+        for e in logs:
+            line = f"  {show_date(e['date'])}  [{e['category']}] {rec._log_body(e, spec)}"
+            if e.get("actor"):
+                line += f" · {e['actor']}"
+            lines.append(line)
     return "\n".join(lines), data
 
 

@@ -31,6 +31,9 @@ _CLI_INTRO = f"""\
 > `proj show ID` / `proj ls [--type T] [--status S]` / `proj open ID`（id 自带类型，
 > 不用先写类型）；每个 record_type 的动态子命令 `proj <rt> new|ls|show|update|<verb>`
 > （`<verb>` = 该类型模板 `verbs:` 里声明的，运行时生成，帮助从模板推导）。
+> **操作者（S.4）**：每条 changelog 记录是谁改的——`PROJ_AGENT`（agent 启动时设置，
+> 如 `PROJ_AGENT=claude proj …`）优先，否则取系统用户名；`proj show ID --history`
+> 和 `--json` 都带这个字段。
 """
 
 
@@ -255,6 +258,8 @@ _MCP_INTRO = f"""\
 > 校验失败不抛错，而是返回 `error: …` 文本（agent 可读）。
 > proj 行为不符合文档 / 出现未预期报错时，用 `proj_bug(text, command=…)` 记录
 > 现象和命令（写入项目的 `.proj.bugs`，不入库、不进 git）。
+> **操作者（S.4）**：每条 changelog 记录是谁改的——`PROJ_AGENT`（agent 启动 `proj-mcp`
+> 时设置）优先，否则取系统用户名；`proj_show` 的 `--history`/`as_json` 都带它。
 """
 
 

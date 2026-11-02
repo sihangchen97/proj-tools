@@ -3,9 +3,18 @@ the .env only supplies project-level defaults)."""
 
 from __future__ import annotations
 
+import getpass
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def reporter() -> str:
+    """S.4: the agent that made a change — `PROJ_AGENT` (set when an agent
+    launches the CLI/MCP) else the system username ('unknown' as a last
+    resort). Written into every `record_changelog` row (the `actor` column)
+    and the `.proj.bugs` records, so a changelog line names who did it."""
+    return os.environ.get("PROJ_AGENT") or getpass.getuser() or "unknown"
 
 
 @dataclass
