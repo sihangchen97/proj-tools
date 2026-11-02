@@ -138,6 +138,7 @@ def test_compact_refused_while_merge_in_progress(tmp_path):
 
 def test_compact_with_no_events_yet(tmp_path):
     d = _init(tmp_path)
+    (d / ".proj" / "events.jsonl").unlink()  # C2: init always writes seed events
     cfg = ProjConfig(root=d)
     problems, notes = compact_mod.run_compact(cfg)
     assert problems == [] and any("no events.jsonl" in n for n in notes)
@@ -145,6 +146,7 @@ def test_compact_with_no_events_yet(tmp_path):
 
 def test_mcp_compact_reports(tmp_path):
     d = _init(tmp_path)
+    (d / ".proj" / "events.jsonl").unlink()  # C2: init always writes seed events
     from proj import mcp
     out = mcp.proj_compact(root=str(d))
     assert out.startswith("OK —") and "no events.jsonl" in out

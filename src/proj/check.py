@@ -32,10 +32,22 @@ _REPLAY_SELECT: dict[str, str] = {
 }
 
 
+def _norm_sections(s: str) -> str:
+    """records.sections is a JSON STRING column — its key order is semantically
+    irrelevant (the write path inserts sections in template order, the replayer
+    in event order), so the comparison normalizes it to sorted-key form."""
+    if not s or s == "{}":
+        return s
+    return json.dumps(json.loads(s), sort_keys=True, ensure_ascii=False)
+
+
 def _dump_state(db: dbmod.Db) -> dict:
     """The project state as comparable rows (see `_REPLAY_SELECT`)."""
     out = {t: [tuple(r) for r in db.conn.execute(q)]
            for t, q in _REPLAY_SELECT.items()}
+    # normalize the records.sections JSON string (key order is not data)
+    out["records"] = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6],
+                       _norm_sections(r[7])) for r in out["records"]]
     out["meta"] = [tuple(r) for r in db.conn.execute(
         "SELECT * FROM meta WHERE key NOT LIKE 'ev:%' AND key NOT LIKE 'fp:%' "
         "ORDER BY key")]
@@ -47,6 +59,8 @@ def _replay_consistent(cfg: ProjConfig, db: dbmod.Db) -> list[str]:
     the whole events.jsonl onto an empty DB and compare the state. Called only
     when the file exists and passed the line-level validation above; an empty
     log is a no-op (nothing to reproduce yet)."""
+    import sqlite3
+
     from proj import events as ev
     from proj import replay as rp
     events = ev.read(cfg.root / ".proj" / "events.jsonl")
@@ -59,6 +73,12 @@ def _replay_consistent(cfg: ProjConfig, db: dbmod.Db) -> list[str]:
             res = rp.replay(fresh, events, specs)
             before, after = _dump_state(db), _dump_state(fresh)
             diff = sorted(t for t in before if before[t] != after[t])
+        except sqlite3.OperationalError as e:
+            # the schema does not match the templates (reported above) — the
+            # standard replay SELECT would not run; the consistency check is
+            # meaningless on a mismatched schema
+            return [f".proj/events.jsonl: replay consistency check skipped "
+                    f"(schema mismatch: {e})"]
         finally:
             fresh.close()
     problems = [f"events.jsonl replay: {d}" for d in res.diagnostics]

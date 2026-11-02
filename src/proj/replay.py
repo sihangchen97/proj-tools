@@ -99,6 +99,9 @@ class _State:
 def replay(db, events: list[dict],
            specs: dict[str, RecordTypeSpec]) -> ReplayResult:
     """Apply `events` (any line order) to an empty `db`; return notifications."""
+    # replay rebuilds a db from events — the write methods it drives must not
+    # emit events back into the log (C2/C3: replay is read-side, not write-side)
+    db.emitting = False
     # C3.1 steps 1-2: dedupe by exact line, then the total sort key
     seen: dict[str, dict] = {}
     for e in events:
@@ -341,7 +344,10 @@ def _apply_item(st: _State, db, e: dict) -> None:
         return
     # item.move / group.move: a new position in the checklist; changing the
     # group (letter) or section renumbers and keeps the old number as a
-    # tombstone - exactly like the command's behavior (C3.1 / S5.2)
+    # tombstone - exactly like the command's behavior (C3.1 / S5.2).
+    # C2: `pos` (the target index in the display list) is exact and can
+    # express "move to the front" (an `after` anchor cannot - after="" means
+    # the END); when `pos` is absent the legacy `after` anchor is used.
     rows.remove(row)
     target_letter = _letter(e["no"]) if e.get("no") else _letter(row["no"])
     new_section = e.get("section", row["section"])
@@ -352,7 +358,10 @@ def _apply_item(st: _State, db, e: dict) -> None:
                            "actual": no, "record": rid})
         row["no"] = no
     row["section"] = new_section
-    rows.insert(_after_index(st, rows, e.get("after", "")), row)
+    if e.get("pos") is not None:
+        rows.insert(min(max(int(e["pos"]), 0), len(rows)), row)
+    else:
+        rows.insert(_after_index(st, rows, e.get("after", "")), row)
 
 
 def _next_group(rows: list[dict]) -> str:

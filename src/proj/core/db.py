@@ -19,6 +19,7 @@ clone without the DB can rebuild the same schema.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import uuid as uuid_mod
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
 
 import yaml
 
+from proj import events as ev
+from proj.core.config import reporter
 from proj.core.templates import ItemsSpec, RecordTypeSpec
 
 SCHEMA_VERSION = 11  # C1: + records.uuid / items.uuid (event-log identity)
@@ -101,6 +104,18 @@ class Db:
         # this set; C2 feeds events from the _emit hooks (X0: no-op).
         self.touched: set[str] = set()
         self.touched_views: set[str] = set()
+        # C2: the events of the current write transaction, accumulated in
+        # _emit; flushed to .proj/events.jsonl with ONE os.write BEFORE the
+        # DB commit (the log is authoritative — C2.3). Rollback drops them.
+        self._events: list[dict] = []
+        self._seq = 0
+        self._events_flushed = False
+        self._rolled_back = False
+        # C3: replay (replay.py) drives the write methods to rebuild a
+        # throwaway db from events — it must NOT emit events back into
+        # the log (that would re-append what it just read). Replay sets
+        # `emitting = False`; normal write commands keep it True.
+        self.emitting = True
         # §13.2: WAL needs shared memory and must not be used on network
         # filesystems — fall back to the rollback journal there (one writer at a
         # time; busy_timeout still serializes them).
@@ -118,6 +133,17 @@ class Db:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        # C2.2: HLC — `at = max(now, last seen) + 1ms`; the last-seen value
+        # lives in meta `ev:last_at` so an actor's later events always sort
+        # after the ones they have seen (a skewed clock is safe)
+        last_at = 0
+        row = self.conn.execute("SELECT value FROM meta WHERE key='ev:last_at'").fetchone()
+        if row:
+            try:
+                last_at = int(row["value"])
+            except ValueError:
+                last_at = 0
+        self._hlc = ev.HlcClock(last_at)
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS changelog_entries "
             "(id INTEGER PRIMARY KEY, version TEXT, category TEXT, message TEXT, date TEXT)")
@@ -227,22 +253,86 @@ class Db:
                 "commit", "created", "sections"}
         return base <= cols
 
+    # records-table columns a `set` event may carry (C2.2); the replayer
+    # ignores the rest — sections ride as section.set events
+    _SET_FIELDS = ("title", "summary", "status", "commit")
+
     # ---- records (single table, type column) --------------------------------
 
     # ---- X0: change tracking + the (C2) event hook -------------------------
 
-    def _emit(self, op: str, record_id: str | None = None, **payload: str) -> None:
-        """X0: the C2 event hook — every write method calls it where it marks
-        the record touched; X0 is a no-op (C2 fills it in to append
-        .proj/events.jsonl, without touching the write methods again)."""
+    def _rec_uuid(self, record_id: str) -> str:
+        """C2: the record's stored uuid (events reference uuids, not ids);
+        '' when the record is unknown (the replayer skips dangling refs)."""
+        row = self.conn.execute("SELECT uuid FROM records WHERE id=?",
+                               (record_id,)).fetchone()
+        return row["uuid"] if row else ""
+
+    def _item_uuid(self, record_id: str, no: str) -> str:
+        row = self.conn.execute(
+            "SELECT uuid FROM items WHERE record_id=? AND no=?",
+            (record_id, no)).fetchone()
+        return row["uuid"] if row else ""
+
+    def _task_uuid(self, task_id: str) -> str:
+        """The task's uuid for an items.task ref (C2.2: events use uuid)."""
+        return self._rec_uuid(task_id) if task_id else ""
 
     def _touch(self, record_id: str) -> None:
         self.touched.add(record_id)
-        self._emit("touched", record_id)
 
     def _touch_view(self, view: str) -> None:
         self.touched_views.add(view)
-        self._emit("touched-view", None, view=view)
+
+    def _emit(self, op: str, record_id: str | None = None, **payload) -> None:
+        """C2: the event hook — accumulate one event in self._events (flushed
+        to .proj/events.jsonl before the DB commit, C2.3). Every write method
+        calls it where it marks the record touched; the op + payload follow the
+        C2.2 table (the replayer in replay.py knows the same set). `touched` /
+        `touched-view` are internal X0 change tracking, NOT events (skipped)."""
+        if op in ("touched", "touched-view") or not self.emitting:
+            return  # F6 tracking / replay-driven — not part of the event log
+        self._seq += 1
+        self._events.append(ev.make(op, actor=reporter(), at=self._hlc.tick(),
+                                    seq=self._seq,
+                                    rec=self._rec_uuid(record_id) if record_id else "",
+                                    **payload))
+
+    def _flush_events(self) -> None:
+        """C2.3: before the DB commit, append every accumulated event with ONE
+        os.write (O_APPEND — a crash never interleaves lines, the file always
+        ends with `\n` so a union merge never fuses two lines), then update the
+        incremental-replay bookkeeping in meta (ev:size / ev:prefix_hash /
+        ev:last_key / ev:last_at, C3.2) and drop the buffer. A rollback discards
+        the events (they were never written)."""
+        if not self._events or self._events_flushed:
+            return
+        ev.append(self.path.parent / "events.jsonl", self._events)
+        # C3.2: the local replay bookkeeping — the events this transaction just
+        # wrote are now "seen", so the next command's incremental replay skips
+        # them (size/prefix-hash of the whole file, the max sort key, HLC last)
+        import hashlib
+        p = self.path.parent / "events.jsonl"
+        raw = p.read_bytes()
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("ev:size", str(len(raw))))
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("ev:prefix_hash", hashlib.sha1(raw).hexdigest()))
+        key = max(ev.sort_key(e) for e in self._events)
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("ev:last_key", json.dumps(list(key))))
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("ev:last_at", str(self._hlc._last)))
+        self._events = []
+        self._events_flushed = True
 
     # ---- F1/F2: md file fingerprints (local cache, not project data) -------
     # Spec F1.1: written through the plain connection but deliberately
@@ -311,7 +401,7 @@ class Db:
             (id_, spec.record_type, title, status, summary, commit, created,
              "{}", uuid))
         self._touch(id_)
-        self._emit("record.create", id_, type=spec.record_type, title=title,
+        self._emit("create", id_, id=id_, type=spec.record_type, title=title,
                    status=status, uuid=uuid, created=created,
                    summary=summary, commit=commit)
         return uuid
@@ -327,13 +417,27 @@ class Db:
             "SELECT * FROM records WHERE type=? ORDER BY id", (spec.record_type,))]
 
     def set(self, spec: RecordTypeSpec, id_: str, **cols: str) -> None:
+        """Update only the given columns; C2 records the DIFF — a `set` event
+        (only the changed fields) for the record-table columns, and one
+        `section.set` per changed section when `sections` changed (C2.2: the
+        replayer overwrites field-by-field, so unchanged columns emit nothing)."""
+        old_row = self.get(spec, id_)
+        old = {k: old_row[k] for k in old_row} if old_row else {}
+        for k, v in cols.items():
+            if k != "sections" and k in self._SET_FIELDS and old.get(k) != v:
+                self._emit("set", id_, fields={k: v})
+        if "sections" in cols and old.get("sections") != cols["sections"]:
+            new_sec = json.loads(cols["sections"] or "{}")
+            old_sec = json.loads(old.get("sections") or "{}")
+            for name in sorted(set(new_sec) | set(old_sec)):
+                if new_sec.get(name) != old_sec.get(name):
+                    self._emit("section.set", id_, name=name,
+                               text=new_sec.get(name, ""))
         assignments = ", ".join(f'"{k}" = ?' for k in cols)
         self.conn.execute(
             f"UPDATE records SET {assignments} WHERE type=? AND id=?",
             (*cols.values(), spec.record_type, id_))
         self._touch(id_)
-        self._emit("record.update", id_, type=spec.record_type,
-                   columns=",".join(cols))
 
     def delete(self, spec: RecordTypeSpec, id_: str) -> None:
         self.conn.execute("DELETE FROM record_changelog WHERE record_id = ?", (id_,))
@@ -341,7 +445,7 @@ class Db:
         self.conn.execute("DELETE FROM records WHERE type=? AND id=?",
                           (spec.record_type, id_))
         self._touch(id_)
-        self._emit("record.delete", id_, type=spec.record_type)
+        self._emit("delete", id_)
 
     def max_seq(self, spec: RecordTypeSpec) -> int:
         """The largest record number carried by this type's ids (digits only)."""
@@ -362,16 +466,18 @@ class Db:
         # status first (a change) or leave it untouched (any other event)
         row = self.conn.execute("SELECT status FROM records WHERE id=?",
                                 (record_id,)).fetchone()
-        # S.4: the actor is taken HERE (the single write entry point, all 23
-        # call sites) from PROJ_AGENT / the system username
-        from proj.core.config import reporter  # lazy: db<->config
+        # the row stores the record's status AFTER this event
         status = row[0] if row else ""
+        # C2: the event's date must EQUAL the stored date (one utc_now() for
+        # both — two calls would differ by microseconds and replay would diverge)
+        date = when or utc_now()
         self.conn.execute(
             "INSERT INTO record_changelog (record_id, date, category, message, "
             "status, actor) VALUES (?,?,?,?,?,?)",
-            (record_id, when or utc_now(), category, message, status, reporter()))
+            (record_id, date, category, message, status, reporter()))
         self._touch(record_id)
-        self._emit("record.log", record_id, category=category, message=message)
+        self._emit("log", record_id, date=date, category=category,
+                   message=message, status=status)
 
     def logs(self, record_id: str, limit: int | None = None) -> list[dict]:
         q = ("SELECT date, category, message, status, actor "
@@ -390,11 +496,16 @@ class Db:
 
     def add_cl_entry(self, version: str, category: str, message: str,
                      when: str | None = None) -> None:
+        date = when or utc_now()  # C2: stored and event date are the same value
         self.conn.execute(
             "INSERT INTO changelog_entries (version, category, message, date) "
             "VALUES (?, ?, ?, ?)",
-            (version, category, message, when or utc_now()))
+            (version, category, message, date))
         self._touch_view("changelog")
+        # C2: the global changelog is project-level (rec="") — the replayer
+        # stamps Unreleased placeholders onto a released version (C3.1)
+        self._emit("changelog.add", None, version=version, category=category,
+                   message=message, date=date)
 
     def release_cl(self, version: str, unreleased: str) -> None:
         """X0: move every Unreleased CHANGELOG entry onto a released version
@@ -430,7 +541,8 @@ class Db:
             (source, target, kind))
         self._touch(source)
         self._touch(target)
-        self._emit("relation.add", source, kind=kind, target=target)
+        # C2: events reference uuids — the target's uuid (replayer resolves it)
+        self._emit("rel.add", source, kind=kind, target=self._rec_uuid(target))
 
     def remove_relation(self, source: str, target: str, kind: str) -> None:
         self.conn.execute(
@@ -438,7 +550,7 @@ class Db:
             (source, target, kind))
         self._touch(source)
         self._touch(target)
-        self._emit("relation.remove", source, kind=kind, target=target)
+        self._emit("rel.del", source, kind=kind, target=self._rec_uuid(target))
 
     def set_parent(self, child_id: str, parent_id: str | None) -> None:
         """Re-home a task: drop its old parent edge (if any), write the new one
@@ -457,9 +569,14 @@ class Db:
         self._touch(child_id)
         for old_parent in old:
             self._touch(old_parent)
+            # C2.2: a re-home is the old parent edge dropped (rel.del) + the new
+            # one written (rel.add) — both reference uuids
+            self._emit("rel.del", child_id, kind="parent",
+                       target=self._rec_uuid(old_parent))
         if parent_id is not None:
             self._touch(parent_id)
-        self._emit("parent.set", child_id, parent=parent_id or "")
+            self._emit("rel.add", child_id, kind="parent",
+                       target=self._rec_uuid(parent_id))
 
     def supersede_of(self, source_id: str) -> list[dict]:
         """Targets this record supersedes (kind=supersede, source=row), id order."""
@@ -554,10 +671,16 @@ class Db:
         C1: the `uuid` of every row is preserved across the delete/re-insert —
         a row carrying a uuid keeps it; a fresh row (no uuid) gets one here,
         so the item identity is stable for the event log (C2 diffs by uuid)."""
-        existing = {r["no"]: r["uuid"] for r in
-                    self.conn.execute("SELECT no, uuid FROM items WHERE record_id=?",
-                                      (record_id,))}
+        # C2: capture the old rows by uuid (before the delete) so the diff
+        # below emits item.set for field changes and item.add for new rows
+        # (the ops the replayer knows); replay-driven saves (emitting=False)
+        # skip the diff entirely
+        old_by_uuid = {r["uuid"]: dict(r) for r in
+                       self.conn.execute("SELECT * FROM items WHERE record_id=?",
+                                         (record_id,))}
+        existing = {r["no"]: r["uuid"] for r in old_by_uuid.values()}
         self.conn.execute("DELETE FROM items WHERE record_id=?", (record_id,))
+        new_by_uuid = {}
         for pos, it in enumerate(rows):
             # the uuid rides under `uuid` (the items.py write path, via Item.to_row)
             # or `_uuid` (the replayer's temporary carrier, C1); a row in neither
@@ -575,8 +698,49 @@ class Db:
                  it.get("created") or utc_now(), it.get("closed_at", ""),
                  1 if it.get("deleted") else 0,
                  it.get("section", ""), it.get("task", ""), it_uuid))
+            new_by_uuid[it_uuid] = it
         self._touch(record_id)
-        self._emit("items.save", record_id, count=str(len(rows)))
+        if self.emitting:
+            self._emit_items_diff(record_id, old_by_uuid, new_by_uuid)
+
+    _ITEM_EVENT_FIELDS = ("text", "state", "note", "owner", "due", "task")
+
+    def _emit_items_diff(self, record_id: str, old_by_uuid: dict,
+                         new_by_uuid: dict) -> None:
+        """C2: the item events that transform the old checklist into the new one
+        (the replayer knows item.add / item.set, both resolved by the row's uuid).
+        A new uuid → item.add (appended at the end, which is where a fresh item
+        goes); a uuid present in both with changed fields → item.set. Replay
+        keeps the existing rows' order, so no reordering op is needed for the
+        add/edit/check/set flow."""
+        def _task(uu):
+            # an item's task ref rides as the target's uuid (C2.2), not its id
+            return self._rec_uuid(uu) if uu else ""
+        for uu, it in new_by_uuid.items():
+            no = it["no"]
+            common = {"no": no, "text": it.get("text", ""),
+                      "section": it.get("section", ""),
+                      "task": _task(it.get("task", ""))}
+            if uu not in old_by_uuid:
+                self._emit("item.add", record_id, item=uu,
+                           state=it.get("state", ""), note=it.get("note", ""),
+                           owner=it.get("owner", ""), due=it.get("due", ""),
+                           commit=it.get("commit", ""), trailer=it.get("trailer", ""),
+                           created=it.get("created") or utc_now(),
+                           closed_at=it.get("closed_at", ""), **common)
+                continue
+            old = old_by_uuid[uu]
+            fields = {f: it.get(f, "") for f in self._ITEM_EVENT_FIELDS
+                      if old.get(f, "") != it.get(f, "")}
+            if (1 if old.get("deleted") else 0) != (1 if it.get("deleted") else 0):
+                fields["deleted"] = 1 if it.get("deleted") else 0
+            if not fields:
+                continue
+            if it.get("state") in ("done", "failed", "dropped") and not old.get("closed_at"):
+                self._emit("item.set", record_id, item=uu, fields=fields,
+                           date=it.get("closed_at") or utc_now())
+            else:
+                self._emit("item.set", record_id, item=uu, fields=fields)
 
     def item_set_state(self, record_id: str, no: str, state: str,
                        closed_at: str) -> None:
@@ -588,7 +752,8 @@ class Db:
             "UPDATE items SET state=?, closed_at=? WHERE record_id=? AND no=?",
             (state, closed_at, record_id, no))
         self._touch(record_id)
-        self._emit("item.set", record_id, no=no, state=state)
+        self._emit("item.set", record_id, item=self._item_uuid(record_id, no),
+                   fields={"state": state})
 
     # ---- WIP.md (plans §5): the registered "in progress" list (wip_entries) ----
 
@@ -611,7 +776,7 @@ class Db:
             (record_id, pos, utc_now(), source))
         self._touch(record_id)
         self._touch_view("wip")
-        self._emit("wip.add", record_id)
+        self._emit("wip.add", record_id, added_at=utc_now(), source=source)
         return pos
 
     def wip_remove(self, record_id: str) -> None:
@@ -619,7 +784,7 @@ class Db:
         self.conn.execute("DELETE FROM wip_entries WHERE record_id=?", (record_id,))
         self._touch(record_id)
         self._touch_view("wip")
-        self._emit("wip.remove", record_id)
+        self._emit("wip.del", record_id)
 
     def rollback(self) -> None:
         """Roll the open write transaction back and clear X0 change tracking
@@ -628,6 +793,9 @@ class Db:
         self.conn.rollback()
         self.touched.clear()
         self.touched_views.clear()
+        self._events = []  # C2: a rolled-back command writes no events
+        self._events_flushed = True
+        self._rolled_back = True
 
     def begin(self) -> None:
         # R3: open the write transaction (deferred — the exclusive lock is taken
@@ -656,6 +824,7 @@ class Db:
         way (A4 — no leaked connection holds the write lock)."""
         try:
             if exc_type is None:
+                self._flush_events()  # C2.3: log BEFORE the commit
                 self.conn.commit()
             else:
                 self.rollback()
@@ -666,6 +835,16 @@ class Db:
             self.conn.close()
 
     def close(self) -> None:
+        """The non-context exit point (item ops hold the db via open_db +
+        close, not `with`): commit + flush the accumulated events BEFORE the
+        connection closes (a `with` command already did both in __exit__ —
+        the _events_flushed flag keeps this idempotent)."""
+        if not self._events_flushed and not self._rolled_back:
+            try:
+                self.conn.commit()
+                self._flush_events()
+            except sqlite3.Error:
+                pass  # a BEGIN-less (read-only) close has nothing to end
         self.conn.close()
 
 
