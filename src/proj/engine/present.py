@@ -35,6 +35,9 @@ def show(spec, row: dict, db, history: bool = False) -> tuple[str, dict]:
         "summary": row.get("summary") or None,
         "commit": row.get("commit") or None,
         "parent": parent,
+        # K4: the records whose checklist items reference this task (task only)
+        "picked_by": (db.picked_by(row["id"])
+                      if spec.record_type == "task" else None),
         "changelog": [{"date": show_date(e["date"]), "category": e["category"],
                        "text": rec._log_body(e, spec),
                        "actor": e.get("actor") or None} for e in logs],

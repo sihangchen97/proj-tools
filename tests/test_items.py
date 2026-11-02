@@ -59,6 +59,31 @@ def test_task_ref_renders_and_roundtrips(proj):
     assert "- [ ] #001 build it — details here" in md
 
 
+def test_picked_by_renders_on_the_task(proj):
+    """K4: a task's `picked by` head row is the reverse of the `→ T-…`
+    references — the referencing records, linked, deduped; task-only."""
+    t = _new(proj, "task", "Rerun eval")
+    inc = _new(proj, "incident", "Eval flake")
+    ops.add(proj, inc, "refile after the rerun", task=t)
+    md = _file(proj, t).read_text(encoding="utf-8")
+    assert "picked by:" in md
+    assert f"[{inc}-" in md  # a link to the incident file (../incidents/…)
+    # the incident's own md carries NO picked-by (it is not a task)
+    inc_md = _file(proj, inc, "docs/incidents").read_text(encoding="utf-8")
+    assert "picked by:" not in inc_md
+    # show --json: picked_by = the referencing record ids (task only)
+    from proj.engine import present
+    db = rec.open_db(proj)
+    spec = rec.load_registry(proj.root)["task"]
+    _t, data = present.show(spec, db.get(spec, t), db)
+    assert data["picked_by"] == [inc]
+    plan_spec = rec.load_registry(proj.root)["plan"]
+    plan = _new(proj, "plan", "P")
+    _t2, plan_data = present.show(plan_spec, db.get(plan_spec, plan), db)
+    assert plan_data["picked_by"] is None
+    db.close()
+
+
 def test_task_ref_must_name_an_existing_task(proj):
     """K3/P5: the ref must be an EXISTING record of type task — a plan id, a
     missing id, or a non-T- string are all refused."""

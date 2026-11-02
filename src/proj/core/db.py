@@ -343,6 +343,17 @@ class Db:
             "WHERE target=? AND kind='parent' LIMIT 1", (child_id,)).fetchone()
         return dict(row) if row else None
 
+    def picked_by(self, task_id: str) -> list[str]:
+        """The records whose LIVE checklist items reference this task
+        (K4 `picked by`: items.task, deduped record-wide). Unordered."""
+        out: list[str] = []
+        for r in self.conn.execute(
+                "SELECT DISTINCT record_id FROM items "
+                "WHERE task=? AND deleted=0 AND task!=''", (task_id,)):
+            if r["record_id"] not in out:
+                out.append(r["record_id"])
+        return out
+
     def descendants_of(self, record_id: str) -> set[str]:
         """Every record id hanging below record_id via parent edges (any depth),
         cycle-safe: a record already on the walk is never re-queued."""

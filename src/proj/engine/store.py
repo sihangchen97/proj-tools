@@ -357,6 +357,11 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         par = db.parent_of(row["id"])
         if par:
             fm["parent"] = _link_value(par["source"], db, reg, spec, row)
+        # K4: the records whose checklist items reference this task (the `picked
+        # by` reverse of the `→ T-…` reference; shown only when non-empty)
+        picked = db.picked_by(row["id"])
+        if picked:
+            fm["picked by"] = _link_value(", ".join(picked), db, reg, spec, row)
     # marker comment (line 1, invisible) → title (editable; synced back to the
     # DB) → the head fence: the TOOL-OWNED region is blockquote + summary +
     # the changelog — everything between start and end is maintained by `proj`
