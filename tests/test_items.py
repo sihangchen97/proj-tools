@@ -332,6 +332,7 @@ def test_sync_unknown_group_letter_problem(proj):
 def test_task_done_refused_while_criterion_todo(proj):
     row, _ = taskmod.new(proj, "T")
     ops.add(proj, row["id"], "a")
+    taskmod.start(proj, row["id"])  # S.9: done leaves only In Progress
     with pytest.raises(ValueError, match="unclosed criterion"):
         taskmod.done(proj, row["id"])
     ops.check(proj, f"{row['id']}#001")

@@ -150,11 +150,17 @@ f"""- **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单�
     "task":
 """- 状态：`Draft ✏️ → In Progress 🚧 → Done ✅ / Failed ❌`（new 默认 Draft）；
   Done 和 Failed 都是**终止状态**（任务结束，不再阻塞父任务门禁）。
+- **状态切换限制（S.9）**：`task start` 只能从 **Draft / Failed** 进 In Progress（Failed
+  后可重试）；`task done` 只能从 **In Progress** 进 Done（**不能从 Draft 直接 done**——
+  首个 criterion 勾上会自动 promote 到 In Progress）；`task fail` 可从 **Draft / In
+  Progress / Done** 进 Failed（done 后发现出错可直接 fail，P3 会把引用它的 item 自动改
+  failed，父任务门禁只要求"已结束"，故已 done 的父不受影响）；`task reopen`（新增）从
+  **Done** 回 In Progress（要再继续修改、但不算失败）。
 - `task done` 门禁：整棵后代任务树都处于终止状态（Done/Failed）**且** Acceptance
   Criteria 清单（`items:` 节，用 `proj item check/set` 管理）全部已处理才放行——
   父任务先于子任务结束、或仍有未处理的 criterion 都会被拒绝。
-- `task fail`：标记无法完成/放弃（Any → Failed）；Failed 不是 done，不计入 done
-  日期，但同样满足父任务的门禁。
+- `task fail`：标记无法完成/放弃（见上 S.9 限制，Done 后仍可 fail）；Failed 不是
+  done，不计入 done 日期，但同样满足父任务的门禁。
 - `--parent` **只指向另一个 task**（子任务，任意深度）；指向 plan/debt 等非 task
   记录会报错（改用该记录的清单以 `item add REF … --task <T-…>` 引用它）。
   无 `--parent` 的任务属于虚拟分组 **Unparented**。已关闭的**任务**

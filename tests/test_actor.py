@@ -36,6 +36,7 @@ def test_reporter_falls_back_to_username(_agent, monkeypatch):
 def test_add_log_records_actor(proj, _agent, monkeypatch):
     monkeypatch.setenv("PROJ_AGENT", "alex")
     row, _ = taskmod.new(proj, "Feat")
+    taskmod.start(proj, row["id"])  # S.9: done leaves only In Progress
     taskmod.done(proj, row["id"])
     db = rec.open_db(proj)
     logs = db.logs(row["id"])
@@ -47,6 +48,7 @@ def test_add_log_records_actor(proj, _agent, monkeypatch):
 def test_add_log_falls_back_to_username(proj, _agent, monkeypatch):
     monkeypatch.delenv("PROJ_AGENT", raising=False)
     row, _ = taskmod.new(proj, "Feat")
+    taskmod.start(proj, row["id"])  # S.9: done leaves only In Progress
     taskmod.done(proj, row["id"])
     db = rec.open_db(proj)
     logs = db.logs(row["id"])
@@ -57,6 +59,7 @@ def test_add_log_falls_back_to_username(proj, _agent, monkeypatch):
 def test_changelog_md_line_shows_actor(proj, _agent, monkeypatch):
     monkeypatch.setenv("PROJ_AGENT", "billy")
     row, _ = taskmod.new(proj, "Feat")
+    taskmod.start(proj, row["id"])  # S.9: done leaves only In Progress
     taskmod.done(proj, row["id"])
     md = rec.file_path(proj, rec.load_registry(proj.root)["task"], row)
     text = md.read_text(encoding="utf-8")
@@ -68,6 +71,7 @@ def test_changelog_md_line_shows_actor(proj, _agent, monkeypatch):
 def test_show_history_and_json_carry_actor(proj, _agent, monkeypatch):
     monkeypatch.setenv("PROJ_AGENT", "sam")
     row, _ = taskmod.new(proj, "Feat")
+    taskmod.start(proj, row["id"])  # S.9: done leaves only In Progress
     taskmod.done(proj, row["id"])
     spec = rec.load_registry(proj.root)["task"]
     db = rec.open_db(proj)

@@ -27,9 +27,14 @@ items:
 wip:
   enter: [In Progress]
 verbs:
-  start: {from: Any, to: In Progress}
-  done:  {from: Any, to: Done}
-  fail:  {from: Any, to: Failed}
+  # S.9: source restriction (2026-11-02, user-approved): done can only leave
+  # In Progress (a task in Draft first auto-promotes on its first checked item);
+  # fail can also leave Done (an error found after completion); reopen takes a
+  # Done task back to In Progress without marking it failed.
+  start:  {from: [Draft, Failed], to: In Progress}   # retry after Failed
+  done:   {from: [In Progress], to: Done}
+  fail:   {from: [Draft, In Progress, Done], to: Failed}
+  reopen: {from: [Done], to: In Progress}
 # status 按时间顺序排列：Draft → In Progress → Done/Failed
 # terminal: true = 终止状态（任务结束，不再阻塞父任务门禁）；Failed 也是终止态
 status-allowed:

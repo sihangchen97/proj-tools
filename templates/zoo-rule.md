@@ -30,6 +30,10 @@ files manually — use the `proj` CLI (or the `proj_*` MCP tools if available).
    Manage its `Acceptance Criteria` checklist with `proj item add <ID> "criterion"` /
    `proj item check <ID>#001` — tick each one only after local verification
    (tests pass); the first checked item auto-promotes Draft → In Progress.
+   State transitions are restricted (S.9): `done` leaves only In Progress (a
+   task with no checklist items must `proj task start <ID>` first), `start`
+   comes only from Draft/Failed (retry), `fail` also comes from Done, and
+   `reopen` brings a Done task back to In Progress.
    Finish with `proj task done <ID>` (requires every sub-task finished and every
    criterion closed).
 3. **Track a plan's work with its `Work` checklist**: reference each task from

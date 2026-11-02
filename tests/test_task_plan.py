@@ -40,6 +40,7 @@ def test_task_done_blocked_by_draft_child(proj):
     """gates.tasks: a parent task cannot go Done while a descendant (any depth)
     is not in a terminal task status; Done or Failed unblock it."""
     parent, _ = taskmod.new(proj, "Parent")
+    taskmod.start(proj, parent["id"])  # S.9: done leaves only In Progress
     child, _ = taskmod.new(proj, "Child", parent=parent["id"])
     with pytest.raises(ValueError, match="not finished"):
         taskmod.done(proj, parent["id"])
@@ -77,7 +78,9 @@ def test_task_done_passes_with_failed_child(proj):
     doomed, _ = taskmod.new(proj, "Doomed", parent=parent["id"])
     ok, _ = taskmod.new(proj, "Fine", parent=parent["id"])
     taskmod.fail(proj, doomed["id"])
+    taskmod.start(proj, ok["id"])  # S.9: done leaves only In Progress
     taskmod.done(proj, ok["id"])
+    taskmod.start(proj, parent["id"])  # S.9
     row = taskmod.done(proj, parent["id"])
     assert row["status"] == "Done"
 
@@ -90,6 +93,7 @@ def test_reopen_restricted_under_closed_task(proj):
     row, _ = taskmod.new(proj, "Child", parent=parent["id"])
     doomed, _ = taskmod.new(proj, "Doomed child", parent=parent["id"])
     other, _ = taskmod.new(proj, "Elsewhere")
+    taskmod.start(proj, row["id"])  # S.9: done leaves only In Progress
     taskmod.done(proj, row["id"])
     taskmod.fail(proj, doomed["id"])
     taskmod.done(proj, parent["id"])  # Done (closed)
@@ -170,6 +174,7 @@ def test_failed_task_rendered_checked_with_emoji(proj):
     doomed, _ = taskmod.new(proj, "Doomed one", parent=parent["id"])
     taskmod.fail(proj, doomed["id"])
     done, _ = taskmod.new(proj, "Done one", parent=parent["id"])
+    taskmod.start(proj, done["id"])  # S.9: done leaves only In Progress
     taskmod.done(proj, done["id"])
     spec = load_registry(proj.root)["task"]
     db = rec.open_db(proj)
