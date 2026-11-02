@@ -92,7 +92,10 @@ _ID_SHAPE = (
     r"(?<![0-9A-Za-z])([A-Za-z]-[0-9]{6}|[A-Za-z]{2}-[0-9]{5}"
     r"|[A-Za-z]{3}-[0-9]{4})(?![0-9A-Za-z])"
 )
-MARK_RE = re.compile(rf"^<!-- proj:([\w-]+) {_ID_SHAPE} -->[ \t]*$", re.MULTILINE)
+#: the uuid part is optional (older md files carry only the id; a mismatch —
+#: an id that was renumbered, its old file kept — is a problem, see _ingest_md)
+MARK_RE = re.compile(rf"^<!-- proj:([\w-]+) {_ID_SHAPE}( [0-9a-f]{{12,64}})? -->[ \t]*$",
+                     re.MULTILINE)
 TITLE_RE = re.compile(r"^# (.+)$", re.MULTILINE)
 SECTION_RE = re.compile(r"^## (.+)$", re.MULTILINE)
 # one head line: `> **key:** value` (+ trailing two spaces = markdown hard wrap)
@@ -153,6 +156,8 @@ def ensure_cache(cfg: ProjConfig) -> None:
         with fsio.project_lock(cfg.root, "cache-rebuild"):
             rp.rebuild_cache(path, ev_path, load_registry(cfg.root))
             render_all(cfg)  # C3.1 step 5: after a rebuild, render every md
+            prune_orphan_md(cfg)  # R1: drop stale md (id re-used for another
+                                   # record) the rebuild just surfaced
     except Exception:
         pass  # keep the existing cache (rebuild is atomic: it either replaced
               # the file or left it untouched — never a half-replaced one)
@@ -427,7 +432,15 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     # the changelog — everything between start and end is maintained by `proj`
     # (the fence end sits AFTER the changelog, never hand-edit it).
     head = _head_lines(fm)
-    lines = [f"<!-- proj:{spec.record_type} {row['id']} -->",
+    # R1: the marker carries the record's stable uuid — the id is re-allocated
+    # on a collision (G2) but the uuid is not, so a stale file (its old id kept
+    # in the marker, now held by ANOTHER record) is detectable: sync refuses to
+    # import it, check flags it, and a full render deletes it (the id+uuid no
+    # longer match any live record).
+    marker = f"<!-- proj:{spec.record_type} {row['id']}"
+    if row.get("uuid"):
+        marker += f" {row['uuid']}"
+    lines = [marker + " -->",
              f"# {row['id']}. {row['title']}", "",
              HEAD_START,
              # every blockquote line ends with a markdown hard break (two
@@ -874,6 +887,51 @@ def parse_record(text: str):
     return marker, title, sections
 
 
+def marker_uuid(text: str) -> str:
+    """The uuid carried by a file's id marker (R1: `<!-- proj:type ID uuid -->`),
+    or "" when absent (a file rendered before the uuid landed). The id is
+    re-allocated on a collision (G2) but the uuid is not — so this is the stable
+    identity a file must match against the record it claims to be; a stale file
+    (its old id, now held by ANOTHER record) is then detectable and refuseable."""
+    m = MARK_RE.search(text)
+    return (m.group(3).strip() if m and m.group(3) else "")
+
+
+def prune_orphan_md(cfg: ProjConfig) -> list[Path]:
+    """R1: after a full render (a rebuild from the log, or `sync --rerender`),
+    delete md files whose id marker no longer belongs to any LIVE record. A
+    renumbered record keeps a stale file under its OLD id — an id that is now
+    held by a DIFFERENT record (same id, different uuid) or gone entirely — so
+    that leftover file is an orphan. A file is an orphan when its marker id is
+    absent from the DB, or present but its uuid differs (the id was re-used for
+    another record). Only tool-generated files (a valid id marker of this type
+    on line 1) are ever removed; a hand file without a marker (adopt's input)
+    is left alone. Returns the deleted paths (the caller lists them)."""
+    reg = load_registry(cfg.root)
+    db = open_db(cfg)
+    deleted: list[Path] = []
+    try:
+        for spec in reg.values():
+            d = cfg.root / spec.dir
+            if not d.is_dir():
+                continue
+            live: dict[str, str] = {r["id"]: (r.get("uuid") or "") for r in db.all(spec)}
+            for p in sorted(d.glob("*.md")):
+                if p.name.startswith("_"):
+                    continue
+                m = MARK_RE.search(p.read_text(encoding="utf-8"))
+                if not m or m.group(1) != spec.record_type:
+                    continue  # not a tool-generated file of this type — leave it
+                mid, m_uuid = m.group(2).upper(), ((m.group(3) or "").strip())
+                if mid in live and m_uuid in ("", live[mid]):
+                    continue  # belongs to a live record (uuid matches, or none to check)
+                p.unlink()
+                deleted.append(p)
+    finally:
+        db.close()
+    return deleted
+
+
 def normalize(text: str) -> str:
     """Format-only cleanup before storing: drop leading/trailing blank lines,
     compress runs of 2+ blank lines to 1 (outside code fences). Content as-is."""
@@ -1095,6 +1153,17 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
         row = db.get(spec, u)
         if row is None:
             return [f"{p.name}: id {u} not in DB — run `proj adopt`"], []
+        # R1 (data corruption): a renumbered record keeps its STABLE uuid but
+        # takes a new id — so a stale file (marker id == a record it is NOT)
+        # carries the old id next to a uuid that belongs elsewhere. Match by
+        # uuid, not id: a marker uuid that doesn't match this record is a
+        # pre-renumber leftover → refuse to import (importing it would clobber
+        # the record that now owns that id), point at the cleanup instead.
+        m_uuid = marker_uuid(text)
+        if m_uuid and m_uuid != (row.get("uuid") or ""):
+            return [f"{p.name}: marker id {u} is held by a different record "
+                    f"(this file is a stale copy from before a renumber) — "
+                    f"delete it (or `proj sync --rerender` removes it)"], []
         # a renamed filename (id in the marker != the file's id) is a decision
         # for the user, not something to do silently
         if not p.name.startswith(row["id"] + "-"):

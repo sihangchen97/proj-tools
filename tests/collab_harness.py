@@ -133,31 +133,43 @@ class TwoClones:
 
 
 def build_two_clones(tmp_path: Path, base_setup=None,
-                     install_hooks: bool = True) -> TwoClones:
+                     install_hooks: bool = True,
+                     seed: Path | None = None) -> TwoClones:
     """Bare repo → `proj init` + commit the base → clone into A and B (each
     runs `proj hooks install`). `base_setup` optionally mutates one clone
-    before the first push (e.g. add a task) so A and B start divergent."""
+    before the first push (e.g. add a task) so A and B start divergent.
+    `seed`: a committed-base clone to reuse INSTEAD of `proj init` — the base
+    (its committed log + seed uuids) is cloned from it and pushed onto a fresh
+    bare, so two flows seed from the SAME base and their md stays byte-identical
+    (R1 puts the record uuid in the marker; a fresh init would mint a different
+    seed uuid per flow). Each call still builds its own fresh bare + A + B."""
     proj = _find_proj()
     bare = tmp_path / "bare.git"
     _git("init", "-q", "--bare", str(bare), cwd=tmp_path)
-
     base_dir = tmp_path / "base"
-    _git("clone", "-q", str(bare), str(base_dir), cwd=tmp_path)
-    _configure(base_dir)
-    base = Clone(path=base_dir, proj=proj)
-    base.run("init", "--profile", "default")
-    if base_setup is not None:
-        base_setup(base)
-    # S.10: .proj/bugs.log + write.lock are excluded by the committed
-    # .proj/.gitignore (scaffold) — no local exclude entry needed
-    # hooks install on the base: commits .gitattributes into the project (C5)
-    # so A/B inherit it tracked; their own install only writes local git
-    # config + hooks (both inside .git)
-    if install_hooks:
-        base.run("hooks", "install")
-        base.hooks = True
-    base.commit("base project")
-    _git("push", "-q", "origin", "HEAD", cwd=base_dir)
+    if seed is not None:
+        # reuse the caller's committed base: clone it, re-point origin to the
+        # fresh bare, push — the committed log (seed uuids included) is kept
+        _git("clone", "-q", str(seed), str(base_dir), cwd=tmp_path)
+        _git("remote", "set-url", "origin", str(bare), cwd=base_dir)
+        _git("push", "-q", "origin", "HEAD", cwd=base_dir)
+    else:
+        _git("clone", "-q", str(bare), str(base_dir), cwd=tmp_path)
+        _configure(base_dir)
+        base = Clone(path=base_dir, proj=proj)
+        base.run("init", "--profile", "default")
+        if base_setup is not None:
+            base_setup(base)
+        # S.10: .proj/bugs.log + write.lock are excluded by the committed
+        # .proj/.gitignore (scaffold) — no local exclude entry needed
+        # hooks install on the base: commits .gitattributes into the project (C5)
+        # so A/B inherit it tracked; their own install only writes local git
+        # config + hooks (both inside .git)
+        if install_hooks:
+            base.run("hooks", "install")
+            base.hooks = True
+        base.commit("base project")
+        _git("push", "-q", "origin", "HEAD", cwd=base_dir)
 
     a, b = tmp_path / "a", tmp_path / "b"
     _git("clone", "-q", str(bare), str(a), cwd=tmp_path)

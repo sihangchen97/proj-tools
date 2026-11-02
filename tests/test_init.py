@@ -131,7 +131,7 @@ def test_head_blockquote_shape(proj):
     row, p = rec.new_record(proj, "task", "F1", summary="s")
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == f"<!-- proj:task {row['id']} -->"
+    assert lines[0].startswith(f"<!-- proj:task {row['id']} ")  # R1: marker carries the uuid
     # the H1 is "# ID. title" (above the head fence; title editable, synced back)
     assert lines[1] == f"# {row['id']}. F1"
     assert lines[3].startswith("<!-- proj:head:start")  # fence below the title

@@ -134,6 +134,16 @@ def check(cfg: ProjConfig) -> list[str]:
                 if row is None:
                     problems.append(f"{p.name}: id not in DB — run `proj adopt`")
                     continue
+                # R2: a renumbered record keeps its stable uuid under a new id, so
+                # a file whose marker uuid differs from the record it claims is a
+                # stale leftover (its old id is now held by another record) —
+                # `sync` refuses to import it; check surfaces it.
+                m_uuid = rec.marker_uuid(text)
+                if m_uuid and m_uuid != (row.get("uuid") or ""):
+                    problems.append(f"{p.name}: marker id {row['id']!r} is held by a "
+                                    f"different record (stale copy from before a "
+                                    f"renumber) — delete it, or `proj sync --rerender` "
+                                    f"removes it")
                 seen.add(row["id"])
                 if not p.name.startswith(row["id"] + "-"):
                     problems.append(f"{p.name}: id {row['id']!r} does not match filename")

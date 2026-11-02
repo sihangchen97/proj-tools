@@ -482,8 +482,13 @@ def sync(files: list[Path] = typer.Argument(
         # source of truth; ingesting the merged md would re-create records)
         try:
             written = rec.render_all(cfg, force=True)
+            pruned = rec.prune_orphan_md(cfg)  # R1: drop a renumbered record's
+            # stale md (its old id, now held by another record)
         except ValueError as e:
             _fail(str(e))
+        for line in pruned:
+            typer.echo(f"deleted {line.name} (stale — its id was renumbered; "
+                       f"commit this removal)")
         typer.echo(f"OK — {len(written)} file(s) re-rendered")
         for line in _replay_notices(cfg):
             typer.echo(f"note: {line}")

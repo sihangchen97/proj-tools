@@ -802,7 +802,8 @@ def ch9() -> None:
         for p in sorted(SANDBOX.glob(f"{spec.dir}/*.md")):
             n_files += 1
             t = p.read_text(encoding="utf-8")
-            m = re.search(r"<!-- proj:\S+ ([A-Z]+-\d+) -->", t)
+            # R1: the marker may carry the record's uuid after the id
+            m = re.search(r"<!-- proj:\S+ ([A-Z]+-\d+)( [0-9a-f]+)? -->", t)
             rid = m.group(1) if m else p.name
             for sec_name in text_secs:
                 if sec_name in ITEMS_OR_RENDER:

@@ -15,7 +15,7 @@ def test_new_creates_record(proj):
     assert row["status"] == "Draft"  # new default is the first status (Draft)
     text = p.read_text()
     lines = text.splitlines()
-    assert lines[0] == f"<!-- proj:decision {row['id']} -->"  # marker comment, line 1
+    assert lines[0].startswith(f"<!-- proj:decision {row['id']} ")  # R1: marker carries the uuid
     assert lines[1] == f"# {row['id']}. Use Rust"  # H1 = "# ID. title" (title editable; DB wins)
     assert lines[3].startswith("<!-- proj:head:start")  # fence below the title
     assert any(x.startswith("> **status:** `✏️ Draft`") for x in lines)

@@ -15,7 +15,7 @@ def test_adopt_existing_file(proj):
     assert problems == []
     assert any("adopted as debt DEB-0001" in n for n in notes)
     text = (d / "DEB-0001-old-hack.md").read_text()
-    assert text.startswith("<!-- proj:debt DEB-0001 -->")  # id marker comment on line 1
+    assert text.startswith("<!-- proj:debt DEB-0001 ")  # id marker on line 1 (R1: carries the uuid)
     assert "> **status:**" in text  # blockquote head
     assert "## Location" in text
     assert "# DEB-0001. Old hack" in text  # the re-rendered H1 carries the id
@@ -70,6 +70,54 @@ def test_sync_rejects_id_mismatch(proj):
 
 def test_check_clean_project_passes(proj):
     assert checkmod.check(proj) == []
+
+
+# R1 (data corruption) + R2 (check reports the residue): a renumbered record
+# keeps its STABLE uuid but takes a new id — a stale file (its old id, marker
+# uuid ≠ the record now holding that id) must be refuseable, reported, and
+# deletable. Single-project form: hand the residue back into the tree.
+
+def _stale_file(d, rid, title):
+    p = d / f"{rid}-stale-{title}.md"
+    p.write_text(f"<!-- proj:decision {rid} {'0' * 32} -->\n\n# {rid}. {title}\n",
+                 encoding="utf-8")
+    return p
+
+
+def test_sync_refuses_stale_renumbered_file(proj):
+    spec = rec.load_registry(proj.root)["decision"]
+    db = rec.open_db(proj)
+    before = db.get(spec, "DEC-0001")["title"]  # the seed record's live title
+    db.close()
+    p = _stale_file(proj.root / "docs/decisions", "DEC-0001", "Old")
+    problems, _ = rec.sync(proj)
+    assert any("held by a different record" in x for x in problems)
+    db = rec.open_db(proj)
+    assert db.get(spec, "DEC-0001")["title"] == before  # DB untouched (R1)
+    db.close()
+    p.unlink()
+
+
+def test_check_reports_stale_renumbered_file(proj):
+    _stale_file(proj.root / "docs/decisions", "DEC-0001", "Old")
+    problems = checkmod.check(proj)
+    assert any("held by a different record" in x for x in problems)
+
+
+def test_prune_orphan_md_deletes_only_stale(proj):
+    d = proj.root / "docs/decisions"
+    live = next(d.glob("DEC-0001-*.md"))  # the seed record's live file
+    stale = _stale_file(d, "DEC-0001", "Old")
+    gone = _stale_file(d, "DEC-0099", "Ghost")  # id no longer in the DB either
+    hand = d / "DEC-0090-hand.md"
+    hand.write_text("# Hand-written (no marker — adopt's input)\n", encoding="utf-8")
+    deleted = rec.prune_orphan_md(proj)
+    assert {p.name for p in deleted} == {stale.name, gone.name}
+    assert not stale.exists() and not gone.exists()
+    assert hand.exists()  # a hand file without a marker is never touched
+    assert live.exists()  # the live file is kept
+    hand.unlink()  # (a marker-less file is `adopt`'s input; not part of this check)
+    assert checkmod.check(proj) == []  # clean after the prune
 
 
 @pytest.mark.render_drift

@@ -321,19 +321,27 @@ def test_tombstone_vs_modify_replays_in_order(tmp_path):
 # ---- C7 rebase == merge ----------------------------------------------------
 
 def test_rebase_equals_merge(tmp_path):
-    """C7: the same divergent edits produced by a rebase and by a merge give
-    byte-identical results (two independent harness runs)."""
+    """C7: rebase and merge reconciliation of the SAME committed divergence give
+    byte-identical results. R1 puts the record uuid in the md marker, so the
+    divergence must be created ONCE on a shared remote (its uuids are then
+    fixed in the committed log, as in real multi-clone usage) — two independent
+    `task new` runs would mint different uuids and the md could never be
+    byte-identical. Each side clones a FRESH A/B pair from the shared,
+    reconciled state and re-pulls (rebase vs merge); both land on the same log."""
+    (tmp_path / "shared").mkdir()
+    shared = ch.build_two_clones(tmp_path / "shared")  # the shared remote (base)
+    _new_task_id(shared.a, "A 独有")
+    shared.a.commit("A")
+    shared.push(shared.a)
+    _new_task_id(shared.b, "B 独有")
+    shared.b.commit("B")
+    shared.push(shared.b)  # union-merges A's into the shared remote (fixed uuids)
+
     def make_side(diverge):
         d = tmp_path / f"rm-{diverge}"
         d.mkdir(exist_ok=True)
-        t = ch.build_two_clones(d)
-        a, b = t.a, t.b
-        _new_task_id(a, "A 独有")
-        a.commit("A")
-        t.push(a)
-        _new_task_id(b, "B 独有")
-        b.commit("B")
-        t.push(b)
+        t = ch.build_two_clones(d, seed=shared.a.path)  # fresh pair from the shared state
+        a = t.a
         (t.rebase if diverge == "rebase" else t.pull)(a)
         assert not t.merge_conflict()
         return a.state()
