@@ -7,6 +7,7 @@ import click
 from typer.main import get_group
 
 from proj import cli as cli_mod
+from proj.core import fsio
 from proj.core.db import LOCK_FILE
 from proj.engine import store as rec
 from proj.mcp import PROJ_HOME_ENV, mcp
@@ -283,6 +284,6 @@ def write(root: str | None = None) -> list[str]:
     for rel, text in ((CLI_REF_PATH, cli_reference()), (MCP_REF_PATH, mcp_reference())):
         p = cfg.root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text, encoding="utf-8")
+        fsio.write_atomic(p, text)
         written.append(rel)
     return written

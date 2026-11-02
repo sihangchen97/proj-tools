@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from proj.core import db as dbmod
+from proj.core import fsio
 from proj.core.config import ProjConfig
 from proj.core.templates import load_registry, load_texts, normalize_profiles
 from proj.engine import store as rec
@@ -42,7 +43,7 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
         if p.exists():
             return
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
+        fsio.write_atomic(p, content)
         created.append(rel)
 
     # lock pins the profile dirs used to build the registry. Repeat inits with
@@ -82,8 +83,7 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
         if p.exists():
             return
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text((templates_dir() / src).read_text(encoding="utf-8"),
-                     encoding="utf-8")
+        fsio.write_atomic(p, (templates_dir() / src).read_text(encoding="utf-8"))
         created.append(dst)
 
     copy_tpl("env.example", ".env.example")
@@ -96,18 +96,25 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     # an empty PROJ_LOGS line documents the available config var
     add(".env", "# project config defaults (D6): OS env > .env > code default\n"
                 "# PROJ_LOGS=\n")
-    # B3: .proj.bugs is append-only and personal — never committed. Idempotent:
-    # a pre-existing .gitignore (or one already listing it) is left as is.
+    # B3: .proj.bugs is append-only and personal — never committed; S.2: the
+    # write-lock file is a runtime artifact (a dead holder's flock is released
+    # by the kernel, so a stale file is harmless — never commit it either).
+    # Idempotent: a pre-existing .gitignore (or one already listing them) is
+    # left as is.
     gi = cfg.root / ".gitignore"
-    entry = ".proj.bugs"
+    entries = [".proj.bugs", ".proj.write-lock"]
     if gi.exists():
         lines = gi.read_text(encoding="utf-8").splitlines()
-        if entry not in lines:
-            lines.append(entry)
-            gi.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        added = False
+        for entry in entries:
+            if entry not in lines:
+                lines.append(entry)
+                added = True
+        if added:
+            fsio.write_atomic(gi, "\n".join(lines) + "\n")
             created.append(".gitignore (updated)")
     else:
-        gi.write_text(entry + "\n", encoding="utf-8")
+        fsio.write_atomic(gi, "\n".join(entries) + "\n")
         created.append(".gitignore")
     if zoo:
         copy_tpl("zoo-rule.md", ".roo/rules/proj-tools.md")
@@ -137,7 +144,7 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
                     d.begin()
                     d.set(spec, row["id"], sections=json.dumps(seed["sections"]))
                     fresh = d.get(spec, row["id"])
-                    p.write_text(rec.render_record(spec, fresh, d), encoding="utf-8")
+                    fsio.write_atomic(p, rec.render_record(spec, fresh, d))
                 created.append(str(p.relative_to(cfg.root)))
 
     # adopt any pre-existing managed files, then render views

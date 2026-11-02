@@ -15,6 +15,7 @@ from __future__ import annotations
 import fcntl
 import os
 import tempfile
+import threading
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -23,6 +24,8 @@ from proj.core.db import ProjError
 
 LOCK_NAME = ".proj.write-lock"
 LOCK_TIMEOUT = 10.0
+
+_local = threading.local()
 
 
 def mtime_of(path: str | Path) -> int | None:
@@ -50,7 +53,8 @@ def write_atomic(path: str | Path, text: str, expect_mtime_ns: int | None = None
             os.fsync(f.fileno())
         if (expect_mtime_ns is not None and path.exists()
                 and mtime_of(path) != expect_mtime_ns):
-            raise ProjError(f"{path.name} 在命令执行期间被修改，请重新执行")
+            raise ProjError(f"{path.name} modified while this command was running "
+                           f"- re-run it")
         os.replace(tmp, path)
     except BaseException:
         with suppress(OSError):
@@ -72,7 +76,15 @@ def _holder(lock_path: Path) -> str:
 def project_lock(root: str | Path, cmd: str = ""):
     """Hold the project's exclusive write lock (up to LOCK_TIMEOUT seconds);
     the timeout names the holder (pid + command) from the lock file.
-    No project dir → no lock (a failing command has nothing to guard)."""
+    No project dir → no lock (a failing command has nothing to guard).
+    Re-entrant per thread: the CLI entry lock and the engine's own lock nest in
+    the same thread — flock is per open file description, so without this the
+    nested acquisition would time out on its own lock; a nested call shares the
+    outer flock and only the outermost exit releases it."""
+    key = str(Path(root).resolve())
+    if getattr(_local, "held", None) == key:
+        yield
+        return
     root = Path(root)
     if not root.is_dir():
         yield
@@ -87,18 +99,20 @@ def project_lock(root: str | Path, cmd: str = ""):
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 got = True
                 break
-            except OSError:  # lock contention (BlockingIOError) — poll
+            except OSError as e:  # lock contention (BlockingIOError) — poll
                 if time.monotonic() >= deadline:
                     raise ProjError(
                         f"project write lock {lock_path} is held by "
-                        f"{_holder(lock_path)} — waited {LOCK_TIMEOUT:.0f}s")
+                        f"{_holder(lock_path)} (waited {LOCK_TIMEOUT:.0f}s)") from e
                 time.sleep(0.1)
         os.ftruncate(fd, 0)
         os.lseek(fd, 0, os.SEEK_SET)
         os.write(fd, f"{os.getpid()} {cmd}".rstrip().encode("utf-8") + b"\n")
+        _local.held = key
         yield
     finally:
         if got:
+            _local.held = None
             with suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)

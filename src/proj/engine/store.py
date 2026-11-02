@@ -56,7 +56,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -66,31 +65,19 @@ from proj.core.config import ProjConfig
 from proj.core.db import ProjError
 from proj.core.templates import RecordTypeSpec, load_registry, slugify
 
-
-# ---- S.2: the project write lock (re-entrant) --------------------------------
+# ---- S.2: the project write lock -----------------------------------------------
 # Every write command holds `write_lock` for its whole run — at the CLI entry
-# points (cli.py) and the MCP write tools (mcp.py) — so concurrent writers queue
-# up (fsio.LOCK_TIMEOUT); read commands take none. The engine keeps its own
-# transactions (R3) and only switches file writes to fsio.write_atomic; the lock
-# lives one level up so it is shared by both entry channels. Re-entrant per
-# thread: a nested entry (e.g. an item op re-invoking sync_section) shares ONE
-# acquisition; the outermost exit releases the flock.
-
-_lock_local = threading.local()
-
+# points (cli.py), the MCP write tools (mcp.py) and the engine entry points
+# below (ensure_synced / sync / adopt) — so concurrent writers queue up
+# (fsio.LOCK_TIMEOUT); read commands take none. Re-entrant per thread (the CLI
+# entry lock and the engine lock nest in the same thread — the re-entrancy lives
+# in fsio.project_lock itself).
 
 @contextmanager
 def write_lock(cfg: ProjConfig, cmd: str = ""):
-    key = str(Path(cfg.root).resolve())
-    if getattr(_lock_local, "held", None) == key:
-        yield
-        return
+    """The project write lock for this command (fsio.project_lock, re-entrant)."""
     with fsio.project_lock(cfg.root, cmd):
-        _lock_local.held = key
-        try:
-            yield
-        finally:
-            _lock_local.held = None
+        yield
 
 # tool-owned id marker (an html-comment line, on line 1 above the blockquote head)
 # id shape: 1-3 letters + '-' + a fixed-width DIGIT suffix, letters+digits == 7
@@ -918,8 +905,8 @@ def sync(cfg: ProjConfig, files: list[Path] | None = None):
             for spec in reg.values():
                 for p in _scan_files(cfg, spec, None):
                     (mk, u), _t, _raw = parse_record(p.read_text(encoding="utf-8"))
-                    pr, nt = _ingest_md(cfg, spec, db, p, strict=True,
-                                         skip_items=u in wip_only if mk == spec.record_type else False)
+                    skip = (u in wip_only if mk == spec.record_type else False)
+                    pr, nt = _ingest_md(cfg, spec, db, p, strict=True, skip_items=skip)
                     problems += pr
                     notes += nt
             if not problems:

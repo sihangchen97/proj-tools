@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from proj.core import fsio
 from proj.core.config import ProjConfig
 
 PRE_COMMIT = """\
@@ -41,6 +42,6 @@ def install(cfg: ProjConfig) -> str:
     hook = hooks_dir / "pre-commit"
     if hook.exists() and "proj hooks install" not in hook.read_text(encoding="utf-8"):
         raise ValueError(f"{hook} is not a proj hook — refusing to overwrite")
-    hook.write_text(PRE_COMMIT.format(proj=_find_proj(cfg.root)), encoding="utf-8")
+    fsio.write_atomic(hook, PRE_COMMIT.format(proj=_find_proj(cfg.root)))
     hook.chmod(0o755)
     return str(hook)

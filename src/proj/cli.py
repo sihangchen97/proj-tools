@@ -482,7 +482,7 @@ def render(ref: list[str] = typer.Argument(
                     rows = [row]
                 for row in rows:
                     p = rec.file_path(cfg, spec, row)
-                    p.write_text(rec.render_record(spec, row, db, reg), encoding="utf-8")
+                    fsio.write_atomic(p, rec.render_record(spec, row, db, reg))
                     typer.echo(f"Rendered {p.relative_to(cfg.root)}")
     except rec.ProjError as e:
         _fail(str(e))

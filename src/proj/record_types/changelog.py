@@ -6,6 +6,7 @@ profiles/changelog.yaml, not hard-coded here.
 from __future__ import annotations
 
 from proj.core import db as dbmod
+from proj.core import fsio
 from proj.core.config import ProjConfig
 from proj.core.templates import load_changelog_spec
 from proj.engine import store as rec
@@ -27,7 +28,7 @@ def add(cfg: ProjConfig, entry: str, version: str | None = None) -> None:
 def _write(cfg: ProjConfig) -> None:
     with rec.open_db(cfg) as db:  # R3: read-only
         view = render_changelog_md(cfg, db)
-    view.path.write_text(view.text, encoding="utf-8")
+    fsio.write_atomic(view.path, view.text)
 
 
 def version_bump(cfg: ProjConfig, version: str | None, bump_level: str | None):

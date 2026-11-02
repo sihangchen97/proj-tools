@@ -26,6 +26,7 @@ all hit the same record.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
@@ -36,6 +37,7 @@ from mcp.server import MCPServer
 
 from proj import bugs, scaffold
 from proj.check import check as run_checks
+from proj.core import fsio
 from proj.core.config import load_config, load_project_env
 from proj.core.db import ProjError
 from proj.core.templates import resolve_record_type
@@ -212,7 +214,7 @@ def proj_render(ref: str | None = None, root: str | None = None) -> str:
                     rows = [row]
                 for row in rows:
                     p = rec.file_path(cfg, spec, row)
-                    p.write_text(rec.render_record(spec, row, db, reg), encoding="utf-8")
+                    fsio.write_atomic(p, rec.render_record(spec, row, db, reg))
                     out.append(f"Rendered {p.relative_to(cfg.root)}")
         return "\n".join(out)
     except (ValueError, rec.ProjError) as e:
@@ -532,11 +534,37 @@ def proj_bug_ls(root: str | None = None) -> str:
 # ---- D3: register the functions above ONCE (FastMCP accepts sync functions —
 # there is no separate async wrapper with a duplicated docstring) ---------------
 
+# S.2: the write tools (DB / md writes) hold the project write lock for their
+# whole run — read tools (ls / show / check / info / list / bug_ls) take none.
+# The root resolves like every tool: the `root` kwarg > $PROJ_HOME > cwd
+# (a non-project cwd = no lock, the tool body then fails with the usual error).
+_WRITE_TOOLS = frozenset({
+    "proj_init", "proj_new", "proj_sync", "proj_adopt", "proj_render",
+    "proj_update", "proj_verb",
+    "proj_changelog_add", "proj_changelog_version",
+    "proj_task_move",
+    "proj_item_add", "proj_item_update", "proj_item_rm",
+    "proj_wip_add", "proj_wip_return",
+})
+
+
+def _tool_lock(root: str | None, name: str):
+    from proj.core.config import find_root  # lazy: mcp↔config
+    base = find_root(Path(root) if root else None, strict=False)
+    if base is None:
+        return contextlib.nullcontext()
+    return fsio.project_lock(base, name)
+
+
 # B4: auto-record uncaught (unexpected) exceptions from a tool call — normal
 # errors (ValueError / ProjError / sqlite3.Error) already return "error: …".
 def _record(fn, *a, **k):
     try:
-        return fn(*a, **k)
+        root = k.get("root") or os.environ.get(PROJ_HOME_ENV)
+        lock = _tool_lock(root, fn.__name__) if fn.__name__ in _WRITE_TOOLS \
+            else contextlib.nullcontext()
+        with lock:
+            return fn(*a, **k)
     except (ProjError, sqlite3.Error, ValueError) as e:
         return f"error: {e}"  # normal error — clean message, no auto-record (B4)
     except Exception as e:
