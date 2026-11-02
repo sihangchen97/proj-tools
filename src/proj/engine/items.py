@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -265,9 +266,41 @@ def _show_emoji(state_name: str) -> str:
     return f"{e} " if e else ""
 
 
-def render_item_line(item: Item, spec) -> str:
+def link_record_ids(text: str, db, reg: dict, rspec, row: dict) -> str:
+    """P5: bare record ids written in an item's free text become
+    `[filename](relpath)` links — the no-state-tie form (contrast the
+    structured `→ T-…` ref, which drives the item's state). Only ids that
+    resolve to an existing record are linked; dangling ids stay bare.
+    Deterministic in (text, db) — the SAME text always renders the SAME way —
+    so the record md and its drift re-render agree (no spurious drift).
+    `rspec`/`row` name the record this item belongs to (the link's base dir)."""
+    if not text:
+        return text
+    from proj.engine import store as rec  # lazy: items<->store cycle
+    root = Path(db.path).parent
+    cfg = rec.ProjConfig(root)
+    src_file = rec.file_path(cfg, rspec, row)
+    base = src_file.parent
+
+    def repl(m: re.Match) -> str:
+        cid = m.group(1)
+        for tspec in reg.values():
+            trow = rec.by_id(cfg, tspec, db, cid)
+            if trow is None:
+                continue
+            tfile = rec.file_path(cfg, tspec, trow)
+            rel = os.path.relpath(tfile, base).replace(os.sep, "/")
+            return f"[{tfile.stem}]({rel})"
+        return cid  # no record of that id → leave bare
+    return _ID_CANDIDATE_RE.sub(repl, text)
+
+
+def render_item_line(item: Item, spec, ctx=None) -> str:
     box = "x" if item.state in CLOSED_STATES else " "
-    line = f"- [{box}] #{item.no} {_show_emoji(item.state)}{item.text}"
+    text = item.text
+    if ctx is not None:  # P5: link bare record ids in the free text
+        text = link_record_ids(text, ctx[0], ctx[1], ctx[2], ctx[3])
+    line = f"- [{box}] #{item.no} {_show_emoji(item.state)}{text}"
     if item.task:  # K3: the structured task reference (PLAN §10.3 K3)
         line += f" → {item.task}"
     if item.note:
@@ -279,13 +312,15 @@ def render_item_line(item: Item, spec) -> str:
     return line.rstrip()
 
 
-def render_section(state: ItemsState, spec) -> str:
-    """The section content (without the `##` heading) — depends ONLY on state.
-    `spec`: the ItemsSpec or its RecordTypeSpec."""
+def render_section(state: ItemsState, spec, ctx=None) -> str:
+    """The section content (without the `##` heading) — depends on state.
+    `spec`: the ItemsSpec or its RecordTypeSpec. `ctx` (P5): `(db, reg,
+    record_spec, row)` to link bare record ids in item text; None = bare text
+    (item_ops listing, WIP, present show)."""
     spec = _spec(spec)
 
     def emit(r: Item) -> None:
-        out.append(render_item_line(r, spec))
+        out.append(render_item_line(r, spec, ctx))
         if r.trailer.strip():
             out.extend(r.trailer.strip("\n").splitlines())
 
@@ -325,6 +360,11 @@ GROUP_HEAD_RE = re.compile(r"^### (?:([A-Za-z]) · )?(.+)$")
 ITEM_RE = re.compile(r"^- \[([ xX])\] (.*)$")
 INDENT_ITEM_RE = re.compile(r"^\s+- \[[ xX]\]")
 NO_RE = re.compile(r"^#([A-Za-z0-9]+)\s*(.*)$")
+# P5: a bare record id in free text — letter code (T-/PLN-/DEC-/INC-/DEB-
+# /EXP-) + hyphen + digits, not already part of a word, a slash path, or a
+# markdown link (`[..](..)`); only ids that resolve to an existing record are
+# actually linked (unknown ones pass through unchanged).
+_ID_CANDIDATE_RE = re.compile(r"(?<![\w/\[#])([A-Z]{1,3}-\d{1,6})(?!\d)")
 DUE_RE = re.compile(r" · due: (\d{4}-\d{2}-\d{2})$")
 OWNER_RE = re.compile(r" · owner: (.+)$")
 # K3: the structured task reference — a right-anchored ` → T-xxxxxx` suffix,
@@ -1078,7 +1118,12 @@ def drift(db, spec, row: dict, md_text: str, section: str | None = None) -> bool
         itspec = next(it for it in spec.items if it.section == section)
     state = load(db, row["id"], itspec)
     state.intro = _intro_of(itspec, row)
-    return normalize(md_text) != render_section(state, itspec)
+    # P5: re-render WITH the same id links the record md carries (store.render
+    # passes this ctx); without it an id in an item's text would read as a
+    # spurious drift (the md has the link, the bare re-render would not)
+    from proj.engine import store as rec  # lazy: items<->store cycle
+    reg = rec.load_registry(Path(db.path).parent)
+    return normalize(md_text) != render_section(state, itspec, ctx=(db, reg, spec, row))
 
 
 # ---- apply_md (sync: merge the parsed md into the state) ---------------------

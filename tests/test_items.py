@@ -713,3 +713,33 @@ def test_command_output_reports_notes(proj):
     assert "note: item #001 → #A01" in out
     out = ops.edit(proj, f"{row['id']}#A01", note="n")
     assert out.splitlines()[0] == "note: item #A01 edited"
+
+
+# ---- P5: bare record ids in item text render as links (PLAN §22.1 D2) ------
+
+def test_p5_bare_ids_in_item_text_render_as_links(proj):
+    """A bare record id written in an item's free text becomes a link in the
+    record md (no state tie); an unknown id stays bare; the drift re-render
+    matches the md (no spurious drift)."""
+    dec = _new(proj, "decision", "Adopt X")
+    t = _new(proj, "task", "Build")
+    inc = _new(proj, "incident", "Flake")
+    ops.add(proj, inc, "see " + dec + " + T-999999", task=t)
+    db = rec.open_db(proj)
+    try:
+        spec = rec.load_registry(proj.root)["incident"]
+        row = db.get(spec, inc)
+        state = it.load(db, inc, spec)
+        state.intro = it._intro_of(spec, row)
+        sec = it.render_section(state, spec)  # bare (no ctx) → ids not linked
+        assert dec in sec and f"[{dec}-" not in sec
+        # the record md: ids linked, dangling id bare
+        md = rec.file_path(proj, spec, row).read_text(encoding="utf-8")
+        assert f"[{dec}-" in md  # the bare id in the text is linked (cross-dir)
+        assert f"→ {t}" in md and f"[{t}-" not in md  # K3's → ref stays bare (P3 syncs on it)
+        assert "T-999999" in md and "[T-999999" not in md  # unknown id → bare
+    finally:
+        db.close()
+    # no spurious drift: the md (with links) round-trips
+    problems, _ = rec.sync(proj)
+    assert not any("differs from DB" in x for x in problems), problems

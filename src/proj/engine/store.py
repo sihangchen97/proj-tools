@@ -417,7 +417,10 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
             # lives in the sections JSON alongside the item lines)
             state = items_mod.load(db, row["id"], it)
             state.intro = items_mod._intro_of(it, row)
-            lines.append(items_mod.render_section(state, it) or "")
+            # P5: link bare record ids in the item text (the drift re-render in
+            # items.drift uses the same ctx, so the md round-trips)
+            lines.append(items_mod.render_section(
+                state, it, ctx=(db, reg, spec, row)) or "")
         else:
             lines.append(sections.get(sec.name.lower(), "").strip())
         lines.append("")
@@ -432,7 +435,8 @@ def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db) -> bool:
     from proj.engine import items as items_mod  # lazy: store↔items cycle
     item_sec = {it.section.lower() for it in spec.items}
     for it in spec.items:  # each checklist section, its own drift
-        if items_mod.drift(db, it, row, raw.get(it.section.lower(), "")):
+        if items_mod.drift(db, spec, row, raw.get(it.section.lower(), ""),
+                           section=it.section):
             return True
     for s in spec.sections:
         # the checklist sections are judged above via items_mod.drift — their
