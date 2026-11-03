@@ -56,10 +56,13 @@ def setup_sandbox() -> None:
 
 def _guard(dst: Path, label: str) -> None:
     """e2e only ever manages <repo>/.testproj and its own temp dir (user
-    requirement) — refuse to delete/copy anything else."""
-    assert not dst.is_symlink(), f"{label} must not be a symlink: {dst}"
-    assert dst.resolve() == (REPO / label).resolve(), \
-        f"{label} must be {REPO / label}: got {dst}"
+    requirement) — refuse to delete/copy anything else. P0-5: a real raise,
+    NOT an assert — `python -O` strips asserts and the rmtree guard would
+    become a no-op (a misconfigured path could then delete arbitrary dirs)."""
+    if dst.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {dst}")
+    if dst.resolve() != (REPO / label).resolve():
+        raise SystemExit(f"{label} must be {REPO / label}: got {dst}")
 
 
 def teardown() -> None:

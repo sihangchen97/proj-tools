@@ -582,10 +582,25 @@ def apply_incremental(db, lines: list[dict],
         if r["uuid"]:
             st.ids[r["uuid"]] = r["id"]
             st.types[r["uuid"]] = r["type"]
-    for e in sorted(lines, key=ev.sort_key):
-        _apply(st, db, e)
-    for rid in st.rows:
-        db.items_save(rid, st.rows[rid])
+    # P0-3: ONE transaction around the whole batch — the per-event statements
+    # are autocommit, so a mid-batch failure (a bad event the plan_incremental
+    # parse missed) used to leave a half-written cache; now it rolls back and
+    # the caller falls through to a full rebuild. The incremental path is only
+    # reached from store.ensure_cache with a bare (autocommit) Db, so no
+    # transaction can be open here (assert, not a savepoint dance).
+    conn = db.conn
+    assert not conn.in_transaction, "apply_incremental expects autocommit"
+    conn.execute("BEGIN")
+    try:
+        for e in sorted(lines, key=ev.sort_key):
+            _apply(st, db, e)
+        for rid in st.rows:
+            db.items_save(rid, st.rows[rid])
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
     res = ReplayResult()
     res.ids = dict(st.ids)
     res.renamed = st.renamed

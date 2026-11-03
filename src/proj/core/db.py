@@ -857,8 +857,11 @@ class Db:
         the _events_flushed flag keeps this idempotent)."""
         if not self._events_flushed and not self._rolled_back:
             try:
+                self._flush_events()  # C2.3: log BEFORE the commit (same
+                # order as __exit__ — a crash between the two then leaves the
+                # log ahead of the DB, which a rebuild reconciles; the reverse
+                # order left the DB ahead of the log)
                 self.conn.commit()
-                self._flush_events()
             except sqlite3.Error:
                 pass  # a BEGIN-less (read-only) close has nothing to end
         self.conn.close()

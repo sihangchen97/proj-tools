@@ -38,6 +38,13 @@ def main() -> None:
                  (sb / "docs" / "MCP.md", REPO / "docs" / "MCP.md"),
                  (sb / "docs" / "CLI.md", REPO / "templates" / "PROJ_CLI.md"),
                  (sb / "docs" / "MCP.md", REPO / "templates" / "PROJ_MCP.md")]
+        # P0-4: the four dests are COMMITTED repo docs — refuse to overwrite
+        # them from a missing or empty generation (a silent `proj docs`
+        # regression would otherwise destroy the committed text with no error)
+        for src, dst in dests:
+            if not src.is_file() or not src.read_text(encoding="utf-8").strip():
+                raise SystemExit(f"generated doc missing or empty: {src} — "
+                                f"not touching committed {dst.name}")
         for src, dst in dests:
             shutil.copyfile(str(src), str(dst))
             print(f"wrote {dst.relative_to(REPO)}")
