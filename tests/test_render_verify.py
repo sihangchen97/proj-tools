@@ -11,11 +11,11 @@ def test_clean_project_verifies_empty(proj):
 
 @pytest.mark.render_drift
 def test_tampered_record_is_detected(proj):
-    p = proj.root / "docs" / "decisions" / "DEC-0001-record-architecture-decisions.md"
-    assert p.exists()
+    p = next(iter((proj.root / "docs" / "decisions").glob("DEC-0001-*.md")))
+    rel = f"docs/decisions/{p.name}"
     assert render_verify.verify(proj) == []
     p.write_text(p.read_text(encoding="utf-8") + "\nhand-tamper\n", encoding="utf-8")
     diffs = render_verify.verify(proj)
     assert len(diffs) == 1
-    assert diffs[0][0] == "docs/decisions/DEC-0001-record-architecture-decisions.md"
+    assert diffs[0][0] == rel
     assert diffs[0][1] == "differs"

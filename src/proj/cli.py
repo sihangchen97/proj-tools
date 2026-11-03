@@ -692,8 +692,8 @@ def info(as_json: bool = typer.Option(False, "--json", help="machine-readable"))
 
 @app.command()
 def docs():
-    """Regenerate the reference docs (templates/PROJ_CLI.md +
-    templates/PROJ_MCP.md) from this code."""
+    """Regenerate the project reference docs (.proj/CLI.md + .proj/MCP.md)
+    from this code."""
     from proj.docs import write
     for rel in write(_ROOT["root"]):
         typer.echo(f"Wrote {rel}")

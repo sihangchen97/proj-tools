@@ -89,6 +89,10 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
 
     copy_tpl("env.example", ".env.example")
     copy_tpl("CONTRIBUTING.md", "CONTRIBUTING.md")
+    # CLI / MCP reference: seeded from the bundled templates into .proj/ (the
+    # tool-owned project data dir — no docs/ of its own; `proj docs` refreshes)
+    copy_tpl("PROJ_CLI.md", ".proj/CLI.md")
+    copy_tpl("PROJ_MCP.md", ".proj/MCP.md")
     # D6: the project .env is committed like the DB (clone = same defaults);
     # an empty PROJ_LOGS line documents the available config var
     add(".env", "# project config defaults (D6): OS env > .env > code default\n"

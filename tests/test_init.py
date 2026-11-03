@@ -70,9 +70,11 @@ def test_seed_decision_content(proj):
     assert "<!-- proj:decision " in text
     assert "> **status:** `✅ Accepted`" in text
     assert "# DEC-0001. Record architecture decisions" in text  # H1 = "# ID. title"
-    # seed cites the ADR pattern (Nygard) and the tool's repo (ADR-tools-style 0001)
-    assert "thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions" in text
+    # seed: the project is tracked as records with the tool (governance
+    # decision, no internals) — the tool's repo + proj info + the .proj/ docs
     assert "github.com/sihangchen97/proj-tools" in text
+    assert "proj info" in text
+    assert ".proj/" in text and "CLI.md" in text
 
 
 def test_lock_written_and_consistent(proj):

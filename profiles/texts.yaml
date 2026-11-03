@@ -5,23 +5,17 @@
 # changelog.yaml).
 scaffold:
   seed_decision:
-    title: Record architecture decisions
-    status: Accepted
-    summary: Adopt ADR-style records (SQLite source of truth) for significant decisions.
+    title: "Record architecture decisions"
+    status: "Accepted"
+    summary: "Project information is tracked as records with the `proj` tool — e.g. the decisions we make and the work that goes with them."
     sections:
-      context: >-
-        We need to record the architectural decisions made on this project, with
-        the trade-offs behind them.
-      decision: >-
-        We will use Architecture Decision Records, as described by Michael Nygard
-        in this article:
-        https://thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions.
-        Records are managed by the `proj` tool
-        (https://github.com/sihangchen97/proj-tools), stored as Markdown files
-        under `docs/decisions/` with `.proj/events.jsonl` as the committed
-        source of truth (SQLite is a local cache rebuilt from the log).
-      consequences: >-
-        See Michael Nygard's article, linked above. Every significant decision
-        gets a record before production code; views regenerate via `proj update`.
-        Follow-up checks live in the record's Confirmation list
-        (`proj item add DEC-xxxx "<check>"`).
+      context: "This project will accumulate things worth keeping: the decisions we make and the reasoning behind them, the work in flight, plans that group it, technical debt we owe, and what actually shipped. People and agents work on it in parallel and either can read and change the state, so it should stay structured and findable instead of scattered through notes, trackers and chat."
+      "decision drivers": |-
+        - One record per decision, task, plan, debt entry or milestone, with a status the tool tracks
+        - Markdown that humans and agents can both read and edit
+        - Generated views (WIP, changelog) that always reflect the records
+      "considered options": |-
+        - Free-form notes in a wiki or issue tracker — no structure, no status, easy to lose track of
+        - Records managed by the `proj` tool — one Markdown file per record, with status, changelog and follow-up checks tracked by the tool
+      decision: "Project information is managed as records with the `proj` tool (https://github.com/sihangchen97/proj-tools). Each record is a Markdown file under its type's directory with a tool-tracked status; `proj info` shows every record type enabled for this project, `proj sync` keeps the files and the state in line, `proj check` verifies them, and the generated views (WIP.md, CHANGELOG.md) rebuild from the records. The CLI and MCP reference docs live in `.proj/` (`CLI.md` / `MCP.md`), kept in sync with the tool (`proj docs`)."
+      consequences: "Significant changes are decided first and the decision is advanced with the tool (`propose` / `accept`); multi-step work is tracked as tasks under plans; temporary hacks become debt records with a trigger for removal; milestones land in the changelog. Follow-up checks live in a record's Confirmation list, so what was decided — and why — stays reviewable after the fact."

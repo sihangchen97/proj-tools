@@ -331,8 +331,7 @@ def ch0() -> None:
     out = mcp_call("proj_info")
     assert "decision" in out, out
     REP.ok("proj_info 项目状态（MCP）")
-    # A11: the scaffold-seeded decision starts with Context/Decision/Consequences
-    # only — fill the rest so it is not an empty shell
+    # the scaffold-seeded decision (all five sections) is refined in e2e:
     write_sections(md_of("DEC-0001"), {
         "Decision Drivers": (
             "- 多个 agent 并发写同一项目不冲突"

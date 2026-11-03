@@ -1,6 +1,7 @@
-"""Reference docs as code: templates/PROJ_CLI.md and PROJ_MCP.md are generated from this
-module (`proj docs`) so they can never drift from the CLI/MCP code.
-Run `proj docs` (from this repo or any project) to regenerate them."""
+"""Reference docs as code: each project's `.proj/CLI.md` and `.proj/MCP.md`
+are generated from this module (`proj docs`) so they can never drift from the
+CLI/MCP code. `proj init` seeds them from the bundled `templates/PROJ_*.md`;
+run `proj docs` (in any project) to regenerate them."""
 from __future__ import annotations
 
 import click
@@ -12,8 +13,8 @@ from proj.core.db import LOCK_FILE
 from proj.engine import store as rec
 from proj.mcp import PROJ_HOME_ENV, mcp
 
-CLI_REF_PATH = "templates/PROJ_CLI.md"
-MCP_REF_PATH = "templates/PROJ_MCP.md"
+CLI_REF_PATH = ".proj/CLI.md"
+MCP_REF_PATH = ".proj/MCP.md"
 
 # ---- CLI ---------------------------------------------------------------------------------
 

@@ -91,8 +91,8 @@ def test_docs_command_generates_both_files(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = runner.invoke(app, ["docs"])
     assert r.exit_code == 0, r.output
-    cli_md = (tmp_path / "templates/PROJ_CLI.md").read_text()
-    mcp_md = (tmp_path / "templates/PROJ_MCP.md").read_text()
+    cli_md = (tmp_path / ".proj/CLI.md").read_text()
+    mcp_md = (tmp_path / ".proj/MCP.md").read_text()
     assert "proj task new" in cli_md  # dynamic record_type groups, generated
     assert "proj decision accept" in cli_md  # template verb, generated
     assert "proj_verb" in mcp_md  # generated from the real MCP server

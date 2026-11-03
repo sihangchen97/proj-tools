@@ -1471,12 +1471,12 @@ def info(cfg: ProjConfig) -> dict:
     record_types = {}
     for record_type, spec in reg.items():
         rows = db.all(spec)
-        if not rows:
-            continue  # the unified records table always exists; an empty type is skipped
         by_status: dict[str, int] = {}
         for r in rows:
             by_status[r["status"]] = by_status.get(r["status"], 0) + 1
         num = f"{spec.numbered}"  # D9: numbered is always an int
+        # every ENABLED type is listed (count 0 included) — a fresh project
+        # shows what it can track, not just what it already has
         record_types[record_type] = {
             "count": len(rows), "dir": spec.dir, "numbered": num,
             "statuses": by_status,
@@ -1513,6 +1513,8 @@ def info_text(d: dict) -> str:
                      "filesystem; avoid several machines writing it at once)")
     else:
         lines.append("Journal: WAL (local filesystem)")
+    if d["record_types"]:
+        lines.append("Record types (enabled — 0 included; see .proj/lock.yaml):")
     for rt, k in d["record_types"].items():
         lines.append(f"  {rt:<11} {k['count']:<3} record(s)  @ {k['dir']}/  [{k['numbered']}]")
         if k["statuses"]:
