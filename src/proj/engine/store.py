@@ -503,7 +503,10 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     # clone renders byte-identical), or a union-merged section would be in the
     # DB and the log but missing from the md (and a re-sync would drop it).
     template = {sec.name.lower() for sec in spec.sections}
-    for name in sorted(k for k in sections if k not in template):
+    for name in sorted(k for k in sections
+                       if k not in template and not k.endswith("/intro")):
+        # `<section>/intro` keys are a checklist's intro (items_mod renders
+        # it inside its own section) — not standalone sections
         text = (sections[name] or "").strip()
         if text:
             lines += [f"## {name}", "", text, ""]

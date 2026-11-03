@@ -178,6 +178,23 @@ trailer under one
     assert "- [ ] #A01 sub · owner: o" in sec
 
 
+def test_intro_key_not_rendered_as_section(proj):
+    # a checklist\'s intro is stored under a "<section>/intro" key in the
+    # sections JSON — it must render INSIDE its checklist section, never as a
+    # literal "## <section>/intro" header (the non-template-section render
+    # must skip it; 2026-11-03: B-2 once emitted a fake header)
+    row, _ = taskmod.new(proj, "T")
+    p = _file(proj, row["id"])
+    _write_section(p, "Acceptance Criteria", "intro line\n\n- [ ] a")
+    problems, _ = rec.sync(proj)
+    assert problems == []
+    rec.render_all(proj, force=True)
+    text = p.read_text(encoding="utf-8")
+    assert not any("/intro" in ln for ln in text.splitlines()
+                   if ln.startswith("## ")), text
+    assert text.count("intro line") == 1
+
+
 def test_parse_conflict_indent_and_group_heading(proj):
     # each malformed list is checked on its own record (one problem refuses the
     # whole write, so the cases stay independent)
