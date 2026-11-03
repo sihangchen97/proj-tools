@@ -57,12 +57,12 @@ def _repo():
 
 
 def test_docs_match_generated(proj):
-    """docs/CLI.md == templates/PROJ_CLI.md == what docs.py generates now."""
+    """templates/PROJ_*.md == what docs.py generates now (the only home)."""
     repo = _repo()
     cli = docs.cli_reference()
     mcp = docs.mcp_reference()
-    for pair in ((cli, repo / "docs" / "CLI.md", repo / "templates" / "PROJ_CLI.md"),
-                 (mcp, repo / "docs" / "MCP.md", repo / "templates" / "PROJ_MCP.md")):
+    for pair in ((cli, repo / "templates" / "PROJ_CLI.md"),
+                 (mcp, repo / "templates" / "PROJ_MCP.md")):
         text, *paths = pair
         for p in paths:
             got = p.read_text(encoding="utf-8")

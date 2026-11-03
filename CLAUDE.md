@@ -47,7 +47,7 @@ worktree on its own branch**; finished work is merged into `main`. The main chec
    and merge as soon as a topic is green.
 8. **Edit, don't overwrite.** Use small edits, never rewrite a whole existing file (2026-11-02: a
    full-file write wiped an untracked `items.py`).
-9. **Generated files** (`docs/CLI.md`, `docs/MCP.md`, `templates/PROJ_*.md`, `scripts/e2e.sh`) only via
+9. **Generated files** (`templates/PROJ_*.md`, `scripts/e2e.sh`) only via
    `pixi run docs` / `pixi run e2e` — on conflict during rebase, regenerate instead of hand-merging.
 10. **If you broke `main`** (a merged commit is wrong): don't rewrite history; fix forward on a new
     branch, and record what happened in §28.1.
@@ -66,7 +66,7 @@ pixi run e2e-full                 # same scenario, every command as a real `proj
                                   # plus the equivalence check: run the generated e2e.sh and compare its
                                   # `proj ls --json` / `proj item ls --json` with e2e.py's
 pixi run proj --help
-pixi run docs                     # regenerate docs/CLI.md + docs/MCP.md + templates/PROJ_*.md from
+pixi run docs                     # regenerate templates/PROJ_*.md from
                                   # src/proj/docs.py (PLAN §28.1 23:10) — run after any CLI/MCP/docs.py change
 hatch build                       # wheel (profiles/ is force-included as proj/profiles)
 ```
@@ -76,7 +76,7 @@ checks go into the matching chapter (`ch0`…) of `scripts/e2e.py` using `expect
 project use the `proj` fixture in `tests/conftest.py` (inits `default` + `quality` profiles in
 `tmp_path`) — don't hardcode the repo root or `chdir` into it.
 
-`docs/CLI.md`, `docs/MCP.md` and the `templates/PROJ_{CLI,MCP}.md` seed copies are generated
+`templates/PROJ_{CLI,MCP}.md` (the reference docs, bundled in the wheel) are generated
 from `src/proj/docs.py` + the live CLI/MCP definitions — after changing any of
 `src/proj/cli.py` / `src/proj/mcp.py` / `src/proj/docs.py`, run **`pixi run docs`**
 (it re-runs `proj docs` in a throwaway sandbox and copies the result to all four files);
@@ -143,7 +143,7 @@ Layers (`src/proj/`):
   O_APPEND writes; auto-records uncaught exceptions with the traceback).
 - `check.py` (invariants: md↔DB, filename↔id, schema↔template, relation consistency),
   `scaffold.py` (`init`), `hooks.py` (pre-commit → `proj check`), `docs.py`
-  (regenerates `docs/CLI.md` / `docs/MCP.md`).
+  (regenerates `templates/PROJ_CLI.md` / `PROJ_MCP.md`).
 
 Key invariants:
 - Sync conflict ownership: `##` section content → md wins; id/title/status/fields/changelog → DB wins.

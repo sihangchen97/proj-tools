@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""`pixi run docs` (PLAN §28.1 23:10): regenerate the four reference docs from
+"""`pixi run docs` (PLAN §28.1 23:10): regenerate the two reference docs from
 `src/proj/docs.py` — the single source.
 
-Run `proj --root <sandbox> docs` in a throwaway temp project, then copy the two
-generated files to all four destinations (the templates/ seed copies are
-byte-identical to the repo docs/):
-
-    docs/CLI.md              <- sandbox/docs/CLI.md
-    docs/MCP.md              <- sandbox/docs/MCP.md
-    templates/PROJ_CLI.md   <- sandbox/docs/CLI.md   (proj init's seed copy)
-    templates/PROJ_MCP.md   <- sandbox/docs/MCP.md
+Run `proj --root <sandbox> docs` in a throwaway temp project, then copy the
+generated files to their home: `templates/PROJ_{CLI,MCP}.md`, bundled in the
+wheel (a project keeps no `docs/CLI.md` / `docs/MCP.md` of its own).
 """
 from __future__ import annotations
 
@@ -34,10 +29,8 @@ def main() -> None:
             if p.returncode != 0:
                 raise SystemExit(f"proj {' '.join(args)} failed:\n"
                                  f"{p.stdout}\n{p.stderr}")
-        dests = [(sb / "docs" / "CLI.md", REPO / "docs" / "CLI.md"),
-                 (sb / "docs" / "MCP.md", REPO / "docs" / "MCP.md"),
-                 (sb / "docs" / "CLI.md", REPO / "templates" / "PROJ_CLI.md"),
-                 (sb / "docs" / "MCP.md", REPO / "templates" / "PROJ_MCP.md")]
+        dests = [(sb / "templates" / "PROJ_CLI.md", REPO / "templates" / "PROJ_CLI.md"),
+                 (sb / "templates" / "PROJ_MCP.md", REPO / "templates" / "PROJ_MCP.md")]
         # P0-4: the four dests are COMMITTED repo docs — refuse to overwrite
         # them from a missing or empty generation (a silent `proj docs`
         # regression would otherwise destroy the committed text with no error)

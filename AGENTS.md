@@ -23,13 +23,13 @@ pixi run -e dev pytest tests/test_task_plan.py::test_name -q   # single test
 pixi run lint                                  # ruff check src tests
 pixi run e2e                                   # scripts/e2e.py, in-process story; refreshes scripts/e2e.sh
 pixi run e2e-full                              # same story as real `proj` subprocesses + equivalence check
-pixi run docs                                  # regenerate docs/CLI.md + docs/MCP.md + templates/PROJ_*.md
+pixi run docs                                  # regenerate templates/PROJ_*.md (the reference docs)
 hatch build                                    # wheel (profiles/ + templates/ force-included into the wheel)
 ```
 
 - After changing ANY render/template logic: run BOTH `pixi run test` and `pixi run e2e`.
 - After changing `cli.py` / `mcp.py` / `docs.py`: run `pixi run docs` — the four generated files
-  (`docs/CLI.md`, `docs/MCP.md`, `templates/PROJ_CLI.md`, `templates/PROJ_MCP.md`) and
+  (`templates/PROJ_CLI.md`, `templates/PROJ_MCP.md`) and
   `scripts/e2e.sh` are **never hand-edited**; on a rebase conflict, regenerate, don't hand-merge.
 
 ## Architecture (src/proj/)
