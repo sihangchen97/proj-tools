@@ -20,19 +20,6 @@ from proj.core.templates import RecordTypeSpec
 from proj.engine import store as rec
 
 
-def _split_ids(v: str) -> list[str]:
-    return [x.strip() for x in (v or "").split(",") if x.strip()]
-
-
-def _append_id(v: str, new_id: str) -> str:
-    ids = _split_ids(v)
-    if new_id not in ids:
-        ids.append(new_id)
-    return ", ".join(ids)
-
-
-
-
 def _validate_refs(cfg: ProjConfig, record_type: str, spec: RecordTypeSpec,
                    supersede: list[str], related: list[str]) -> None:
     """B1: validate every supersede/related reference before any row is created.

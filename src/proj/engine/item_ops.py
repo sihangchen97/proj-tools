@@ -15,15 +15,6 @@ from proj.engine import items
 from proj.engine import store as rec
 
 
-def _record_section_md(cfg: ProjConfig, spec, row: dict) -> str:
-    """The record's items section as written in its md ('' when the file is absent)."""
-    p = rec.file_path(cfg, spec, row)
-    if not p.is_file():
-        return ""
-    _mk, _u, raw = rec.parse_record(p.read_text(encoding="utf-8"))
-    return raw.get(spec.primary_items.section.lower(), "") or ""
-
-
 def _load_state(db, row: dict, it) -> items.ItemsState:
     state = items.load(db, row["id"], it)
     state.intro = items._intro_of(it, row)

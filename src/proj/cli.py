@@ -26,7 +26,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 
 import typer
@@ -160,18 +159,6 @@ def _cfg(strict: bool = True) -> ProjConfig:
         _fail(str(e))
 
 
-@contextmanager
-def _write_lock(strict: bool = True):
-    """S.2: every write command holds the project write lock (fsio.write_atomic
-    covers the file writes); read commands never take it. No project root → no
-    lock (a failing command has nothing to guard)."""
-    try:
-        cfg = _cfg(strict)
-    except FileNotFoundError:
-        yield
-        return
-    with fsio.project_lock(cfg.root, " ".join(["proj", *sys.argv[1:]])):
-        yield
 
 
 def _fail(msg: str) -> None:

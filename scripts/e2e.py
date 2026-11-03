@@ -93,18 +93,6 @@ def teardown() -> None:
             f"refusing to remove a dir I did not create: {SANDBOX}"
         shutil.rmtree(SANDBOX)
 SUBPROCESS = os.environ.get("PROJ_E2E_SUBPROCESS") == "1"
-RECORDS_DIR = {
-    "task": "docs/tasks", "decision": "docs/decisions", "plan": "docs/plans",
-    "debt": "docs/debts", "incident": "docs/incidents",
-    "experiment": "docs/experiments",
-}
-
-# CLI commands that are install/dev-only (not exercised by the story)
-CLI_EXEMPT: set[str] = {"init"}  # `init --zoo` flag variant only
-# record_types that carry no verbs of their own (changelog is a static group)
-NO_VERB_TYPES: set[str] = set()
-
-
 @dataclass
 class Report:
     checks: int = 0
