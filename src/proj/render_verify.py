@@ -27,22 +27,25 @@ def verify(cfg: ProjConfig) -> list[tuple[str, str, str]]:
     db = dbmod.Db(cfg.db_path)
     try:
         task_rows = db.all(reg["task"]) if "task" in reg else []
-        expected: dict[str, str] = {}
+        # P2-10: a list, not a dict — two records at the same rel path must not
+        # silently drop one (the later clobbered the earlier, skipping its disk check)
+        expected: list[tuple[str, str]] = []
         for spec in reg.values():
             for row in db.all(spec):
                 p = rec.file_path(cfg, spec, row)
                 rel = str(p.relative_to(cfg.root))
-                expected[rel] = rec.render_record(spec, row, db, reg,
-                                                  task_rows=task_rows)
+                expected.append((rel, rec.render_record(spec, row, db, reg,
+                                                        task_rows=task_rows)))
         for view in (render_wip_md(cfg, db, reg),
                      render_changelog_md(cfg, db)):
             if view is None:
                 continue
             rel = str(view.path.relative_to(cfg.root))
-            expected[rel] = view.text
+            expected.append((rel, view.text))
 
         diffs: list[tuple[str, str, str]] = []
-        for rel, want in sorted(expected.items()):
+        expected_rels = {rel for rel, _ in expected}
+        for rel, want in sorted(expected):
             p = cfg.root / rel
             if not p.exists():
                 diffs.append((rel, "missing", "rendered but no file on disk"))
@@ -53,7 +56,7 @@ def verify(cfg: ProjConfig) -> list[tuple[str, str, str]]:
                 diffs.append((rel, "differs",
                               f"disk != full render (first difference at line {first})"))
         for p in sorted((cfg.root / "WIP.md", cfg.root / "CHANGELOG.md")):
-            if p.exists() and str(p.relative_to(cfg.root)) not in expected:
+            if p.exists() and str(p.relative_to(cfg.root)) not in expected_rels:
                 diffs.append((str(p.relative_to(cfg.root)),
                               "stale-disk", "file on disk, no render produces it"))
         return diffs

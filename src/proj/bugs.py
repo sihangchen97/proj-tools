@@ -85,7 +85,9 @@ def list_bugs(root: str | Path | None = None) -> list[dict]:
             out.append(cur)
         elif cur is None:
             continue
-        elif line.startswith("cmd: "):
+        elif not cur["body"] and line.startswith("cmd: "):
+            # P2-8: only the FIRST line of a body may be the cmd — a body line
+            # that merely starts with "cmd: " must stay body text
             cur["cmd"] = line[len("cmd: "):]
         else:
             cur["body"].append(line[2:] if line.startswith("  ") else line)

@@ -158,7 +158,8 @@ def parse_template(text: str) -> RecordTypeSpec:
     if "dir" not in data:
         raise ValueError(f"template {data['record_type']!r}: dir is required")
     numbered = data.get("numbered", 4)
-    if not isinstance(numbered, int):
+    # P2-7: bool is a subclass of int — `numbered: true` used to pass
+    if not isinstance(numbered, int) or isinstance(numbered, bool):
         raise ValueError(
             f"record_type {data['record_type']!r}: numbered must be an int (id-suffix width)")
     # status entries: plain string, or {name: X, emoji: "🟢"} (emoji optional);

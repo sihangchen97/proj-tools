@@ -114,6 +114,11 @@ def run_compact(cfg: ProjConfig) -> tuple[list[str], list[str]]:
 
     specs = rec.load_registry(cfg.root)
     with fsio.project_lock(cfg.root, "proj compact"):
+        # P2-3: re-run the git-clean check INSIDE the lock — the one before the
+        # lock was a TOCTOU (another writer could commit between the two)
+        err = _precheck(cfg)
+        if err:
+            return [err], notes
         with rec.open_db(cfg) as db:
             # the snapshots sort at the end of the log: the original max `at`
             snaps = rp.snapshot_events(db, at=max(e["at"] for e in orig),
