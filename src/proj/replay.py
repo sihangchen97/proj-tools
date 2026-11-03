@@ -419,11 +419,29 @@ def save_meta(db, meta: dict) -> None:
     db.conn.commit()
 
 
+def _git_head(log_path: Path) -> str:
+    """The git HEAD of the project the event log belongs to ('' when not a
+    git checkout): the project root is the log's grandparent (.proj/..)."""
+    import subprocess
+    out = subprocess.run(
+        ["git", "-C", str(log_path.parent.parent), "rev-parse", "HEAD"],
+        check=False, capture_output=True, text=True)
+    if out.returncode != 0:
+        return ""
+    return out.stdout.strip()
+
+
 def commit_meta(db, path) -> dict:
-    """Recompute ev:size / ev:prefix_hash / ev:last_key from the current
-    event file and write them (the caller holds the write lock; C3.2: local
-    appends update the meta in the same transaction so they never trigger a
-    replay). ev:uuids is untouched."""
+    """Recompute ev:size / ev:prefix_hash / ev:last_key / ev:git_head from the
+    current event file and write them (the caller holds the write lock; C3.2:
+    local appends update the meta in the same transaction so they never
+    trigger a replay). ev:uuids is untouched. ev:git_head pins the git HEAD
+    the cache was built at: once HEAD moves (a pull/merge/rebase landed
+    external events) the next command takes the full-rebuild path — a union
+    merged / rebased log can interleave new lines with the same prefix bytes
+    the incremental check cannot see, and only a full replay from the empty
+    state lands the renumbering deterministically on every side (design §10:
+    concurrent writers to one record must converge)."""
     p = Path(path)
     raw = p.read_bytes() if p.is_file() else b""
     meta = load_meta(db)
@@ -433,6 +451,9 @@ def commit_meta(db, path) -> dict:
     if lines:
         evs = [ev.from_line(ln.decode("utf-8")) for ln in lines]
         meta["ev:last_key"] = max(ev.sort_key(e) for e in evs)
+    head = _git_head(p)
+    if head:
+        meta["ev:git_head"] = head
     save_meta(db, meta)
     return meta
 
@@ -508,6 +529,8 @@ def plan_incremental(path, meta: dict):
     - any new line unparseable           -> full
     - any new line's sort key <= ev:last_key (an earlier line was inserted,
       e.g. by a merge) -> full
+    - git HEAD moved since the cache was built (a pull/merge/rebase landed
+      external events) -> full
     - otherwise (a plain append, all later) -> ("append", the new lines)
     """
     p = Path(path)
@@ -515,6 +538,17 @@ def plan_incremental(path, meta: dict):
     seen = int(meta.get("ev:size", 0) or 0)
     if size == seen:
         return ("noop", None)
+    # a pull/merge/rebase moved HEAD since the cache was built: a union-merged
+    # log can interleave new lines with the same prefix bytes the checks below
+    # cannot see — only a full replay from the empty state lands the renumbering
+    # deterministically on every side (design §10: concurrent writers to one
+    # record must converge). (C4 / C7, 2026-11-03)
+    head = meta.get("ev:git_head")
+    if head:
+        cur = _git_head(p)
+        if cur and cur != head:
+            return ("full", "git HEAD moved since the cache was built "
+                            "(a pull/merge/rebase landed external events)")
     if size < seen:
         return ("full", "the event file shrank (truncation or rewrite)")
     raw = p.read_bytes()

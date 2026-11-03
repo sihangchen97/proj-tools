@@ -28,6 +28,12 @@ WAIT_C2C4 = pytest.mark.xfail(
     strict=True, reason="needs C2 (event emitter) + C4 (replay/cache rebuild)")
 WAIT_C5 = pytest.mark.xfail(
     strict=True, reason="needs C5 (refuse write commands mid-merge/rebase)")
+WAIT_RENAME = pytest.mark.xfail(
+    strict=True,
+    reason="rename/rename on a same-field LWW: needs a git strategy that "
+           "resolves it WITHOUT disabling rename detection globally "
+           "(merge.renames=false, tried 2026-11-03, breaks a disjoint-field "
+           "rebase where the edit must follow the title rename; B-4)")
 
 @pytest.fixture(scope="module")
 def proj_binary() -> str:
@@ -82,10 +88,10 @@ def test_disjoint_tasks_merge_and_rebuild(tmp_path, proj_binary):
     assert sorted(_task_titles(a)) == sorted(_task_titles(b))
     assert {tid_a, tid_b} <= set(_task_ids(a))
 
-@WAIT_C2C4
 def test_disjoint_sections_merge(tmp_path, proj_binary):
     """§10.2: two authors append different ## sections to the same record's
-    md → the union merge keeps both on each side (C2: both became events)."""
+    md → the union merge keeps both on each side (C2: both became events).
+    B-2 renders the non-template sections too, so both sides agree."""
     t = ch.build_two_clones(tmp_path)
     a, b = t.a, t.b
     did = _new_task_id(a, "决定")
@@ -101,15 +107,28 @@ def test_disjoint_sections_merge(tmp_path, proj_binary):
     t.push(a)
     t.rebase(b)
     assert not t.merge_conflict()
+    # two-side reconcile: B publishes its merged log, A picks it up — both
+    # land on the same event log (B-1: git HEAD moved → full replay from the
+    # empty state on both sides)
+    t.push(b)
+    t.pull(a)
+    assert not t.merge_conflict()
     md_b = next(b.path.rglob(f"{did}-*.md")).read_text(encoding="utf-8")
     md_a = next(a.path.rglob(f"{did}-*.md")).read_text(encoding="utf-8")
     assert "A 的备选" in md_b and "B 的后果" in md_b
     assert md_a == md_b
 
-@WAIT_C2C4
+@WAIT_RENAME
 def test_same_field_lww_keeps_later_and_reports(tmp_path, proj_binary):
     """§10.3: both change the same task title → the merge keeps exactly one
-    value (LWW, the later writer) and surfaces the overwrite (G5)."""
+    value (LWW, the later writer) and surfaces the overwrite (G5).
+    Open design gap (B-4, 2026-11-03): both sides rename the SAME file to
+    different slugs — a git rename/rename conflict that fires BEFORE the
+    keep-ours driver runs. The replay-level LWW (note_overwrite) is in place;
+    `merge.renames=false` was tried and reverted (it breaks a disjoint-field
+    rebase: the other side's edit must FOLLOW the title rename via rename
+    detection). Needs a merge strategy for rename/rename that does not turn
+    off rename detection globally."""
     t = ch.build_two_clones(tmp_path)
     a, b = t.a, t.b
     tid = _new_task_id(a, "原")
@@ -245,7 +264,6 @@ def test_disjoint_fields_both_survive(tmp_path):
 
 # ---- §10.5 item number collision -------------------------------------------
 
-@WAIT_C2C4
 def test_item_number_collision_renumbers(tmp_path):
     """§10.5: both add a checklist item to the same group (both propose
     #A03) → one is #A03, the other #A04; both sides agree."""
@@ -268,6 +286,13 @@ def test_item_number_collision_renumbers(tmp_path):
     b.commit("B item")
     t.push(a)
     t.rebase(b)
+    assert not t.merge_conflict()
+    # two-side reconcile: B publishes its merged log, A picks it up — both
+    # land on the same event log, so the full-replay renumbering (B-1: git
+    # HEAD moved → rebuild from the empty state) lands identically on both
+    # (design §10: the DB is a function of the event log)
+    t.push(b)
+    t.pull(a)
     assert not t.merge_conflict()
     listing = b.run("item", "ls", tid)
     assert "A 新" in listing and "B 新" in listing
@@ -302,7 +327,6 @@ def test_closed_plan_plus_new_item_reports_gate_violation(tmp_path):
 
 # ---- §10.7 delete (tombstone) vs modify ------------------------------------
 
-@WAIT_C2C4
 def test_tombstone_vs_modify_replays_in_order(tmp_path):
     """§10.7: A deletes an item (tombstone) while B modifies the same one →
     replayed in event order: the surviving state is 'deleted' either way, and
@@ -323,6 +347,12 @@ def test_tombstone_vs_modify_replays_in_order(tmp_path):
     b.commit("B modify")
     t.push(a)
     t.rebase(b)
+    assert not t.merge_conflict()
+    # two-side reconcile: B publishes its merged log, A picks it up — the
+    # delete + the modify replay in total sort order from the empty state
+    # (B-1), so both sides land on the same tombstoned row
+    t.push(b)
+    t.pull(a)
     assert not t.merge_conflict()
     listing = b.run("item", "ls", tid)
     assert "改过的文本" not in listing.split("B 修改", 1)[0] or "会变的项" in listing

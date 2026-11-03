@@ -497,6 +497,16 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         else:
             lines.append(sections.get(sec.name.lower(), "").strip())
         lines.append("")
+    # non-template sections the user appended (git collab, design §10.2): the
+    # replay stores every section.set in the sections JSON, but the template
+    # only names a fixed set — render the rest too (name-sorted, so every
+    # clone renders byte-identical), or a union-merged section would be in the
+    # DB and the log but missing from the md (and a re-sync would drop it).
+    template = {sec.name.lower() for sec in spec.sections}
+    for name in sorted(k for k in sections if k not in template):
+        text = (sections[name] or "").strip()
+        if text:
+            lines += [f"## {name}", "", text, ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -521,6 +531,18 @@ def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db,
         if s.kind == "text" and s.name.lower() not in item_sec and \
                 normalize(raw.get(s.name.lower(), "")) != stored.get(s.name.lower(), ""):
             return True
+    # non-template sections the user appended (git collab, design §10.2):
+    # they live in the sections JSON too — a value in md that differs from
+    # the DB (or a section the other side stored that md does not carry)
+    # is drift as well
+    template = {s.name.lower() for s in spec.sections if s.kind == "text"} \
+        | item_sec
+    for name in set(raw) | set(stored):
+        if name in template or name.endswith("/intro"):
+            continue
+        if normalize(raw.get(name, "")) != normalize(stored.get(name, "")):
+            return True
+
     return False
 
 
@@ -916,6 +938,10 @@ def prune_orphan_md(cfg: ProjConfig) -> list[Path]:
             if not d.is_dir():
                 continue
             live: dict[str, str] = {r["id"]: (r.get("uuid") or "") for r in db.all(spec)}
+            # the canonical filename of every live record (id + its CURRENT
+            # title's slug) — the only name that survives a merge
+            canonical = {r["id"]: (r["id"] + "-" + slugify(r["title"]) + ".md")
+                         for r in db.all(spec)}
             for p in sorted(d.glob("*.md")):
                 if p.name.startswith("_"):
                     continue
@@ -924,7 +950,15 @@ def prune_orphan_md(cfg: ProjConfig) -> list[Path]:
                     continue  # not a tool-generated file of this type — leave it
                 mid, m_uuid = m.group(2).upper(), ((m.group(3) or "").strip())
                 if mid in live and m_uuid in ("", live[mid]):
-                    continue  # belongs to a live record (uuid matches, or none to check)
+                    # belongs to a live record — but a stale-slug file (a git
+                    # collab LWW title change: the id+uuid are stable, the name
+                    # is not) is orphaned once the canonical file exists (a
+                    # rename/rename merge keeps both; keep the LWW one only)
+                    if p.name != canonical[mid] and \
+                            (d / canonical[mid]).is_file():
+                        p.unlink()
+                        deleted.append(p)
+                    continue
                 p.unlink()
                 deleted.append(p)
     finally:
@@ -1185,6 +1219,20 @@ def _ingest_md(cfg: ProjConfig, spec: RecordTypeSpec, db: dbmod.Db, p: Path,
             notes.append(f"{p.name}: status drift in md (DB wins: {row['status']!r})")
         sections = {s.name.lower(): normalize(raw_sections.get(s.name.lower(), ""))
                     for s in spec.sections if s.kind == "text"}
+        # non-template sections the user appended (git collab, design §10.2):
+        # md wins like the template text sections ("" = a hand deletion);
+        # an md-absent name keeps the stored value — another clone's section
+        # the replay just stored. render_record shows them back, so the
+        # log -> md round-trip is lossless.
+        template = {s.name.lower() for s in spec.sections if s.kind == "text"}
+        for name, val in raw_sections.items():
+            if name in template:
+                continue
+            sections[name] = normalize(val)
+        stored_sections = json.loads(row.get("sections") or "{}")
+        for name, val in stored_sections.items():
+            if name not in sections and not name.endswith("/intro"):
+                sections[name] = val
         # the Tasks block is tool-owned (A2): generated from the DB, never
         # stored — hand lines in it are dropped on the next re-render (the
         # D11 gate still refuses foreign task links during the sync itself)
