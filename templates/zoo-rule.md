@@ -1,8 +1,10 @@
 # Rule: this project is governed by the `proj` tool
 
-The project root holds a `.proj.sqlite` (the single source of truth) plus
-Markdown projections. Never edit the DB by hand and never create/move record
-files manually — use the `proj` CLI (or the `proj_*` MCP tools if available).
+The project root holds a `.proj/` directory: `events.jsonl` (the committed
+single source of truth) plus `cache.sqlite` (a local, uncommitted cache
+rebuilt from the log) and Markdown projections. Never edit the DB by hand and
+never create/move record files manually — use the `proj` CLI (or the
+`proj_*` MCP tools if available).
 
 ## How records work
 

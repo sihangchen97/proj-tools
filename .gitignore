@@ -27,11 +27,11 @@ config.json
 # 注意：项目级 .env 与 .env.example 默认提交（D6：随项目提交，clone 即得同一
 # 渲染默认；本地/CI 用 OS env 覆盖）——勿在此排除
 
-# 数据库文件（DB 在 <project>/.proj.sqlite，默认提交；其余 *.sqlite 兜底防误提交）
+# 数据库文件（proj 的 DB 是 <project>/.proj/cache.sqlite，本地缓存，从
+# events.jsonl 重建，不提交；*.sqlite 兜底防误提交）
 *.sqlite
 *.sqlite3
 *.db
-!.proj.sqlite
 
 # MCP server 本地配置（含路径/密钥，勿提交）
 mcp_settings.json

@@ -18,8 +18,8 @@ scaffold:
         https://thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions.
         Records are managed by the `proj` tool
         (https://github.com/sihangchen97/proj-tools), stored as Markdown files
-        under `docs/decisions/` with SQLite as the source of truth
-        (`.proj.sqlite`).
+        under `docs/decisions/` with `.proj/events.jsonl` as the committed
+        source of truth (SQLite is a local cache rebuilt from the log).
       consequences: >-
         See Michael Nygard's article, linked above. Every significant decision
         gets a record before production code; views regenerate via `proj update`.

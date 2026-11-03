@@ -97,11 +97,12 @@ def init(cfg: ProjConfig, profiles: list[str], zoo: bool = False) -> list[str]:
     # an empty PROJ_LOGS line documents the available config var
     add(".env", "# project config defaults (D6): OS env > .env > code default\n"
                 "# PROJ_LOGS=\n")
-    # S.10: project data lives in .proj/ (committed: cache.sqlite, lock.yaml,
-    # events.jsonl, README.md, .gitignore; never committed: bugs.log,
-    # write.lock, cache.sqlite-{wal,shm}). The .proj/ dir + its own .gitignore
-    # are created here (add() is idempotent); cache.sqlite is created by the
-    # open_db below and lock.yaml by write_lock (both mkdir .proj/ themselves).
+    # S.10: project data lives in .proj/ (committed: events.jsonl, lock.yaml,
+    # README.md, .gitignore; never committed: bugs.log, write.lock,
+    # cache.sqlite{,-wal,-shm} — C4: the DB is a local rebuild of the log).
+    # The .proj/ dir + its own .gitignore are created here (add() is
+    # idempotent); cache.sqlite is created by the open_db below and lock.yaml
+    # by write_lock (both mkdir .proj/ themselves).
     add(".proj/README.md",
         "# .proj - proj project data (do not delete)\n\n"
         "- `cache.sqlite`: the database (a local cache rebuilt from `events.jsonl`\n"
