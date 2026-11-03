@@ -21,8 +21,8 @@ from proj.engine.record import record_for
 _REPLAY_SELECT: dict[str, str] = {
     "records": ('SELECT id, type, title, status, summary, "commit", created, '
                 'sections FROM records ORDER BY id'),
-    "record_changelog": ("SELECT record_id, date, category, message, status, actor "
-                         "FROM record_changelog ORDER BY record_id, date"),
+    "record_changelog": ("SELECT record_id, date, category, message, status, actor, id "
+                         "FROM record_changelog ORDER BY record_id, date, id"),
     "items": "SELECT * FROM items ORDER BY record_id, no",
     "relations": "SELECT * FROM relations ORDER BY source, target, kind",
     "wip_entries": "SELECT record_id, pos, source FROM wip_entries "

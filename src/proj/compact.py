@@ -59,8 +59,8 @@ def _precheck(cfg: ProjConfig) -> str | None:
 _SELECT: dict[str, str] = {
     "records": ("SELECT id, type, title, status, summary, \"commit\", created, "
                 "sections FROM records ORDER BY id"),
-    "record_changelog": ("SELECT record_id, date, category, message, status, actor "
-                          "FROM record_changelog ORDER BY record_id, date"),
+    "record_changelog": ("SELECT record_id, date, category, message, status, actor, id "
+                          "FROM record_changelog ORDER BY record_id, date, id"),
     "items": ("SELECT record_id, no, pos, text, state, note, owner, due, "
               "\"commit\", trailer, created, closed_at, deleted, section, task, "
               "uuid FROM items ORDER BY record_id, no"),

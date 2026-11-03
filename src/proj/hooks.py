@@ -100,6 +100,11 @@ def git_in_progress(cfg: ProjConfig) -> str | None:
     out = subprocess.run(["git", "-C", str(cfg.root), "diff", "--name-only",
                           "--diff-filter=U"],
                          check=False, capture_output=True, text=True)
+    if out.returncode != 0:
+        # P1-10: a failed git (broken .git, missing binary) must not read as
+        # "idle" — refusing the write is the safe direction
+        return (f"git diff failed (rc {out.returncode}) — the repository "
+                "seems broken; fix it, then retry")
     if out.stdout.strip():
         return ("unmerged paths exist — resolve the conflicts "
                 "(git add / git merge --abort), then retry")
@@ -148,7 +153,11 @@ def install(cfg: ProjConfig) -> str:
         # user had already staged
         subprocess.run(["git", "-C", str(cfg.root), "add", ".gitattributes"],
                        check=True, capture_output=True)
+        # P1-9: --no-verify — a pre-commit hook ALREADY installed by an earlier
+        # `hooks install` would run `proj check` on THIS commit; a failing check
+        # then aborted the install mid-way (dirty tree, half-installed hooks)
         subprocess.run(["git", "-C", str(cfg.root), "commit", "-q", "--only",
+                        "--no-verify",
                         "-m", "proj hooks install: .gitattributes (merge rules)",
                         ".gitattributes"],
                        check=True, capture_output=True)

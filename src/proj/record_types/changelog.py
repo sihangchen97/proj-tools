@@ -42,7 +42,8 @@ def version_bump(cfg: ProjConfig, version: str | None, bump_level: str | None):
 
 def release_notes(cfg: ProjConfig, version: str) -> str:
     cl = load_changelog_spec(cfg.root)
-    key = version.lstrip("v")
+    # P2-6: removeprefix, not lstrip — lstrip strips every leading v
+    key = version.removeprefix("v")
     with rec.open_db(cfg) as db:  # R3: read-only
         for candidate in (version, key, "v" + key):
             rows = db.cl_entries(candidate)
