@@ -22,6 +22,7 @@ from pathlib import Path
 
 from proj.core import fsio
 from proj.core.config import ProjConfig
+from proj.core.db import ProjError
 
 #: the .gitattributes the driver + union merge rely on (C5); the event log
 #: path must match events.py (.proj/events.jsonl)
@@ -109,6 +110,105 @@ def git_in_progress(cfg: ProjConfig) -> str | None:
         return ("unmerged paths exist — resolve the conflicts "
                 "(git add / git merge --abort), then retry")
     return None
+
+
+def merge_resolve(cfg: ProjConfig) -> str:
+    """B-4 (2026-11-03): resolve a merge that was ABORTED on a rename/rename
+    conflict of record md files — the case the proj-render driver never sees
+    (git halts before any merge driver runs). Both sides changed the SAME
+    record's title → each sync renamed `<ID>-<old>.md` to a different slug →
+    `CONFLICT (rename/rename)`.
+
+    The unmerged index (`git ls-files -u`) says exactly who is who: stage 1 =
+    base (the original name), stage 2 = ours, stage 3 = theirs. Grouped by
+    the record id the filename encodes, ≥ 2 unmerged names of the SAME id is
+    a rename/rename conflict: the STAGE-2 (ours) name is kept — in the
+    everyday `git pull` flow ours is the later writer (LWW) — the stage-3
+    name and the stage-1 original are removed, the survivor staged, the merge
+    committed. (The caller then runs `sync --rerender --quiet`, exactly like
+    the post-merge hook.) Anything that is not a same-id record conflict is
+    left for the user — the command reports it and refuses to commit."""
+    from proj.core.templates import load_registry
+    from proj.engine.store import _id_from_name
+
+    git_dir = cfg.root / ".git"
+    if not (git_dir / "MERGE_HEAD").exists():
+        raise ProjError("no merge in progress — nothing to resolve")
+    # `-z`: NUL-separated records, the path RAW (no C-quoting of non-ASCII)
+    out = subprocess.run(["git", "-C", str(cfg.root), "ls-files", "-u", "-z"],
+                         check=False, capture_output=True)
+    if out.returncode != 0:
+        raise ProjError(f"git ls-files failed (rc {out.returncode}) — the "
+                        "repository seems broken; fix it, then retry")
+    # each record: `<mode> <sha> <stage>\t<path>\0`; the stage (1 = base,
+    # 2 = ours, 3 = theirs) is the 3rd whitespace token
+    entries: dict[tuple[int, str], None] = {}
+    for rec in out.stdout.split(b"\0"):
+        if not rec:
+            continue
+        meta, sep, path = rec.partition(b"\t")
+        if not sep:
+            continue  # not `<mode> <sha> <stage>\t<path>` — nothing to act on
+        tok = meta.split()
+        if len(tok) < 3:
+            continue
+        entries.setdefault((int(tok[2]), path.decode("utf-8", "replace")), None)
+    unmerged = sorted({p for st, p in entries if st in (1, 2, 3)})
+    if not unmerged:
+        raise ProjError("no unmerged paths — the merge is not stuck on "
+                        "conflicts (nothing to resolve)")
+    reg = load_registry(cfg.root)
+    # group the .md paths by the record id their NAME encodes (the marker
+    # uuid is the real identity, F1 — the id prefix is enough to group)
+    groups: dict[str, set[str]] = {}
+    for name in unmerged:
+        spec = next((s for s in reg.values()
+                     if name.endswith(".md") and _id_from_name(Path(name), s)),
+                    None)
+        if spec is not None:
+            groups.setdefault(_id_from_name(Path(name), spec), set()).add(name)
+    # a rename/rename conflict = ≥ 2 unmerged names of the SAME id, one of
+    # which is the OURS (stage-2) name. Everything else — a non-record path,
+    # a single-name group, a same-id group with no ours side — is NOT resolved
+    # here: it would leave the merge un-committable (git commit refuses while
+    # unmerged paths remain), so we refuse instead of half-resolving.
+    conflicts: dict[str, set[str]] = {}
+    for mid, names in groups.items():
+        if len(names) >= 2 and any(n in names for st, n in entries if st == 2):
+            conflicts[mid] = names
+    in_conflict: set[str] = (set().union(*conflicts.values())
+                             if conflicts else set())
+    unhandled = [n for n in unmerged if n not in in_conflict]
+    if not conflicts:
+        raise ProjError(
+            "no record rename/rename conflict among the unmerged paths — "
+            f"resolve manually (git add / git rm): {', '.join(unmerged)}")
+    if unhandled:
+        raise ProjError(
+            "the unmerged paths mix record rename/rename conflicts with "
+            "something this command will not touch — resolve those manually "
+            f"(git add / git rm): {', '.join(unhandled)}")
+    kept: list[str] = []
+    for names in sorted(conflicts.values()):
+        # the STAGE-2 (ours) name is the LWW survivor; the stage-3 name and
+        # the stage-1 original are dropped (F1 keeps exactly ours' canonical
+        # file once the merge is committed)
+        survivor = next(n for st, n in entries if n in names and st == 2)
+        kept.append(survivor)
+        _git_run(cfg, ["add", "--", survivor])
+        for other in sorted(names - {survivor}):
+            _git_run(cfg, ["rm", "-q", "-f", "--", other])
+    _git_run(cfg, ["commit", "-m", "merge: proj merge resolve (B-4: "
+               "rename/rename conflicts of record files, keep the LWW name)"])
+    return "merge resolved: kept " + ", ".join(kept)
+
+
+def _git_run(cfg: ProjConfig, args: list[str]) -> None:
+    out = subprocess.run(["git", "-C", str(cfg.root), *args],
+                         check=False, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise ProjError(f"git {' '.join(args)} failed: "
+                        f"{(out.stderr or out.stdout).strip()}")
 
 
 def _find_proj(root: Path) -> str:

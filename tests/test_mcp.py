@@ -229,7 +229,10 @@ def test_cli_command_coverage(proj):
     # explicit exceptions: install/dev-only (no MCP tool by design)
     # `open`: CLI-only (returns the md path for an editor/agent to read — an MCP
     # client already has file access, so there is no MCP equivalent; A5/§9.2).
-    EXCEPTIONS = {"docs", "open", "hooks install", "init --zoo"}
+    # `merge resolve` (B-4): a git-index op on a stuck merge (ls-files /
+    # git rm / git commit) — like `hooks install`, no MCP equivalent
+    # (MCP tools drive the DB/records; this one drives git itself).
+    EXCEPTIONS = {"docs", "open", "hooks install", "init --zoo", "merge resolve"}
     # A13 (§19.3): `bug` is one capability → proj_bug (its `ls` shares it)
 
     def is_group(c):

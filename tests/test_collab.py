@@ -28,12 +28,8 @@ WAIT_C2C4 = pytest.mark.xfail(
     strict=True, reason="needs C2 (event emitter) + C4 (replay/cache rebuild)")
 WAIT_C5 = pytest.mark.xfail(
     strict=True, reason="needs C5 (refuse write commands mid-merge/rebase)")
-WAIT_RENAME = pytest.mark.xfail(
-    strict=True,
-    reason="rename/rename on a same-field LWW: needs a git strategy that "
-           "resolves it WITHOUT disabling rename detection globally "
-           "(merge.renames=false, tried 2026-11-03, breaks a disjoint-field "
-           "rebase where the edit must follow the title rename; B-4)")
+# B-4 (2026-11-03): the rename/rename same-field LWW is resolved by
+# `proj merge resolve` (the old WAIT_RENAME xfail is gone).
 
 @pytest.fixture(scope="module")
 def proj_binary() -> str:
@@ -118,17 +114,15 @@ def test_disjoint_sections_merge(tmp_path, proj_binary):
     assert "A 的备选" in md_b and "B 的后果" in md_b
     assert md_a == md_b
 
-@WAIT_RENAME
 def test_same_field_lww_keeps_later_and_reports(tmp_path, proj_binary):
     """§10.3: both change the same task title → the merge keeps exactly one
     value (LWW, the later writer) and surfaces the overwrite (G5).
-    Open design gap (B-4, 2026-11-03): both sides rename the SAME file to
-    different slugs — a git rename/rename conflict that fires BEFORE the
-    keep-ours driver runs. The replay-level LWW (note_overwrite) is in place;
-    `merge.renames=false` was tried and reverted (it breaks a disjoint-field
-    rebase: the other side's edit must FOLLOW the title rename via rename
-    detection). Needs a merge strategy for rename/rename that does not turn
-    off rename detection globally."""
+    B-4 (2026-11-03, resolved): both sides rename the SAME file to different
+    slugs — a git rename/rename conflict that fires BEFORE the keep-ours
+    driver runs, so the everyday pull (a merge) halts. `proj merge resolve`
+    handles exactly this deterministic shape: it keeps the LWW worktree name,
+    drops the other side's name and the original unmerged path, commits the
+    merge and re-renders from the merged log."""
     t = ch.build_two_clones(tmp_path)
     a, b = t.a, t.b
     tid = _new_task_id(a, "原")
@@ -142,8 +136,16 @@ def test_same_field_lww_keeps_later_and_reports(tmp_path, proj_binary):
         c.run("sync")
         c.commit(title)
     t.push(a)
-    t.rebase(b)
+    # the everyday pull (a merge, not a rebase) halts on rename/rename
+    with pytest.raises(RuntimeError, match="rename/rename"):
+        t.pull(b)
+    assert t.merge_conflict()
+    out = b.run("merge", "resolve")
+    assert "merge resolved" in out and "标题-b" in out
     assert not t.merge_conflict()
+    # only the LWW name survives (F1 prunes the other side's + the original)
+    names = sorted(p.name for p in b.path.rglob(f"{tid}-*.md"))
+    assert names == [f"{tid}-标题-b.md"], names
     md_b = next(b.path.rglob(f"{tid}-*.md")).read_text(encoding="utf-8")
     assert ("标题 A" in md_b) ^ ("标题 B" in md_b)  # exactly one wins
 

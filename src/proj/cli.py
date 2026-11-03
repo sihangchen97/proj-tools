@@ -127,6 +127,8 @@ app.add_typer(cl_app, name="changelog")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(item_app, name="item")
 app.add_typer(wip_app, name="wip")
+merge_app = typer.Typer(add_completion=False, help="Git merge conflicts.")
+app.add_typer(merge_app, name="merge")
 
 @app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context,
@@ -626,6 +628,41 @@ def check():
             typer.echo(f"  {p}", err=True)
         raise typer.Exit(1)
     typer.echo("OK")
+
+
+@merge_app.command("resolve")
+def merge_resolve_cmd():
+    """Resolve a merge aborted on a rename/rename conflict of record md files
+    (B-4): both sides changed the same record's title → two slugs → git halts
+    before the proj-render driver runs. Keeps the LWW name, drops the rest,
+    commits the merge, then re-renders from the merged log."""
+    from proj.hooks import merge_resolve
+    cfg = _cfg()
+    try:
+        out = merge_resolve(cfg)
+    except ValueError as e:
+        _fail(str(e))
+    typer.echo(out)
+    # post-merge cleanup, exactly like the post-merge hook (no ingest: the md
+    # is a projection of the merged log)
+    old = os.environ.get("PROJ_GIT_HOOK")
+    os.environ["PROJ_GIT_HOOK"] = "1"
+    try:
+        written = rec.render_all(cfg, force=True)
+        pruned = rec.prune_orphan_md(cfg)
+    finally:
+        os.environ.pop("PROJ_GIT_HOOK", None)
+        if old is not None:
+            os.environ["PROJ_GIT_HOOK"] = old
+    for line in pruned:
+        typer.echo(f"deleted {line.name} (stale rename/rename survivor — "
+                   "commit this removal)")
+    typer.echo(f"OK — {len(written)} file(s) re-rendered")
+    for line in _replay_notices(cfg):
+        typer.echo(f"note: {line}")
+    rem = _uncommitted_rerender_reminder(cfg)
+    if rem:
+        typer.echo(f"note: {rem}")
 
 
 @app.command()

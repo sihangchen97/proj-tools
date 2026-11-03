@@ -264,6 +264,12 @@ proj wip ls [--owner <OWNER>]
 - 每条含状态 + 标题，清单项直接列在条目下（含分组）：在 WIP.md 里直接勾清单 =
   改记录，下次 `proj sync` 写回 DB（记录 md 也改了就冲突，提示二选一）。
 
+## merge
+
+```
+proj merge resolve
+```
+
 ## 常用工作流
 
 ```
