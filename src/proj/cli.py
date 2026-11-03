@@ -977,12 +977,14 @@ def hooks_install_cmd():
 def bug(text: str | None = typer.Argument(None,
             help="report text; '-' reads from stdin; pass 'ls' to list reports"),
         cmd: str | None = typer.Option(None, "--cmd", help="the command being run"),
-        as_json: bool = typer.Option(False, "--json", help="JSON output for 'ls'"),
-        root: Path | None = typer.Option(None, "--root", help="project root")):
+        as_json: bool = typer.Option(False, "--json", help="JSON output for ls")):
     """Record a bug in the proj tool itself -> .proj/bugs.log (B2); `proj bug ls` lists.
 
     The first argument is interpreted as the subcommand name `ls` (a group's
-    positional would otherwise steal it) — `proj bug ls` / `proj bug ls --json`."""
+    positional would otherwise steal it) — `proj bug ls` / `proj bug ls --json`.
+    P1-4: the root comes from the GLOBAL --root (_ROOT) — a local --root used to
+    shadow it, so `proj --root /p bug …` wrote to the cwd instead of /p."""
+    root = _ROOT["root"]
     if text is None or text == "ls":
         recs = bugs.list_bugs(root)
         if as_json:
@@ -1011,8 +1013,10 @@ def main():
         app()
     except SystemExit:
         raise  # typer.Exit (normal errors, clean output) — not a bug
-    except (ValueError, sqlite3.Error):
-        raise typer.Exit(1) from sys.exc_info()[1]  # normal error — no auto-record
+    except (ValueError, sqlite3.Error) as e:
+        # P1-13: a silent exit code gave no message and no traceback
+        typer.secho(f"error: {e!r}", fg="red", err=True)
+        raise typer.Exit(1) from e  # normal error — no auto-record
     except Exception as e:
         prog = os.path.basename(sys.argv[0]) if sys.argv else "proj"
         path = bugs.auto_record(e, "cli", cmd=" ".join([prog, *sys.argv[1:]]),

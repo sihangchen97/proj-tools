@@ -30,7 +30,7 @@ proj check
 proj compact
 proj info [--json]
 proj docs
-proj bug [<TEXT>] [--cmd <CMD>] [--json] [--root <ROOT>]
+proj bug [<TEXT>] [--cmd <CMD>] [--json]
 ```
 
 - **DB 是唯一事实源**；md 是给人看/手写的投影。`sync` 单向 md→DB，`render` 单向 DB→md。

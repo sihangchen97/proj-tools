@@ -335,9 +335,12 @@ def wip_ls(cfg, owner: str | None = None) -> list[dict]:
                  "title": row["title"], "progress": _progress(row, spec, db),
                  "source": entry["source"], "owner_items": []}
             if owner is not None and spec.wip_items is not None:
-                mine = [i for i in items_mod.load(db, row["id"], spec).live()
+                # P1-2: load the WIP checklist by its own spec — passing the
+                # RecordTypeSpec made items.load resolve to the PRIMARY checklist,
+                # so on a record with a WIP checklist the wrong list was read
+                mine = [i for i in items_mod.load(db, row["id"], spec.wip_items).live()
                         if not i.is_group and i.owner == owner
-                        and i.state not in closed_states(spec)]
+                        and i.state not in closed_states(spec.wip_items)]
                 d["owner_items"] = [{"no": i.no, "state": i.state, "text": i.text,
                                      "due": i.due} for i in mine]
                 if not mine:  # only list entries that actually carry an open item
