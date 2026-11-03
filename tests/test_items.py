@@ -526,6 +526,34 @@ def test_move_between_groups_and_first(proj):
         ops.move(proj, f"{row['id']}#001", after=f"{row['id']}#002", first=True)
 
 
+def test_within_group_move_is_logged_and_replays(proj, tmp_path):
+    """P0-2: a within-group reorder (no field change) must emit item.move —
+    before the fix the diff saw only `_ITEM_EVENT_FIELDS`, so the log lost
+    the new order and a replay rebuilt the OLD order (C6 compares `pos`)."""
+    from proj import events as ev
+    from proj import replay as rp
+    row, _ = taskmod.new(proj, "T")
+    rid = row["id"]
+    ops.add(proj, rid, "a")
+    ops.add(proj, rid, "b")
+    ops.add(proj, rid, "c")
+    out = ops.move(proj, f"{rid}#003", first=True)  # c → the front, same group
+    assert _nums(out) == ["003", "001", "002"]
+    live = [r["no"] for r in db_items(proj, rid) if not r["deleted"]]
+    assert live == ["003", "001", "002"]
+    # the reorder reached the event log (an item.move carrying its new pos)
+    moves = [e for e in ev.read(proj.root / ".proj" / "events.jsonl")
+             if e["op"] == "item.move" and e.get("pos") is not None]
+    assert moves, "the within-group reorder emitted no item.move event"
+    # replaying the committed log rebuilds the SAME order (C6 compares `pos`)
+    fresh = dbmod.Db(tmp_path / "rebuild.sqlite")
+    rp.replay(fresh, ev.read(proj.root / ".proj" / "events.jsonl"),
+              rec.load_registry(proj.root))
+    rebuilt = [r["no"] for r in fresh.items_load(rid) if not r["deleted"]]
+    fresh.close()
+    assert rebuilt == live
+
+
 def test_remove_item(proj):
     row, _ = taskmod.new(proj, "T")
     ops.add(proj, row["id"], "a")

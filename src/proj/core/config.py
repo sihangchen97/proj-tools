@@ -74,8 +74,12 @@ def load_config(start: Path | None = None, strict: bool = True) -> ProjConfig:
 def load_project_env(root: Path) -> None:
     """Load `<root>/.env` into os.environ (D6): flat KEY=VALUE lines, `#`
     comments and blank lines skipped, **existing OS env vars are never
-    overridden** (OS env > .env > code default). Idempotent; a missing file
-    is a no-op. ~15 lines, no dotenv dependency."""
+    overridden** (OS env > .env > code default). Re-calling with the SAME
+    root is idempotent; across ROOTS in one long-lived process (e.g. the MCP
+    server serving several projects) the first root loaded wins any
+    conflicting key — its value is already in os.environ, so the later root's
+    line is skipped (拍板 2026-11-03: documented, not changed). A missing
+    file is a no-op. ~15 lines, no dotenv dependency."""
     env = root / ".env"
     if not env.is_file():
         return

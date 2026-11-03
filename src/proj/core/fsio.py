@@ -42,7 +42,12 @@ def write_atomic(path: str | Path, text: str, expect_mtime_ns: int | None = None
     os.replace). `expect_mtime_ns`: the mtime the caller saw before the command
     started — right before the replace, the file is re-stat'd; changed since
     then → ProjError and the original file is kept. An error while writing
-    never leaves a temp file behind and never touches the original."""
+    never leaves a temp file behind and never touches the original. Advisory
+    by design (拍板 2026-11-03): the mtime check is NOT a concurrency
+    primitive — call it INSIDE `project_lock` (every write command does; the
+    flock is what actually serialises writers), and note that on a filesystem
+    with coarse mtime (e.g. NFS, 1s) a concurrent change within the same
+    tick can go undetected."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent),

@@ -567,6 +567,13 @@ def _insert_pos(new: ItemsState, letter: str, first: bool) -> int:
                  if r.no == letter + "00")
         return members[-1] + 1 if members and not first else g + 1
     if first or not members:
+        # P0-2: a first- insert into the UNGROUPED list must go to its front —
+        # the old fallback found the first grouped row (there is none in a
+        # purely ungrouped checklist) and so silently appended to the END,
+        # turning `--first` into a no-op (or an end-move) with no event and
+        # no changelog
+        if first and members:
+            return members[0]
         return next((i for i, r in enumerate(new.rows)
                      if r.is_group or group_of(r.no)), len(new.rows))
     return members[-1] + 1

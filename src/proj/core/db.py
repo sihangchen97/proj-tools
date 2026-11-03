@@ -693,7 +693,10 @@ class Db:
         existing = {r["no"]: r["uuid"] for r in old_by_uuid.values()}
         self.conn.execute("DELETE FROM items WHERE record_id=?", (record_id,))
         new_by_uuid = {}
-        new_pos: dict[str, int] = {}
+        # P0-2: the pos of EVERY row in this save (not just fresh rows) — the
+        # diff below needs the old-vs-new position of existing rows to emit
+        # item.move for a reorder (a fields-only diff saw nothing changed)
+        pos_by_uuid: dict[str, int] = {}
         for pos, it in enumerate(rows):
             # the uuid rides under `uuid` (the items.py write path, via Item.to_row)
             # or `_uuid` (the replayer's temporary carrier, C1); a row in neither
@@ -716,24 +719,28 @@ class Db:
             # the item.add event, exactly like item.move's `pos` — the replay
             # lands a fresh row where the write path put it, so the rebuilt
             # list order equals the live one (C6 compares `pos`)
-            if it_uuid not in old_by_uuid:
-                new_pos[it_uuid] = pos
+            pos_by_uuid[it_uuid] = pos
         self._touch(record_id)
         if self.emitting:
-            self._emit_items_diff(record_id, old_by_uuid, new_by_uuid, new_pos)
+            self._emit_items_diff(record_id, old_by_uuid, new_by_uuid, pos_by_uuid)
 
     _ITEM_EVENT_FIELDS = ("text", "state", "note", "owner", "due", "task")
 
     def _emit_items_diff(self, record_id: str, old_by_uuid: dict,
-                         new_by_uuid: dict, new_pos: dict | None = None) -> None:
+                         new_by_uuid: dict, pos_by_uuid: dict | None = None) -> None:
         """C2: the item events that transform the old checklist into the new one
-        (the replayer knows item.add / item.set, both resolved by the row's uuid).
-        A new uuid → item.add carrying its `pos` in THIS save's list (R3/C2:
-        the replayer inserts exactly there — like item.move's `pos` — so the
-        replayed order equals the write path's; pre-pos events keep the
-        legacy tail/after-`after` insert); a uuid present in both with
-        changed fields → item.set. Replay keeps the existing rows' order, so
-        no reordering op is needed for the edit/check/set flow."""
+        (the replayer knows item.add / item.set / item.move, all resolved by
+        the row's uuid). A new uuid → item.add carrying its `pos` in THIS
+        save's list (R3/C2: the replayer inserts exactly there — like
+        item.move's `pos` — so the replayed order equals the write path's;
+        pre-pos events keep the legacy tail/after-`after` insert); a uuid
+        present in both with changed fields → item.set; a uuid present in both
+        with a CHANGED pos → item.move (P0-2: a within-group reorder changes
+        nothing in `_ITEM_EVENT_FIELDS`, so the log used to lose the new order
+        and the replay kept the old one — C6 compares `pos`). Moves are emitted
+        in THIS save's list order, which converges the replay exactly onto it
+        (each element is placed at its final index, after all earlier-final
+        elements are already in place)."""
         def _task(uu):
             # an item's task ref rides as the target's uuid (C2.2), not its id
             return self._rec_uuid(uu) if uu else ""
@@ -743,7 +750,7 @@ class Db:
                       "section": it.get("section", ""),
                       "task": _task(it.get("task", ""))}
             if uu not in old_by_uuid:
-                pos = (new_pos or {}).get(uu)
+                pos = (pos_by_uuid or {}).get(uu)
                 self._emit("item.add", record_id, item=uu,
                            state=it.get("state", ""), note=it.get("note", ""),
                            owner=it.get("owner", ""), due=it.get("due", ""),
@@ -757,13 +764,25 @@ class Db:
                       if old.get(f, "") != it.get(f, "")}
             if (1 if old.get("deleted") else 0) != (1 if it.get("deleted") else 0):
                 fields["deleted"] = 1 if it.get("deleted") else 0
-            if not fields:
-                continue
-            if it.get("state") in ("done", "failed", "dropped") and not old.get("closed_at"):
-                self._emit("item.set", record_id, item=uu, fields=fields,
-                           date=it.get("closed_at") or utc_now())
-            else:
-                self._emit("item.set", record_id, item=uu, fields=fields)
+            pos = (pos_by_uuid or {}).get(uu)
+            pos_changed = pos is not None and old.get("pos") != pos
+            if fields:
+                if it.get("state") in ("done", "failed", "dropped") and not old.get("closed_at"):
+                    self._emit("item.set", record_id, item=uu, fields=fields,
+                               date=it.get("closed_at") or utc_now())
+                else:
+                    self._emit("item.set", record_id, item=uu, fields=fields)
+                if pos_changed:
+                    # fields AND order changed in one save — the replay applies
+                    # the set, then reorders to the final pos
+                    self._emit("item.move", record_id, item=uu, no=no,
+                               section=it.get("section", ""), pos=pos)
+            elif pos_changed:
+                # P0-2: a pure reorder (fields unchanged) used to emit nothing
+                # — the log lost the order change and the replay kept the old
+                # order (C6 compares `pos`)
+                self._emit("item.move", record_id, item=uu, no=no,
+                           section=it.get("section", ""), pos=pos)
 
     def item_set_state(self, record_id: str, no: str, state: str,
                        closed_at: str) -> None:
@@ -854,9 +873,20 @@ class Db:
                 self.conn.commit()
             else:
                 self.rollback()
-        except sqlite3.Error:
-            # a BEGIN-less (read-only) `with` has nothing to end — close goes on
-            pass
+        except sqlite3.Error as e:
+            # P0-6: a failed commit/rollback with an OPEN transaction (disk
+            # full, corrupt db, lock timeout) must reach the caller, not read
+            # as "success" — a BEGIN-less (read-only) connection has nothing
+            # to end (its commit/rollback are no-ops), so its failure stays
+            # swallowed. The gate itself is guarded: on an ALREADY-CLOSED
+            # connection (a double close) even `in_transaction` raises, and
+            # any commit/rollback failure there is a spurious no-op too.
+            try:
+                open_tx = self.conn.in_transaction
+            except sqlite3.Error:
+                open_tx = False
+            if open_tx:
+                raise e
         finally:
             self.conn.close()
 
@@ -872,8 +902,18 @@ class Db:
                 # log ahead of the DB, which a rebuild reconciles; the reverse
                 # order left the DB ahead of the log)
                 self.conn.commit()
-            except sqlite3.Error:
-                pass  # a BEGIN-less (read-only) close has nothing to end
+            except sqlite3.Error as e:
+                # P0-6: same gate as __exit__ — a real commit failure on an
+                # open transaction propagates; a BEGIN-less (read-only) close
+                # failure, or a failure on an already-closed connection
+                # (where even `in_transaction` raises), is a spurious no-op
+                # and stays swallowed.
+                try:
+                    open_tx = self.conn.in_transaction
+                except sqlite3.Error:
+                    open_tx = False
+                if open_tx:
+                    raise e
         self.conn.close()
 
 
