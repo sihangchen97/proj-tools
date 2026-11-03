@@ -42,9 +42,15 @@ def append_bug(text: str, source: str, cmd: str | None = None,
                  for ln in text.strip().splitlines())
     data = "\n".join(lines) + "\n\n"
     path.parent.mkdir(parents=True, exist_ok=True)  # S.10: .proj/ may not exist yet
+    data = data.encode("utf-8")
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
-        os.write(fd, data.encode("utf-8"))
+        n = 0  # P1-7: write-all — a short write (NFS) would truncate the record
+        while n < len(data):
+            w = os.write(fd, data[n:])
+            if w == 0:
+                raise OSError(f"{path}: short write at {n}/{len(data)} bytes")
+            n += w
     finally:
         os.close(fd)
     return path

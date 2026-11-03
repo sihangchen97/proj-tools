@@ -117,7 +117,13 @@ def project_lock(root: str | Path, cmd: str = ""):
                 time.sleep(0.1)
         os.ftruncate(fd, 0)
         os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, f"{os.getpid()} {cmd}".rstrip().encode("utf-8") + b"\n")
+        holder = f"{os.getpid()} {cmd}".rstrip().encode("utf-8") + b"\n"
+        n = 0  # P1-7: write-all — a short write leaves a half holder line
+        while n < len(holder):
+            w = os.write(fd, holder[n:])
+            if w == 0:
+                raise OSError(f"{lock_path}: short write at {n}/{len(holder)} bytes")
+            n += w
         _local.held = key
         yield
     finally:

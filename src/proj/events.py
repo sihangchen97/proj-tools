@@ -56,10 +56,16 @@ def to_line(ev: dict) -> str:
 
 def from_line(line: str) -> dict:
     """Parse one event line (trailing newline ok). json.JSONDecodeError
-    propagates with the parser's position; the caller adds the line number."""
+    propagates with the parser's position; the caller adds the line number.
+    P1-1: a dict missing a common field (at/actor/op/rec/seq) raises ValueError
+    HERE — previously it surfaced as a bare KeyError inside read()'s sort_key,
+    uncaught and line-numberless."""
     ev = json.loads(line)
     if not isinstance(ev, dict):
         raise ValueError(f"an event must be a JSON object: {line!r}")
+    missing = [f for f in REQUIRED_FIELDS if f not in ev]
+    if missing:
+        raise ValueError(f"an event must carry {missing!r}: {line!r}")
     return ev
 
 
@@ -91,7 +97,15 @@ def append(path: Path | str, events: list[dict]) -> int:
     buf = "".join(to_line(ev) for ev in events).encode("utf-8")
     fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        return os.write(fd, buf)
+        # P1-7: write the WHOLE buffer — os.write may short-write (NFS, a
+        # signal); a partial write would silently truncate the event log
+        n = 0
+        while n < len(buf):
+            w = os.write(fd, buf[n:])
+            if w == 0:
+                raise OSError(f"{path}: short write at {n}/{len(buf)} bytes")
+            n += w
+        return n
     finally:
         os.close(fd)
 
@@ -150,11 +164,9 @@ def validate(path: Path | str) -> list[str]:
         except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
             problems.append(f"{p}:{i}: bad event line ({e})")
             continue
-        missing = [f for f in REQUIRED_FIELDS if f not in ev]
-        if missing:
-            problems.append(
-                f"{p}:{i}: missing field(s) {', '.join(missing)}")
-            continue
+        # P1-1: missing-field errors surface from from_line above (one
+        # validator for read() and validate() — a malformed line raises in
+        # read() instead of a bare KeyError in sort_key)
         if ev["op"] not in OPS:
             problems.append(f"{p}:{i}: unknown op {ev['op']!r}")
     return problems

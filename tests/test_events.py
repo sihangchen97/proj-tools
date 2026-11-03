@@ -162,7 +162,10 @@ def test_validate_missing_required_field(tmp_path):
     del e["seq"]  # drop one required field, keep the object valid
     p.write_text(json.dumps(e, sort_keys=True) + "\n", encoding="utf-8")
     (got,) = ev.validate(p)
-    assert "e.jsonl:1" in got and "missing field(s) seq" in got
+    # P1-1: the missing-field error now comes from from_line (the same check
+    # read() runs, so a malformed line raises a line-numbered ValueError there
+    # instead of a bare KeyError in sort_key) — validate still names the field
+    assert "e.jsonl:1" in got and "seq" in got
 
 
 def test_validate_unknown_op(tmp_path):

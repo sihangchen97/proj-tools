@@ -38,7 +38,12 @@ def _norm_sections(s: str) -> str:
     in event order), so the comparison normalizes it to sorted-key form."""
     if not s or s == "{}":
         return s
-    return json.dumps(json.loads(s), sort_keys=True, ensure_ascii=False)
+    try:
+        return json.dumps(json.loads(s), sort_keys=True, ensure_ascii=False)
+    except json.JSONDecodeError as e:
+        # P1-3: a corrupted sections column reports, doesn't crash check
+        return f"<bad json: {e}>"
+
 
 
 def _dump_state(db: dbmod.Db) -> dict:
@@ -79,6 +84,11 @@ def _replay_consistent(cfg: ProjConfig, db: dbmod.Db) -> list[str]:
             # meaningless on a mismatched schema
             return [f".proj/events.jsonl: replay consistency check skipped "
                     f"(schema mismatch: {e})"]
+        except Exception as e:
+            # P1-3: any other replay failure (a bad log, a schema drift the
+            # OperationalError path missed) reports too — check never crashes
+            return [f".proj/events.jsonl: replay consistency check "
+                    f"skipped ({e!r})"]
         finally:
             fresh.close()
     problems = [f"events.jsonl replay: {d}" for d in res.diagnostics]
@@ -124,7 +134,12 @@ def check(cfg: ProjConfig) -> list[str]:
             md_files = (sorted(x for x in d.glob("*.md") if not x.name.startswith("_"))
                         if d.is_dir() else [])
             for p in md_files:
-                text = p.read_text(encoding="utf-8")
+                try:
+                    text = p.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    # P1-3: a binary/corrupted file reports, doesn't crash
+                    problems.append(f"{p.name}: unreadable ({e!r})")
+                    continue
                 (mk, u), _title, raw_sections = rec.parse_record(text)
                 if mk != record_type or not u:
                     problems.append(f"{p.name}: missing/foreign id marker "
@@ -152,7 +167,13 @@ def check(cfg: ProjConfig) -> list[str]:
                         for a in spec.status_allowed):
                     problems.append(f"{p.name}: status {row['status']!r} no longer allowed "
                                     f"by the template ({', '.join(spec.status_allowed)})")
-                db_sections = json.loads(row["sections"] or "{}")
+                try:
+                    db_sections = json.loads(row["sections"] or "{}")
+                except json.JSONDecodeError as e:
+                    # P1-3: a corrupted sections column reports, doesn't crash
+                    problems.append(f"{p.name}: sections column is not valid "
+                                    f"JSON ({e!r})")
+                    db_sections = {}
                 # P1: every checklist section renders entirely from the DB state
                 item_secs = {it.section for it in spec.items}
                 for s in spec.sections:
@@ -203,7 +224,13 @@ def check(cfg: ProjConfig) -> list[str]:
         if row is None:
             problems.append(f"WIP.md entry {entry['record_id']}: record not in DB")
             continue
-        if row["status"] in reg[row["type"]].status_terminal:
+        tspec = reg.get(row["type"])
+        if tspec is None:
+            # P1-3: a stale WIP row of a record type no longer in profiles/
+            problems.append(f"WIP.md entry {row['id']}: record type "
+                            f"{row['type']!r} is not in profiles/")
+            continue
+        if row["status"] in tspec.status_terminal:
             problems.append(
                 f"WIP.md: {row['id']} is {row['status']!r} (terminal) — "
                 f"remove it with `proj wip return {row['id']}`")

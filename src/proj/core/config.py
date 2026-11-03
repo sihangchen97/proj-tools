@@ -14,7 +14,15 @@ def reporter() -> str:
     launches the CLI/MCP) else the system username ('unknown' as a last
     resort). Written into every `record_changelog` row (the `actor` column)
     and the `.proj/bugs.log` records, so a changelog line names who did it."""
-    return os.environ.get("PROJ_AGENT") or getpass.getuser() or "unknown"
+    agent = os.environ.get("PROJ_AGENT")
+    if agent:
+        return agent
+    try:
+        return getpass.getuser() or "unknown"
+    except (KeyError, OSError):
+        # P1-5: no USER env / a broken pwd lookup used to raise HERE instead
+        # of the docstring's promised 'unknown' fallback
+        return "unknown"
 
 
 #: the project data directory (S.10): cache.sqlite (committed until the git
@@ -77,5 +85,11 @@ def load_project_env(root: Path) -> None:
             continue
         k, _, v = line.partition("=")
         k, v = k.strip(), v.strip()
+        # P1-6: a quoted value (`KEY="v"`) and a trailing ` # comment` are
+        # stripped — a raw store would keep the quotes / comment in the value
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+            v = v[1:-1]
+        else:
+            v = v.split(" #", 1)[0].strip()
         if k and k not in os.environ:
             os.environ[k] = v

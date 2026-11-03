@@ -438,6 +438,13 @@ class Db:
                 if new_sec.get(name) != old_sec.get(name):
                     self._emit("section.set", id_, name=name,
                                text=new_sec.get(name, ""))
+        # P2-12: the column names go straight into the SQL — whitelist them
+        # (the records columns this method is ever asked to set); a foreign
+        # name used to be an injection vector / a silent crash
+        allowed = {"title", "summary", "status", "commit", "sections", "uuid"}
+        bad = [k for k in cols if k not in allowed]
+        if bad:
+            raise ValueError(f"set(): unknown record column(s) {bad!r}")
         assignments = ", ".join(f'"{k}" = ?' for k in cols)
         self.conn.execute(
             f"UPDATE records SET {assignments} WHERE type=? AND id=?",
@@ -787,12 +794,15 @@ class Db:
         row = self.conn.execute(
             "SELECT COALESCE(MAX(pos), -1) FROM wip_entries").fetchone()
         pos = row[0] + 1
+        added_at = utc_now()  # P1-11: ONE utc_now for both the row and the
+                              # event — two calls could straddle a second
+                              # boundary and replay would diverge (add_log rule)
         self.conn.execute(
             "INSERT INTO wip_entries (record_id, pos, added_at, source) VALUES (?,?,?,?)",
-            (record_id, pos, utc_now(), source))
+            (record_id, pos, added_at, source))
         self._touch(record_id)
         self._touch_view("wip")
-        self._emit("wip.add", record_id, added_at=utc_now(), source=source)
+        self._emit("wip.add", record_id, added_at=added_at, source=source)
         return pos
 
     def wip_remove(self, record_id: str) -> None:
