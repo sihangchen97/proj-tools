@@ -72,9 +72,10 @@ def _safe(fn, *args) -> str:
     import sqlite3
     try:
         return fn(*args)
-    except (ProjError, sqlite3.Error) as e:
-        return f"error: {e}"
-    except ValueError as e:
+    except (ValueError, sqlite3.Error) as e:
+        # P5: ProjError IS a ValueError, so one clause covers both (the second
+        # `except ValueError` was dead-but-noisy) — the _record wrapper already
+        # unifies the same trio for the record tools.
         return f"error: {e}"
 
 
@@ -258,7 +259,9 @@ def proj_ls(status: str | None = None, record_type: str | None = None,
              if _rtype(n, reg) is not None]
     if record_type and not names:
         return "error: unknown record_type (name or code, case-insensitive)"
-    rows = [r for n in names for r in record_for(n, reg).list(cfg, status)]
+    # P1: one read connection + ONE query (was a connection per type)
+    with rec.open_db(cfg) as db:
+        rows = db.list_rows(names, status)
     return present.list_lines(rows, status)
 
 def proj_show(id: str, record_type: str | None = None, history: bool = False,

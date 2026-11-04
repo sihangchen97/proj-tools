@@ -80,6 +80,17 @@ POST_HOOKS = {  # git hook name -> script
 }
 
 
+# P4: per-command cache of the git-state check, keyed by the git dir's STATE
+# SIGNATURE (mtimes + sizes of the merge/rebase/cherry-pick marker files, plus
+# the unmerged count). A write command calls `db.begin()` 1-2 times and each
+# call used to spawn a `git rev-parse` + `git diff` subprocess pair; the
+# signature is microsecond stat calls, and ANY change of git state (a marker
+# created or removed, a conflict resolved) changes it, so a stale "in
+# progress" can never outlive the state that produced it. (A time-based TTL
+# would not — a test or a user aborting a merge within it would be refused.)
+_GIT_STATE_CACHE: dict[Path, tuple[tuple, str | None]] = {}
+
+
 def git_in_progress(cfg: ProjConfig) -> str | None:
     """C5: refuse write commands while a git merge / rebase / cherry-pick is
     in flight (`.git/MERGE_HEAD`, `.git/REBASE_HEAD`, `.git/CHERRY_PICK_HEAD`
@@ -102,22 +113,38 @@ def git_in_progress(cfg: ProjConfig) -> str | None:
     if out.returncode != 0:
         return None  # not a git checkout — C5 has nothing to guard here
     git_dir = (cfg.root / out.stdout.strip()).resolve()
-    for name, what in (("MERGE_HEAD", "merge"), ("REBASE_HEAD", "rebase"),
-                       ("CHERRY_PICK_HEAD", "cherry-pick")):
+    # P4: a microsecond-precision stat signature — the mtimes of the three
+    # marker files (None when absent) plus the index. Every git-state change
+    # (merge/rebase/cherry-pick starts or ends, a conflict is resolved or
+    # aborted) creates/removes/rewrites one of them, so a cache entry can
+    # never outlive the state it describes (a time TTL could: an abort within
+    # it would still refuse).
+    markers = ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD")
+    sig = tuple(
+        (git_dir / f).stat().st_mtime_ns if (git_dir / f).is_file() else None
+        for f in (*markers, "index"))
+    hit = _GIT_STATE_CACHE.get(git_dir)
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    reason: str | None = None
+    for name, what in zip(markers, ("merge", "rebase", "cherry-pick"), strict=True):
         if (git_dir / name).exists():
-            return f"a git {what} is in progress — finish it first, then retry"
-    out = subprocess.run(["git", "-C", str(cfg.root), "diff", "--name-only",
-                          "--diff-filter=U"],
-                         check=False, capture_output=True, text=True)
-    if out.returncode != 0:
-        # P1-10: a failed git (broken .git, missing binary) must not read as
-        # "idle" — refusing the write is the safe direction
-        return (f"git diff failed (rc {out.returncode}) — the repository "
-                "seems broken; fix it, then retry")
-    if out.stdout.strip():
-        return ("unmerged paths exist — resolve the conflicts "
-                "(git add / git merge --abort), then retry")
-    return None
+            reason = f"a git {what} is in progress — finish it first, then retry"
+            break
+    if reason is None:
+        out = subprocess.run(["git", "-C", str(cfg.root), "diff", "--name-only",
+                              "--diff-filter=U"],
+                             check=False, capture_output=True, text=True)
+        if out.returncode != 0:
+            # P1-10: a failed git (broken .git, missing binary) must not read as
+            # "idle" — refusing the write is the safe direction
+            reason = (f"git diff failed (rc {out.returncode}) — the repository "
+                      "seems broken; fix it, then retry")
+        elif out.stdout.strip():
+            reason = ("unmerged paths exist — resolve the conflicts "
+                      "(git add / git merge --abort), then retry")
+    _GIT_STATE_CACHE[git_dir] = (sig, reason)
+    return reason
 
 
 def merge_resolve(cfg: ProjConfig) -> str:

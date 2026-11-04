@@ -222,14 +222,10 @@ def _dyn_list(name: str | None, status: str | None) -> list[dict]:
     cfg = _cfg()
     reg = rec.load_registry(cfg.root)
     names = [name] if name else list(reg)
-    rows: list[dict] = []
-    with rec.open_db(cfg) as db:  # R3: one read connection for the whole ls
-        for n in names:
-            for r in record_for(n, reg).list(cfg, status):
-                parent = db.parent_of(r["id"])
-                rows.append({"id": r["id"], "type": n, "status": r["status"],
-                             "title": r["title"], "parent": (parent["source"] if parent else None)})
-    return rows
+    # P1: one read connection, ONE query (the parent rides as a LEFT JOIN —
+    # the old loop opened a connection per type and a parent_of per row, N+1)
+    with rec.open_db(cfg) as db:
+        return db.list_rows(names, status)
 
 
 def _print_rows(rows: list[dict], status: str | None, as_json: bool) -> None:

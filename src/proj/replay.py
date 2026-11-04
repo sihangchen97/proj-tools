@@ -435,9 +435,7 @@ def save_meta(db, meta: dict) -> None:
             v = json.dumps(list(raw_v)) if raw_v is not None else ""
         elif k in ("ev:uuids", "ev:types"):
             v = json.dumps(raw_v, ensure_ascii=False)
-        db.conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+        db.meta_set(k, str(v))  # P6: the shared meta upsert
     db.conn.commit()
 
 
@@ -467,12 +465,23 @@ def commit_meta(db, path) -> dict:
     p = Path(path)
     raw = p.read_bytes() if p.is_file() else b""
     meta = load_meta(db)
+    # P3: ev:last_key needs a max over the NEW lines only when the prefix is
+    # untouched (the incremental path); a changed/shrunk prefix (full rebuild)
+    # re-parses every line, as before. Read the old bookkeeping BEFORE
+    # overwriting it (seen = the size the cache covered).
+    seen = int(meta.get("ev:size", 0) or 0)
+    prefix_hash = meta.get("ev:prefix_hash", "")
+    prefix_ok = (len(raw) == seen or (len(raw) > seen
+                 and hashlib.sha1(raw[:seen]).hexdigest() == prefix_hash))
+    lines = [ln for ln in raw[seen:].split(b"\n") if ln] if prefix_ok else \
+        [ln for ln in raw.split(b"\n") if ln]
+    last = max((ev.sort_key(ev.from_line(ln.decode("utf-8"))) for ln in lines),
+               default=None)
     meta["ev:size"] = len(raw)
     meta["ev:prefix_hash"] = hashlib.sha1(raw).hexdigest()
-    lines = [ln for ln in raw.split(b"\n") if ln]
-    if lines:
-        evs = [ev.from_line(ln.decode("utf-8")) for ln in lines]
-        meta["ev:last_key"] = max(ev.sort_key(e) for e in evs)
+    candidates = [k for k in (last, meta.get("ev:last_key")) if k is not None]
+    if candidates:
+        meta["ev:last_key"] = max(candidates)
     head = _git_head(p)
     if head:
         meta["ev:git_head"] = head

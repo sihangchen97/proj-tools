@@ -19,6 +19,7 @@ clone without the DB can rebuild the same schema.
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import sqlite3
@@ -60,11 +61,16 @@ def _mounts_lines() -> list[str]:
         return []
 
 
+@functools.lru_cache(maxsize=128)
 def on_network_fs(path: Path) -> bool:
     """True when `path` lives on a network filesystem (Linux /proc/mounts).
     SQLite's WAL mode relies on shared memory and must not be used on NFS:
     two hosts writing the same project could corrupt the DB. Unknown platform
-    (no /proc/mounts) → False (keep WAL)."""
+    (no /proc/mounts) → False (keep WAL).
+
+    P2: cached per path (lru_cache) — every command opens the cache and used
+    to re-read /proc/mounts; the mount table does not change mid-command, so a
+    process-lifetime cache per distinct project path is safe."""
     mounts = _mounts_lines()
     if not mounts:
         return False
@@ -133,6 +139,19 @@ class Db:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        # P2: the table DDL + legacy migrations run ONCE per cache (when
+        # `meta.schema` does not pin this SCHEMA_VERSION) — every command used
+        # to re-run ~6 CREATE TABLE IF NOT EXISTS and the PRAGMA table_info
+        # migration checks on a cache that already exists.
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key='schema'").fetchone()
+        if row is None or row[0] != str(SCHEMA_VERSION):
+            self._create_schema()
+            self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(SCHEMA_VERSION),))
+            self.conn.commit()
         # C2.2: HLC — `at = max(now, last seen) + 1ms`; the last-seen value
         # lives in meta `ev:last_at` so an actor's later events always sort
         # after the ones they have seen (a skewed clock is safe)
@@ -144,6 +163,11 @@ class Db:
             except ValueError:
                 last_at = 0
         self._hlc = ev.HlcClock(last_at)
+
+    def _create_schema(self) -> None:
+        """P2: the full table DDL + the legacy column migrations (moved verbatim
+        out of __init__) — runs only when the cache's `meta.schema` stamp is
+        missing or older than this build's SCHEMA_VERSION."""
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS changelog_entries "
             "(id INTEGER PRIMARY KEY, version TEXT, category TEXT, message TEXT, date TEXT)")
@@ -303,6 +327,14 @@ class Db:
         self.conn.execute("DELETE FROM meta WHERE key=?", (key,))
         self.conn.commit()
 
+    def meta_set(self, key: str, value: str) -> None:
+        """P6: upsert one meta key (the `INSERT … ON CONFLICT` the four call
+        sites used to each repeat) — the caller keeps its own commit."""
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value))
+
     def _flush_events(self) -> None:
         """C2.3: before the DB commit, append every accumulated event with ONE
         os.write (O_APPEND — a crash never interleaves lines, the file always
@@ -326,33 +358,33 @@ class Db:
         ev.append(p, self._events)
         # C3.2: the local replay bookkeeping — the events this transaction just
         # wrote are now "seen", so the next command's incremental replay skips
-        # them (size/prefix-hash of the whole file, the max sort key, HLC last)
-        raw = p.read_bytes()
+        # them (size/prefix-hash of the whole file, the max sort key, HLC last).
+        # P3: the prefix hash STREAMS over the file (no whole-file read_bytes
+        # into memory) and ev:last_key takes this command's events against the
+        # stored value (an external line that sorts later must not regress it).
         row = self.conn.execute(
-            "SELECT value FROM meta WHERE key='ev:size'").fetchone()
-        old_size = int(row[0]) if row else 0
+            "SELECT key, value FROM meta WHERE key IN ('ev:size','ev:last_key')").fetchall()
+        old_size, last_key = 0, None
+        for k, v in row:
+            if k == "ev:size":
+                old_size = int(v)
+            else:
+                last_key = tuple(json.loads(v))
         if pre == old_size:
-            new_size, new_hash = len(raw), hashlib.sha1(raw).hexdigest()
+            h = hashlib.sha1()
+            with p.open("rb") as f:
+                for chunk in iter(lambda: f.read(1 << 16), b""):
+                    h.update(chunk)
+            self.meta_set("ev:size", str(p.stat().st_size))
+            self.meta_set("ev:prefix_hash", h.hexdigest())
         else:
-            new_size, new_hash = old_size, None  # leave the prefix hash as-is
-        self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ("ev:size", str(new_size)))
-        if new_hash is not None:
-            self.conn.execute(
-                "INSERT INTO meta (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("ev:prefix_hash", new_hash))
-        key = max(ev.sort_key(e) for e in self._events)
-        self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ("ev:last_key", json.dumps(list(key))))
-        self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ("ev:last_at", str(self._hlc._last)))
+            # leave ev:size / ev:prefix_hash as-is (the next command repairs)
+            pass
+        keys = [ev.sort_key(e) for e in self._events]
+        if last_key is not None:
+            keys.append(last_key)
+        self.meta_set("ev:last_key", json.dumps(list(max(keys))))
+        self.meta_set("ev:last_at", str(self._hlc._last))
         self._events = []
         self._events_flushed = True
 
@@ -401,10 +433,7 @@ class Db:
         return (int(mtime_ns), int(size), h)
 
     def set_view_fp(self, name: str, mtime_ns: int, size: int, h: str) -> None:
-        self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (f"fp:{name}", f"{mtime_ns},{size},{h}"))
+        self.meta_set(f"fp:{name}", f"{mtime_ns},{size},{h}")  # P6
 
     # ---- record rows -------------------------------------------------------
 
@@ -437,6 +466,25 @@ class Db:
     def all(self, spec: RecordTypeSpec) -> list[dict]:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM records WHERE type=? ORDER BY id", (spec.record_type,))]
+
+    def list_rows(self, types: list[str], status: str | None = None) -> list[dict]:
+        """P1: every row of the given types (or all when `types` is empty) in
+        ONE query — id, type, status, title, parent — the `ls` shape. Replaces
+        a per-type `all` (each opening its own connection on the record layer)
+        + a per-row `parent_of` (N+1): one LEFT JOIN, ordered by type, id so
+        the old per-type iteration order is preserved."""
+        q = ("SELECT r.id, r.type, r.status, r.title, p.source AS parent "
+             "FROM records r LEFT JOIN relations p "
+             "ON p.target = r.id AND p.kind='parent'")
+        args: list = []
+        if types:
+            q += " WHERE r.type IN (" + ",".join("?" * len(types)) + ")"
+            args.extend(types)
+        if status:
+            q += " AND r.status = ?"
+            args.append(status)
+        q += " ORDER BY r.type, r.id"
+        return [dict(r) for r in self.conn.execute(q, tuple(args))]
 
     def set(self, spec: RecordTypeSpec, id_: str, **cols: str) -> None:
         """Update only the given columns; C2 records the DIFF — a `set` event
@@ -630,18 +678,15 @@ class Db:
             "WHERE target=? AND kind='supersede' ORDER BY rowid", (target_id,))]
 
     def related_of(self, record_id: str) -> list[str]:
-        """Other records sharing a related edge (either direction). Unordered."""
-        out: list[str] = []
-        for r in self.conn.execute(
-                "SELECT target AS other FROM relations "
-                "WHERE source=? AND kind='related'", (record_id,)):
-            out.append(r["other"])
-        for r in self.conn.execute(
-                "SELECT source AS other FROM relations "
-                "WHERE target=? AND kind='related'", (record_id,)):
-            if r["other"] not in out:
-                out.append(r["other"])
-        return out
+        """Other records sharing a related edge (either direction). Unordered.
+        P8: one UNION query (dedup built in) instead of two queries + a Python
+        set-based dedup; ordered by id for a stable render."""
+        return [r["other"] for r in self.conn.execute(
+            "SELECT other FROM ("
+            "  SELECT target AS other FROM relations WHERE source=? AND kind='related'"
+            "  UNION"
+            "  SELECT source AS other FROM relations WHERE target=? AND kind='related'"
+            ") ORDER BY other", (record_id, record_id))]
 
     def children_of(self, parent_id: str) -> list[dict]:
         """Direct children this record parents (kind=parent, source=row)."""
@@ -658,25 +703,20 @@ class Db:
 
     def picked_by(self, task_id: str) -> list[str]:
         """The records whose LIVE checklist items reference this task
-        (K4 `picked by`: items.task, deduped record-wide). Unordered."""
-        out: list[str] = []
-        for r in self.conn.execute(
-                "SELECT DISTINCT record_id FROM items "
-                "WHERE task=? AND deleted=0 AND task!=''", (task_id,)):
-            if r["record_id"] not in out:
-                out.append(r["record_id"])
-        return out
+        (K4 `picked by`: items.task, deduped record-wide). P8: DISTINCT already
+        dedupes — the Python re-dedup is gone, and a stable id order replaces
+        the unordered output (the render joins these, order never mattered)."""
+        return [r["record_id"] for r in self.conn.execute(
+            "SELECT DISTINCT record_id FROM items "
+            "WHERE task=? AND deleted=0 AND task!='' ORDER BY record_id", (task_id,))]
 
     def tasks_referenced_by(self, record_id: str) -> list[str]:
         """The distinct task ids referenced by this record's LIVE checklist items
-        (K4 `picked by`, deduped record-wide) — the reverse of `picked_by`."""
-        out: list[str] = []
-        for r in self.conn.execute(
-                "SELECT DISTINCT task FROM items "
-                "WHERE record_id=? AND deleted=0 AND task!=''", (record_id,)):
-            if r["task"] not in out:
-                out.append(r["task"])
-        return out
+        (K4 `picked by`, deduped record-wide) — the reverse of `picked_by`.
+        P8: DISTINCT dedupes, stable task order."""
+        return [r["task"] for r in self.conn.execute(
+            "SELECT DISTINCT task FROM items "
+            "WHERE record_id=? AND deleted=0 AND task!='' ORDER BY task", (record_id,))]
 
     def descendants_of(self, record_id: str) -> set[str]:
         """Every record id hanging below record_id via parent edges (any depth),
@@ -894,7 +934,10 @@ class Db:
         # levels up
         reason = git_in_progress(ProjConfig(root=self.path.parent.parent))
         if reason is not None:
-            raise ValueError(f"git: {reason}")
+            # P7: a proj-level error, not a bare ValueError (the A4/D4 contract
+            # — MCP's _safe and the CLI treat ProjError as the clean 'error: …'
+            # path; a plain ValueError was only saved by ProjError subclassing it)
+            raise ProjError(f"git: {reason}")
         self.conn.execute("BEGIN")
 
     def __enter__(self) -> Db:
