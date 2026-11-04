@@ -97,6 +97,19 @@ def test_mcp_error_paths(proj):
     assert "same type required" in mcp.proj_new("decision", "X2", supersede="T-000001", root=root)
 
 
+def test_mcp_sync_with_files_does_not_crash(proj):
+    """Regression (vggt_research): proj_sync passed a string file list to the
+    engine, but _scan_files expects Path — a str has no .parent, so any
+    `proj_sync(files="…")` crashed with AttributeError. Sync a real record file
+    by path and expect the clean 'OK', not a traceback."""
+    root = str(proj.root)
+    seed = proj.root / "docs" / "decisions"
+    files = ",".join(sorted(str(p) for p in seed.glob("DEC-*.md")))
+    assert files  # the seed decision is present
+    out = mcp.proj_sync(files=files, root=root)
+    assert out.startswith("OK") and "error" not in out
+
+
 def test_parent_rejected_for_non_task(proj):
     """A3: proj_new(parent=...) on a non-task record_type errors (was silently
     ignored before); task still accepts it."""

@@ -19,6 +19,7 @@ the columns, one extra write per create/item.add persists the uuid.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import hashlib
 import json
 import time
@@ -39,6 +40,19 @@ _CLOSED = ("done", "failed", "dropped")
 # the changelog's Unreleased placeholder (profiles/changelog.yaml `unreleased`);
 # a `changelog.add` event with an empty version means "Unreleased"
 _UNRELEASED = "Unreleased"
+
+
+def _ts(e: dict) -> str:
+    """A reproducible timestamp for a column the event does not carry
+    (`created` / `closed_at` / `date` / `added_at`): the event's own HLC
+    `at` (ms) — a deterministic function of the log line. Legacy events
+    (pre-C2) that lack the field replay to the same value on every clone,
+    which is what `proj check` (cache vs fresh replay) and `proj compact`
+    compare on. A wall-clock fallback (`utc_now`) would make the replay a
+    function of WHEN it ran: any two replays of the same log differ, so the
+    consistency check can never pass (bug: tables differ: items)."""
+    return (datetime.datetime.fromtimestamp(e["at"] / 1000, tz=datetime.timezone.utc)
+            .isoformat(timespec="seconds"))
 
 
 class ReplayResult:
@@ -147,7 +161,7 @@ def _apply(st: _State, db, e: dict) -> None:
         st.ids[rec] = rid
         st.types[rec] = e["type"]
         db.insert(spec, rid, e["title"], e["status"],
-                  e.get("created") or dbmod.utc_now(),
+                  e.get("created") or _ts(e),
                   summary=e.get("summary", ""), commit=e.get("commit", ""),
                   uuid=rec)
         sections = e.get("sections") or {}
@@ -189,7 +203,7 @@ def _apply(st: _State, db, e: dict) -> None:
         db.conn.execute(
             "INSERT INTO record_changelog (record_id, date, category, "
             "message, status, actor) VALUES (?,?,?,?,?,?)",
-            (rid, e.get("date") or dbmod.utc_now(),
+            (rid, e.get("date") or _ts(e),
              e.get("category", "Changed"), e.get("message", ""),
              e.get("status", ""), e.get("actor", "")))
     elif op == "delete":
@@ -211,6 +225,10 @@ def _apply(st: _State, db, e: dict) -> None:
     elif op == "wip.add":
         pos = db.conn.execute(
             "SELECT COALESCE(MAX(pos), -1) + 1 FROM wip_entries").fetchone()[0]
+        # added_at is dropped from the check/compact comparison (wip_entries is
+        # compared on record_id/pos/source only), and the snapshot path stamps
+        # it via db.wip_add — keep the wall-clock fallback here so both replay
+        # paths stay consistent (the snapshot tests compare this column).
         db.conn.execute(
             "INSERT OR IGNORE INTO wip_entries (record_id, pos, added_at, "
             "source) VALUES (?,?,?,?)",
@@ -328,7 +346,7 @@ def _apply_item(st: _State, db, e: dict) -> None:
             "state": e.get("state", "open"), "note": e.get("note", ""),
             "owner": e.get("owner", ""), "due": e.get("due", ""),
             "commit": e.get("commit", ""), "trailer": e.get("trailer", ""),
-            "created": e.get("created") or dbmod.utc_now(),
+            "created": e.get("created") or _ts(e),
             "closed_at": e.get("closed_at", ""), "deleted": 0,
             "section": e.get("section", ""),
             "task": _task_id(st, db, e, e.get("task", ""))})
@@ -349,7 +367,7 @@ def _apply_item(st: _State, db, e: dict) -> None:
                 if not v:  # an explicit un-delete clears the close (C3.1)
                     row["closed_at"] = ""
         if op == "item.set" and row.get("state") in _CLOSED and not row["closed_at"]:
-            row["closed_at"] = e.get("date") or dbmod.utc_now()
+            row["closed_at"] = e.get("date") or _ts(e)
         return
     # item.move / group.move: a new position in the checklist; changing the
     # group (letter) or section renumbers and keeps the old number as a
@@ -646,7 +664,7 @@ def _apply_snapshot(st: _State, db, e: dict) -> None:
     db.conn.execute("DELETE FROM wip_entries WHERE record_id=?", (rid,))
     st.rows.pop(rid, None)
     db.insert(spec, rid, e["title"], e["status"],
-              e.get("created") or dbmod.utc_now(),
+              e.get("created") or _ts(e),
               summary=e.get("summary", ""), commit=e.get("commit", ""),
               uuid=rec)
     sections = e.get("sections") or {}

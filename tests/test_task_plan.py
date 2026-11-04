@@ -403,6 +403,35 @@ def test_p3_task_done_closes_referencing_item(proj):
     assert f"- [x] #001 ✅ refile after the rerun → {t['id']}" in inc_md
 
 
+def test_p3_auto_close_event_carries_date(proj):
+    """Root cause of `proj check` tables-differ:items: the P3 auto-close used to
+    emit an `item.set` WITHOUT a `date`, so a replay stamped closed_at from the
+    wall clock — every replay differed and check could never pass. The auto-close
+    event now carries its date, so the log reproduces the DB exactly."""
+    t, _ = taskmod.new(proj, "Rerun")
+    taskmod._obj(proj).transition(proj, "start", t["id"])
+    inc, _ = record_for("incident", rec.load_registry(proj.root)).new(proj, "Eval flake")
+    ops.add(proj, inc["id"], "refile after the rerun", task=t["id"])
+    # the item's uuid (stable identity for the event log) before it closes
+    db = rec.open_db(proj)
+    try:
+        item_uuid = db.conn.execute(
+            "SELECT uuid FROM items WHERE record_id=? AND no='001'",
+            (inc["id"],)).fetchone()["uuid"]
+        assert item_uuid
+    finally:
+        db.close()
+    taskmod.done(proj, t["id"])
+    assert _item_state(proj, inc["id"], "001") == "done"
+    from proj import events as ev
+    events = ev.read(proj.root / ".proj" / "events.jsonl")
+    close = [e for e in events
+             if e["op"] == "item.set" and e.get("item") == item_uuid
+             and e.get("fields", {}).get("state") == "done"]
+    assert close, "the auto-close item.set event is missing from the log"
+    assert close[0].get("date"), "the auto-close event must carry its date"
+
+
 def test_p3_task_failed_marks_item_failed(proj):
     t, _ = taskmod.new(proj, "Deploy")
     taskmod._obj(proj).transition(proj, "start", t["id"])

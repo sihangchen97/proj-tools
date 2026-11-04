@@ -794,8 +794,18 @@ class Db:
             "UPDATE items SET state=?, closed_at=? WHERE record_id=? AND no=?",
             (state, closed_at, record_id, no))
         self._touch(record_id)
-        self._emit("item.set", record_id, item=self._item_uuid(record_id, no),
-                   fields={"state": state})
+        # C2.2: a close carries its `date` (the closed_at actually stored) so
+        # the replay is deterministic — a date-less close would replay to the
+        # event's `at` (replay._ts), not to this timestamp. A reopen passes
+        # closed_at="" and rides no date (the state is open, replay ignores it).
+        if closed_at:
+            self._emit("item.set", record_id,
+                       item=self._item_uuid(record_id, no),
+                       fields={"state": state}, date=closed_at)
+        else:
+            self._emit("item.set", record_id,
+                       item=self._item_uuid(record_id, no),
+                       fields={"state": state})
 
     # ---- WIP.md (plans §5): the registered "in progress" list (wip_entries) ----
 

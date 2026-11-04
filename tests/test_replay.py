@@ -160,6 +160,30 @@ def test_item_set_state_done_stamps_closed_at(tmp_path):
     assert row["state"] == "done" and row["closed_at"] == "2026-01-02T03:04:05+00:00"
 
 
+def test_dateless_close_replays_deterministically(tmp_path):
+    """A date-less `item.set state=done` (the P3 auto-sync's pre-fix event, and
+    the rows in a committed log) must replay to the SAME closed_at on every
+    clone — the value is derived from the event's `at`, not the wall clock.
+    Two replays of the same log at different times give identical items, which
+    is exactly what `proj check` (cache vs fresh replay) compares."""
+    u = _uuid()
+    i = _uuid()
+    mk = [_create(u, "task", "T-000001", "t", 1_000, "alex"),
+          ev.make("item.add", actor="alex", at=2_000, seq=1, rec=u,
+                  item=i, no="001", section="Acceptance Criteria", text="x"),
+          ev.make("item.set", actor="alex", at=5_000, seq=1, rec=u, item=i,
+                  fields={"state": "done"})]  # no `date` (the P3 pre-fix form)
+    (db1, _) = _run(tmp_path / "a", mk)
+    (db2, _) = _run(tmp_path / "b", mk)
+    (r1,) = db1.items_load("T-000001")
+    (r2,) = db2.items_load("T-000001")
+    assert r1["state"] == "done" and r2["state"] == "done"
+    assert r1["closed_at"]  # not left empty
+    assert r1["closed_at"] == r2["closed_at"]  # deterministic, not wall-clock
+    db1.close()
+    db2.close()
+
+
 def test_item_move_renumbers_and_tombstones(tmp_path):
     u = _uuid()
     ia, ib = _uuid(), _uuid()

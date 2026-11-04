@@ -169,7 +169,9 @@ def proj_sync(files: str | None = None, root: str | None = None) -> str:
     paths (default: all managed dirs). FAIL lines mean the DB was not fully
     updated."""
     cfg = _cfg(root)
-    file_list = [f.strip() for f in (files or "").split(",") if f.strip()] or None
+    # the engine takes list[Path] (the CLI passes Path); a bare string has no
+    # .parent and _scan_files crashes on it
+    file_list = [Path(f.strip()) for f in (files or "").split(",") if f.strip()] or None
     try:
         problems, notes = rec.sync(cfg, file_list)
     except ValueError as e:
