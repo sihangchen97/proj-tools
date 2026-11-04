@@ -91,9 +91,17 @@ def git_in_progress(cfg: ProjConfig) -> str | None:
     merge's completion handling, not a user write command."""
     if os.environ.get("PROJ_GIT_HOOK"):
         return None
-    git_dir = cfg.root / ".git"
-    if not git_dir.is_dir():
-        return None
+    # review 2026-11-05 #6: the REAL git dir — `cfg.root / ".git"` misses a
+    # git WORKTREE (.git is a file pointing at .git/worktrees/<name>/) and a
+    # project in a MONOREPO subdirectory (no .git at the project root), and
+    # both silently returned None (C5 off) while a merge was in flight.
+    # `git rev-parse --git-dir` resolves both (a relative path, or "." for a
+    # bare checkout); the project root IS the checkout/worktree root.
+    out = subprocess.run(["git", "-C", str(cfg.root), "rev-parse", "--git-dir"],
+                         check=False, capture_output=True, text=True)
+    if out.returncode != 0:
+        return None  # not a git checkout — C5 has nothing to guard here
+    git_dir = (cfg.root / out.stdout.strip()).resolve()
     for name, what in (("MERGE_HEAD", "merge"), ("REBASE_HEAD", "rebase"),
                        ("CHERRY_PICK_HEAD", "cherry-pick")):
         if (git_dir / name).exists():

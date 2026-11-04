@@ -176,11 +176,15 @@ def _apply(st: _State, db, e: dict) -> None:
                         when=e.get("date"))
         return
     if op == "changelog.release":
-        # stamp the Unreleased batch with the released version (mirrors
-        # views.release's UPDATE ... WHERE version = cl.unreleased)
+        # stamp the unreleased batch with the released version (mirrors
+        # views.release's UPDATE ... WHERE version = cl.unreleased). The event
+        # carries the project's placeholder (the write path passes the spec's
+        # value; review 2026-11-05 #5 — the replayer used a hard-coded
+        # "Unreleased" and matched no rows once a project renamed it); legacy
+        # events without the field fall back to the constant.
         db.conn.execute(
             "UPDATE changelog_entries SET version=? WHERE version=?",
-            (e["version"], _UNRELEASED))
+            (e["version"], e.get("unreleased") or _UNRELEASED))
         return
     rid = st.rid(rec)
     spec = st.spec(rec)
@@ -594,7 +598,13 @@ def apply_incremental(db, lines: list[dict],
     The record uuid -> id map is seeded from the `records` table (C1 made
     uuid a column — the meta bridge is redundant and never read as a source)
     and merged back afterwards. Items of existing records are loaded from the
-    db, so this never rewrites untouched checklists."""
+    db, so this never rewrites untouched checklists.
+    review 2026-11-05 #1: like `replay()`, the write methods this drives must
+    NOT emit events back into the log — the incremental path runs on a BARE
+    Db (emitting=True; only replay()/rebuild_cache flip it), so without this a
+    db.close() re-appended the just-read events under a fresh at/seq and one
+    READ command corrupted events.jsonl permanently."""
+    db.emitting = False  # read-side: never re-append what we just read
     st = _State(specs)
     for r in db.conn.execute("SELECT id, uuid, type FROM records"):
         if r["uuid"]:

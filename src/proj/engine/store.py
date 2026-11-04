@@ -140,8 +140,11 @@ def _hint_comment(hint: str) -> str:
     return f"<!-- proj:section — hint: {flat} -->"
 
 
-# C3.2/C4: the cache is local (rebuilt from .proj/events.jsonl); this thread-local
-# guard makes the rebuild re-entrant (the command's own re-open must not re-enter)
+# C3.2/C4: the cache is local (rebuilt from .proj/events.jsonl); this guard makes
+# the rebuild re-entrant (the command's own re-open must not re-enter). A module
+# set, NOT thread-local (review 2026-11-05 #10c): re-entrancy only matters within
+# ONE command (one thread); a second thread rebuilding for the same path is
+# exactly what it SHOULD serialize on, and the atomic replace keeps it safe.
 _cache_rebuilding: set[Path] = set()
 
 
@@ -164,14 +167,27 @@ def ensure_cache(cfg: ProjConfig) -> None:
     if path.is_file():
         db = dbmod.Db(path)
         try:
-            kind, payload = rp.plan_incremental(ev_path, rp.load_meta(db))
+            kind, _ = rp.plan_incremental(ev_path, rp.load_meta(db))
             if kind == "noop":
                 return
             if kind == "append":
-                res = rp.apply_incremental(db, payload, load_registry(cfg.root))
-                rp.apply_and_store(db, res, ev_path)
-                return
-            # kind == "full": fall through to a full rebuild below
+                # review 2026-11-05 #2: the catch-up runs UNDER the project
+                # write lock, and RE-PLANS inside it (double-check) — a writer
+                # that has already flushed its events to the log but not yet
+                # committed its DB rows would otherwise be re-applied here
+                # (create -> IntegrityError, swallowed; log / changelog.add ->
+                # duplicate rows, kept). The lock is re-entrant, so a
+                # write command that already holds it is unaffected.
+                with fsio.project_lock(cfg.root, "cache-append"):
+                    kind, payload = rp.plan_incremental(ev_path, rp.load_meta(db))
+                    if kind == "noop":
+                        return
+                    if kind == "append":
+                        res = rp.apply_incremental(db, payload, load_registry(cfg.root))
+                        rp.apply_and_store(db, res, ev_path)
+                        return
+            # kind == "full": fall through to a full rebuild below (it takes
+            # the write lock itself)
         except Exception:
             return  # a corrupt log must not break every command — `proj check` reports it
         finally:
@@ -1171,6 +1187,7 @@ def status_set(cfg: ProjConfig, record_type: str, id_: str, status: str,
 
 def add_log(cfg: ProjConfig, record_type: str, id_: str, summary: str,
             category: str | None = None) -> None:
+    ensure_synced(cfg)  # A1: an unsynced hand edit is ingested, never clobbered
     spec = spec_of(cfg, record_type)
     from proj.core.templates import load_changelog_spec  # lazy: avoid cycle
     cat, text = dbmod.parse_summary(summary, load_changelog_spec(cfg.root))
@@ -1184,6 +1201,10 @@ def add_log(cfg: ProjConfig, record_type: str, id_: str, summary: str,
         fresh = db.get(spec, row["id"])
         p = file_path(cfg, spec, fresh)
         fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic
+    # review 2026-11-05 #7: the views (WIP.md / CHANGELOG.md) refresh through
+    # render_affected, not a single-record re-render — a manual log line can
+    # touch a view's content (the changelog view), so it must be re-rendered
+    render_affected(cfg, touched=db.touched, touched_views=db.touched_views)
 
 
 def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None = None,
@@ -1212,9 +1233,19 @@ def update_record(cfg: ProjConfig, record_type: str, id_: str, title: str | None
             db.add_log(row["id"], text, cat)
         fresh = db.get(spec, row["id"])
         p = file_path(cfg, spec, fresh)
-        if p != old_p and old_p.is_file():
-            old_p.rename(p)
-        fsio.write_atomic(p, render_record(spec, fresh, db))  # S.2: atomic
+        # review 2026-11-05 #10b: a title change renames the file — but the
+        # RENAME happens AFTER the commit. The new content is written to the
+        # OLD path first (same filename, tool-owned head carries the new
+        # title): if the commit fails, the DB rolls back and the file is
+        # unchanged; if the rename then fails, the old name carries the fresh
+        # content (same id marker — the next sync/render reconciles it) instead
+        # of the old state leaving two files for one record
+        if p != old_p:
+            fsio.write_atomic(old_p, render_record(spec, fresh, db))  # S.2: atomic
+        else:
+            fsio.write_atomic(p, render_record(spec, fresh, db))      # S.2: atomic
+    if p != old_p and old_p.is_file():
+        old_p.rename(p)
     render_affected(cfg, touched=db.touched, touched_views=db.touched_views)  # F6
     return fresh
 

@@ -192,5 +192,7 @@ def release(cfg: ProjConfig, db, version: str | None = None,
     if not entries:
         db.add_cl_entry(used, cl.default_category, f"release {used}",
                         dbmod.utc_now())
-    db.conn.commit()
+    # review 2026-11-05 #4: NO early commit here — the caller's `with` commits
+    # AFTER _flush_events (C2.3: log before commit); committing here left a
+    # crash window where the release lived in the cache but not in the log
     return used

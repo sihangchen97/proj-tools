@@ -312,21 +312,38 @@ class Db:
         the events (they were never written)."""
         if not self._events or self._events_flushed:
             return
-        ev.append(self.path.parent / "events.jsonl", self._events)
+        # review 2026-11-05 #3: stat BEFORE the append — if the file grew while
+        # this command ran (an external writer's events the cache never saw,
+        # e.g. a swallowed incremental failure), ev:size/prefix_hash must NOT be
+        # advanced past them: keep the old values so the NEXT command's
+        # plan_incremental sees size != ev:size and repairs via the
+        # incremental/full path instead of silently skipping those lines.
+        # (In the normal single-writer flow pre-size == ev:size and the new
+        # whole-file values are exactly right.)
+        import hashlib
+        p = self.path.parent / "events.jsonl"
+        pre = p.stat().st_size if p.is_file() else 0
+        ev.append(p, self._events)
         # C3.2: the local replay bookkeeping — the events this transaction just
         # wrote are now "seen", so the next command's incremental replay skips
         # them (size/prefix-hash of the whole file, the max sort key, HLC last)
-        import hashlib
-        p = self.path.parent / "events.jsonl"
         raw = p.read_bytes()
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key='ev:size'").fetchone()
+        old_size = int(row[0]) if row else 0
+        if pre == old_size:
+            new_size, new_hash = len(raw), hashlib.sha1(raw).hexdigest()
+        else:
+            new_size, new_hash = old_size, None  # leave the prefix hash as-is
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ("ev:size", str(len(raw))))
-        self.conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ("ev:prefix_hash", hashlib.sha1(raw).hexdigest()))
+            ("ev:size", str(new_size)))
+        if new_hash is not None:
+            self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("ev:prefix_hash", new_hash))
         key = max(ev.sort_key(e) for e in self._events)
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES (?, ?) "
@@ -426,6 +443,14 @@ class Db:
         (only the changed fields) for the record-table columns, and one
         `section.set` per changed section when `sections` changed (C2.2: the
         replayer overwrites field-by-field, so unchanged columns emit nothing)."""
+        # P2-12 + review 2026-11-05 #10a: the column names go straight into the
+        # SQL — whitelist them FIRST (a foreign name used to be an injection
+        # vector / a silent crash, and the events were emitted before the check
+        # and only saved by the transaction rollback)
+        allowed = {"title", "summary", "status", "commit", "sections", "uuid"}
+        bad = [k for k in cols if k not in allowed]
+        if bad:
+            raise ValueError(f"set(): unknown record column(s) {bad!r}")
         old_row = self.get(spec, id_)
         old = {k: old_row[k] for k in old_row} if old_row else {}
         for k, v in cols.items():
@@ -438,13 +463,6 @@ class Db:
                 if new_sec.get(name) != old_sec.get(name):
                     self._emit("section.set", id_, name=name,
                                text=new_sec.get(name, ""))
-        # P2-12: the column names go straight into the SQL — whitelist them
-        # (the records columns this method is ever asked to set); a foreign
-        # name used to be an injection vector / a silent crash
-        allowed = {"title", "summary", "status", "commit", "sections", "uuid"}
-        bad = [k for k in cols if k not in allowed]
-        if bad:
-            raise ValueError(f"set(): unknown record column(s) {bad!r}")
         assignments = ", ".join(f'"{k}" = ?' for k in cols)
         self.conn.execute(
             f"UPDATE records SET {assignments} WHERE type=? AND id=?",
@@ -452,12 +470,18 @@ class Db:
         self._touch(id_)
 
     def delete(self, spec: RecordTypeSpec, id_: str) -> None:
+        self._touch(id_)
+        # review 2026-11-05 #9: emit BEFORE the row is gone — _emit's
+        # _rec_uuid lookup resolves the record's uuid into the event (a lookup
+        # after the DELETE would find nothing, rec="", and the replay of that
+        # event would report "unknown record uuid"); _emit only appends to the
+        # in-memory buffer, so the event's position in the transaction is the
+        # same as before
+        self._emit("delete", id_)
         self.conn.execute("DELETE FROM record_changelog WHERE record_id = ?", (id_,))
         # relations edges cascade with the record (D8 FK), no manual cleanup
         self.conn.execute("DELETE FROM records WHERE type=? AND id=?",
                           (spec.record_type, id_))
-        self._touch(id_)
-        self._emit("delete", id_)
 
     def max_seq(self, spec: RecordTypeSpec) -> int:
         """The largest record number carried by this type's ids (digits only)."""
@@ -521,12 +545,15 @@ class Db:
 
     def release_cl(self, version: str, unreleased: str) -> None:
         """X0: move every Unreleased CHANGELOG entry onto a released version
-        (was a bare UPDATE in views.release); touches the changelog view."""
+        (was a bare UPDATE in views.release); touches the changelog view.
+        The event carries the project's placeholder (profiles/changelog.yaml
+        `unreleased` — a project may rename it) so the replay stamps exactly
+        the same rows (review 2026-11-05 #5)."""
         self.conn.execute(
             "UPDATE changelog_entries SET version = ? WHERE version = ?",
             (version, unreleased))
         self._touch_view("changelog")
-        self._emit("changelog.release", None, version=version)
+        self._emit("changelog.release", None, version=version, unreleased=unreleased)
 
     def cl_entries(self, version: str | None = None) -> list[dict]:
         if version:
@@ -934,8 +961,8 @@ def next_id(spec: RecordTypeSpec, db: Db) -> str:
     a single project will not run out (9,999 / 999,999 records)."""
     n = db.max_seq(spec) + 1
     w = int(spec.numbered)
-    if n > 10 ** w:
-        raise ValueError(
+    if n >= 10 ** w:  # review 2026-11-05 #8: >= — n == 10**w is the (w+1)th value,
+        raise ValueError(  # a (w+1)-digit id that no longer matches _ID_SHAPE
             f"record ids of type {spec.code!r} are exhausted "
             f"(all-digit {w}-digit suffix space used up; max "
             f"{spec.code}-{10 ** w - 1:0{w}d})")
@@ -965,7 +992,8 @@ def parse_summary(arg: str, spec: ChangelogSpec | None = None) -> tuple[str, str
 
 def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]) -> Path:
     path = root / LOCK_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)  # S.10: the .proj/ dir
+    # S.10: the .proj/ dir (fsio.write_atomic re-creates parents anyway)
+    path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "schema_version": SCHEMA_VERSION,
         "profiles": profiles,
@@ -983,8 +1011,10 @@ def write_lock(root: Path, specs: dict[str, RecordTypeSpec], profiles: list[str]
             "wip": {"enter": list(s.wip_enter)},
         } for s in specs.values()},
     }
-    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                    encoding="utf-8")
+    # review 2026-11-05 #10d: atomic write like every other md (a torn
+    # lock.yaml is a corrupt project)
+    from proj.core import fsio  # lazy: fsio imports this module
+    fsio.write_atomic(path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
     return path
 
 
