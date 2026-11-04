@@ -35,7 +35,12 @@ md file shape (rendered by the engine):
                                          <-   collapsed by default
 
     ## Context                             <- user-owned content (the only
-    ...                                    <- part humans/LLMs edit)
+    <!-- proj:section — USER-OWNED: ... --><- part humans/LLMs edit); a
+    ...                                    <- per-section ownership marker line
+                                             <- (rendered under each ## heading,
+                                             <- never stored, stripped on parse;
+                                             <- checklist sections carry the
+                                             <- TOOL-RENDERED variant instead)
 
 The metadata block is a blockquote of `> **key:** value` lines — NOT a front
 matter, so md frontmatter validators leave it alone. Every line but the last
@@ -108,6 +113,31 @@ HEAD_START = "<!-- proj:head:start — TOOL-MANAGED: metadata, summary and " \
              "changelog are maintained by `proj`; never hand-edit this region " \
              "(use `proj`) -->"
 HEAD_END = "<!-- proj:head:end -->"
+# per-section ownership marker: ONE comment line rendered directly under each
+# `## ` heading (no end marker — the section's natural end is the next `## `
+# or EOF). It is a pure render artifact, never stored in the DB: parse_record
+# strips it from the raw section text (ingest / drift / items all see the
+# stripped text; an old md without markers parses the same).
+SEC_MARK_USER = "<!-- proj:section — USER-OWNED: edit freely; `proj sync` " \
+                "writes it back -->"
+SEC_MARK_TOOL = "<!-- proj:section — TOOL-RENDERED from the DB: tick item " \
+                "lines / edit intro text here (sync writes back); numbers, " \
+                "groups, states are tool-managed — use `proj item` -->"
+# the section-ownership marker AND the empty-section hint comment share this
+# prefix (both are single-line comments rendered under the heading; a hint is
+# shown only while the section's body is empty, never stored, and disappears
+# on the next render once the section has content)
+_SEC_MARK_RE = re.compile(r"^<!-- proj:section — (?:USER-OWNED|TOOL-RENDERED|hint:).*-->")
+
+
+def _hint_comment(hint: str) -> str:
+    """The one-line `<!-- proj:section — hint: ... -->` comment for an EMPTY
+    section (render-only guidance; the hint text is folded to one line and
+    must not break the comment)."""
+    flat = " ".join(hint.split())
+    if "-->" in flat or not flat:
+        return ""
+    return f"<!-- proj:section — hint: {flat} -->"
 
 
 # C3.2/C4: the cache is local (rebuilt from .proj/events.jsonl); this thread-local
@@ -483,7 +513,6 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
     from proj.engine import items as items_mod  # lazy: store↔items cycle
     item_specs = {it.section: it for it in spec.items}
     for sec in spec.sections:
-        lines += [f"## {sec.name}", ""]
         it = item_specs.get(sec.name)
         if it is not None:
             # a checklist section renders entirely from the DB state (its intro
@@ -492,10 +521,21 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
             state.intro = items_mod._intro_of(it, row)
             # P5: link bare record ids in the item text (the drift re-render in
             # items.drift uses the same ctx, so the md round-trips)
-            lines.append(items_mod.render_section(
-                state, it, ctx=(db, reg, spec, row)) or "")
+            body = (items_mod.render_section(
+                state, it, ctx=(db, reg, spec, row)) or "").strip()
         else:
-            lines.append(sections.get(sec.name.lower(), "").strip())
+            body = sections.get(sec.name.lower(), "").strip()
+        # the section-ownership marker (user text vs tool-rendered checklist)
+        # sits directly under the heading — a reader sees the rule per section;
+        # an EMPTY section (text or checklist) gets its template hint as a
+        # one-line comment instead (visible in source, hidden in rendered md,
+        # gone on the next render once the section has content)
+        lines += [f"## {sec.name}",
+                  SEC_MARK_TOOL if it is not None else SEC_MARK_USER]
+        hint_line = _hint_comment(sec.hint) if not body else ""
+        for line in (hint_line, body):
+            if line:
+                lines.append(line)
         lines.append("")
     # non-template sections the user appended (git collab, design §10.2): the
     # replay stores every section.set in the sections JSON, but the template
@@ -509,8 +549,18 @@ def render_record(spec: RecordTypeSpec, row: dict, db: dbmod.Db,
         # it inside its own section) — not standalone sections
         text = (sections[name] or "").strip()
         if text:
-            lines += [f"## {name}", "", text, ""]
+            lines += [f"## {name}", SEC_MARK_USER, "", text, ""]
     return "\n".join(lines).rstrip() + "\n"
+
+
+def strip_section_marks(text: str) -> str:
+    """Drop the per-section marker lines (ownership marker + the empty-section
+    hint comment, both rendered under the `## ` heading) from a section's raw
+    text — they are render artifacts, never in the DB. parse_record applies
+    this so ingest / drift / item sync all read marker-free text (a md without
+    markers round-trips unchanged)."""
+    return "\n".join(line for line in text.splitlines()
+                     if not _SEC_MARK_RE.match(line))
 
 
 def _md_drifts(p: Path, row: dict, spec: RecordTypeSpec, db,
@@ -825,9 +875,14 @@ def render_affected(cfg: ProjConfig, db: dbmod.Db | None = None,
                           + db.picked_by(r)
                           + db.tasks_referenced_by(r)):
                 records.add(other)
-        # WIP.md: a WIP member changed, or a touched record is in WIP
+        # WIP.md: a WIP member changed, or a touched record is in WIP, or a
+        # touched record is referenced (K3 `→ T-…`) by a record that is in WIP —
+        # the latter because WIP.md links that ref as a filename, so a rename of
+        # the referenced record changes the link path (entries untouched).
         wip_dirty = ("wip" in touched_views
-                     or any(db.wip_has(r) for r in touched))
+                     or any(db.wip_has(r) for r in touched)
+                     or any(db.wip_has(ref) for r in touched
+                            for ref in db.picked_by(r)))
         changelog_dirty = "changelog" in touched_views
 
         written: list[Path] = []
@@ -908,7 +963,7 @@ def parse_record(text: str):
     sections: dict[str, str] = {}
     for i, sm in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        sections[sm.group(1).strip().lower()] = text[sm.end():end]
+        sections[sm.group(1).strip().lower()] = strip_section_marks(text[sm.end():end])
     return marker, title, sections
 
 

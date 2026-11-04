@@ -80,13 +80,18 @@ def entry_lines(row: dict, spec: RecordTypeSpec, cfg: ProjConfig,
     if spec.wip_items is not None:
         # B2: the entry shows the record's WIP checklist (its `wip: true` one) —
         # the same one _changed / the write-back ingest; rendering the primary
-        # instead would make every re-render drift.
+        # instead would make every re-render drift. Render BARE (no ctx: the
+        # record md is what carries P5 free-text links, and WIP.md de-links on
+        # the write-back path), then link the K3 ` → T-…` refs root-relative
+        # (WIP.md lives at the project root, not the record's dir).
         it = spec.wip_items
         state = items_mod.load(db, row["id"], it)
         state.intro = items_mod._intro_of(it, row)
         sec = items_mod.render_section(state, it)
         if sec.strip():
-            lines += sec.splitlines()
+            # K3 refs linked root-relative: WIP.md lives at the project root
+            # (cfg.root), so the ref path is docs/tasks/T-….md
+            lines += items_mod.link_task_refs(sec, db, cfg.root).splitlines()
     return lines
 
 
@@ -127,7 +132,10 @@ def entry_items_text(wip_text: str, record_id: str) -> str:
     record md): the contiguous run of `- [` / `### ` / item-trailer lines from the
     first item line. Stops at a blank line followed by non-item text (the entry
     summary or the file footer are tool-owned and must not be handed back). The
-    heading, marker and metadata line are tool-owned and ignored."""
+    heading, marker and metadata line are tool-owned and ignored. K3 task-refs
+    are de-linked on the way out (WIP.md renders them linked, the DB stores the
+    bare id)."""
+    from proj.engine import items as items_mod  # lazy
     body = _entry_slice(wip_text, record_id)
     if not body:
         return ""
@@ -146,7 +154,11 @@ def entry_items_text(wip_text: str, record_id: str) -> str:
             out.append(line)  # a blank/continuation line inside the checklist
             continue
         break  # a non-item paragraph: the summary or the footer — stop
-    return "\n".join(out).rstrip()
+    # K3 task-refs are rendered LINKED in WIP.md (root-relative), but the DB
+    # stores the bare id and the _changed comparison re-renders bare — restore
+    # the bare form here so a linked WIP line neither false-drifts nor writes a
+    # path into the `task` column (this is the write-back funnel too).
+    return items_mod.unlink_task_refs("\n".join(out).rstrip())
 
 
 def _changed(db, spec: RecordTypeSpec, record_id: str, md_section: str) -> bool:

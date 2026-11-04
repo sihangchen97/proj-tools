@@ -205,6 +205,51 @@ def test_sync_writes_back_wip_only_drift(proj):
     assert "- [x] #001 ✅ step one" in w  # WIP.md re-rendered from the DB too
 
 
+def _task_ref_col(cfg, id_, no):
+    db = rec.open_db(cfg)
+    row = db.conn.execute(
+        "SELECT task FROM items WHERE record_id=? AND no=?", (id_, no)).fetchone()
+    db.close()
+    return row[0] if row else None
+
+
+def test_wip_k3_task_ref_links_root_relative(proj):
+    """The K3 ` → T-…` ref is rendered LINKED in WIP.md (root-relative,
+    `docs/tasks/…`), but the DB keeps the bare id and the record md renders it
+    bare: entry_items_text de-links before the _changed comparison and the
+    write-back, so a linked WIP line neither false-drifts nor stores a path."""
+    ref_row, _ = taskmod.new(proj, "Ref")
+    ref = ref_row["id"]
+    rec.status_set(proj, "task", ref, "Done")  # the P3 gate needs the target closed
+    plan_row, _ = record_for("plan", rec.load_registry(proj.root)).new(proj, "Ship")
+    plan = plan_row["id"]
+    item_ops.add(proj, plan, "build", task=ref)
+    wipmod.wip_add(proj, [plan])
+    w = _wip(proj)
+    # the K3 ref is a root-relative markdown link in WIP.md …
+    assert f"→ [{ref}](docs/tasks/{ref}-ref.md)" in w
+    # … but the record md keeps it bare (no WIP link leaks into the record)
+    md = (proj.root / "docs/plans" / f"{plan}-ship.md").read_text(encoding="utf-8")
+    assert f" → {ref}" in md and "docs/tasks/" not in md
+    # the write-back funnel de-links: no false drift against the bare DB re-render
+    db = rec.open_db(proj)
+    try:
+        sec = wipmod.entry_items_text(w, plan)
+        assert wipmod._changed(db, rec.load_registry(proj.root)["plan"],
+                               plan, sec) is False
+    finally:
+        db.close()
+    assert f"→ {ref}" in sec and "docs/tasks/" not in sec  # de-linked back to bare
+    # a WIP-only tick writes the bare id back (no path in the task column)
+    (proj.root / "WIP.md").write_text(
+        w.replace("- [ ] #001 build", "- [x] #001 build"), encoding="utf-8")
+    problems, _ = rec.sync(proj)
+    assert problems == []
+    assert _task_ref_col(proj, plan, "001") == ref
+    w = _wip(proj)
+    assert f"→ [{ref}](docs/tasks/{ref}-ref.md)" in w  # re-rendered linked again
+
+
 def test_sync_no_write_back_when_wip_matches_db(proj):
     """Only the record md drifted → the record md wins; WIP.md just re-renders
     (no write-back, so the Done gate cannot fire on an unchanged checklist)."""

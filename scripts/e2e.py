@@ -238,10 +238,13 @@ def write_sections(rel: str, sections: dict[str, str]) -> None:
     for name, body in sections.items():
         m = re.search(rf"^## {re.escape(name)}[ \t]*\n", t, re.M)
         assert m, f"no '## {name}' in {rel}"
-        start = m.end()
-        nxt = re.search(r"\n## |\n<!-- proj:", t[start:])
-        stop = start + (nxt.start() if nxt else len(t[start:]))
-        t = t[: start] + body.strip() + "\n\n" + t[stop:].lstrip("\n")
+        # the section spans the heading to the next `## ` (or EOF); replace the
+        # whole span with the new body — the per-section marker lines (ownership
+        # marker + the empty-section hint comment) are render artifacts that
+        # `sync` regenerates, so they need no special-casing here
+        nxt = re.search(r"\n## ", t[m.end():])
+        stop = m.end() + (nxt.start() if nxt else len(t[m.end():]))
+        t = t[:m.end()] + body.strip() + "\n" + t[stop:]
         _emit("section", (rel, name, body.strip()))
     p.write_text(t, encoding="utf-8")
     run("sync")
@@ -407,6 +410,12 @@ def ch2() -> None:
     expect_ok("plan 新建（带 summary）", f"{P}",
               "plan", "new", "缺陷检测 v1 上线", "-y",
               "-s", "在产线边缘端跑 YOLOv8n，达到验收指标后全量上线")
+    # a fresh plan's EMPTY Goal section renders its template hint as a
+    # `<!-- proj:section — hint: … -->` comment (visible in source, hidden in
+    # rendered md) before any edit
+    fresh = read(md_of(P))
+    assert "First line: `Owner: <the single accountable person>" in fresh, fresh
+    REP.ok("plan 新建即带模板 hint 注释（空 Goal 节显示 hint）")
     write_sections(md_of(P), {
         "Goal": "缺陷检测 v1 在边缘端稳定运行：mAP@0.5 ≥ 0.85、单帧延迟 < 30 ms、"
                 "漏检率 < 2%。",
@@ -772,14 +781,16 @@ def ch9() -> None:
     reg = rec.load_registry(None)
 
     def body_of(t: str, name: str) -> str:
-        # the body of the `## name` section, up to the next `##` or EOF
+        # the body of the `## name` section, up to the next `##` or EOF; the
+        # per-section ownership marker lines (render-only, stripped on parse)
+        # are dropped, or an empty section would read as non-empty
         out: list[str] = []
         on = False
         for line in t.splitlines():
             if line.startswith("## "):
                 on = line[3:].strip() == name
                 continue
-            if on:
+            if on and not line.startswith("<!-- proj:section —"):
                 out.append(line)
         return "\n".join(out).strip()
 

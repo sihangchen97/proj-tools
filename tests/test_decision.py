@@ -1,4 +1,7 @@
 """v3 decision engine: new, supersede, status, toc/graph."""
+import json
+import re
+
 import pytest
 
 from proj.engine import store as rec
@@ -22,6 +25,91 @@ def test_new_creates_record(proj):
     assert "## Context" in text
     # changelog shows the created entry (comment → the status emoji + "created")
     assert "- ✏️ created`" in text
+
+
+def test_empty_section_hints_rendered_as_comments(proj):
+    """An EMPTY section (text or checklist) renders its template hint as a
+    one-line `<!-- proj:section — hint: ... -->` comment (visible in source,
+    hidden in rendered md); the hint is a render artifact — never stored, and
+    it disappears on the next render once the section carries content."""
+    import proj.check as checkmod
+
+    spec = rec.spec_of(proj, "decision")
+    row, p = rec.new_record(proj, "decision", "Empty hints")
+    text = p.read_text()
+    # every template section is empty on a fresh record → every one shows its hint
+    for sec in spec.sections:
+        hint = " ".join(sec.hint.split())
+        if hint:
+            assert re.search(rf"^## {re.escape(sec.name)}\n"
+                            rf"<!-- proj:section — [^>]*-->\n"
+                            rf"<!-- proj:section — hint: {re.escape(hint)} -->\n",
+                            text, re.M), f"hint comment missing under ## {sec.name}"
+    # the DB stores no hint text (the log rebuilds the same)
+    db = rec.open_db(proj)
+    sections = json.loads(db.get(spec, row["id"])["sections"])
+    db.close()
+    for val in sections.values():
+        assert "proj:section" not in val
+    # no drift (the hint comment round-trips via the strip)
+    assert rec.md_drift(proj) == []
+    # fill a text section → its hint comment is gone on the re-render
+    body = "Context filled in."
+    # write the section body through the md + sync (the human channel)
+    t = p.read_text()
+    m = re.search(r"^## Context[ \t]*\n", t, re.M)
+    start = m.end()
+    while True:
+        mm = re.match(r"<!-- proj:section — [^>]*-->\n", t[start:])
+        if not mm:
+            break
+        start += mm.end()
+        if t[start:start + 1] == "\n":
+            start += 1
+    nxt = re.search(r"\n## |\n<!-- proj:", t[start:])
+    stop = start + (nxt.start() if nxt else len(t[start:]))
+    p.write_text(t[:start] + body + "\n\n" + t[stop:].lstrip("\n"))
+    probs, _notes = rec.sync(proj)
+    assert probs == []
+    fresh = p.read_text()
+    assert "## Context" in fresh and body in fresh
+    # the filled section no longer carries its hint comment (still owned marker only)
+    assert not re.search(
+        r"## Context\n<!-- proj:section — [^>]*-->\n<!-- proj:section — hint:", fresh)
+    # replay still consistent
+    assert checkmod.check(proj) == []
+
+
+def test_section_marker_rendered_not_stored(proj):
+    """Each `## ` heading renders a per-section ownership marker line directly
+    below it (USER-OWNED for text sections, TOOL-RENDERED for checklists); the
+    marker is a render artifact only — never stored, stripped on parse, so a
+    marker-bearing md does not drift and an old marker-less md still syncs
+    (the next render re-adds the markers)."""
+    row, p = rec.new_record(proj, "decision", "Markers")
+    spec = rec.spec_of(proj, "decision")
+    text = p.read_text()
+    # one marker line directly under every template heading, the right variant
+    item_secs = {it.section.lower() for it in spec.items}
+    for sec in spec.sections:
+        expected = (rec.SEC_MARK_TOOL if sec.name.lower() in item_secs
+                    else rec.SEC_MARK_USER)
+        assert re.search(rf"^## {re.escape(sec.name)}\n{re.escape(expected)}\n",
+                        text, re.M), f"marker missing under ## {sec.name}"
+    # the DB section values carry no marker lines (the log rebuilds the same)
+    db = rec.open_db(proj)
+    sections = json.loads(db.get(spec, row["id"])["sections"])
+    db.close()
+    for val in sections.values():
+        assert "<!-- proj:section" not in val, val[:80]
+    # a marker-bearing md round-trips with no drift (ingest strips the markers)
+    assert rec.md_drift(proj) == []
+    # old md without markers: sync succeeds, the next render re-adds them
+    p.write_text("\n".join(line for line in text.splitlines()
+                           if not line.startswith("<!-- proj:section")) + "\n")
+    probs, _notes = rec.sync(proj)
+    assert probs == []
+    assert rec.SEC_MARK_USER in p.read_text()
 
 
 def test_supersede_sets_relations_not_statuses(proj):

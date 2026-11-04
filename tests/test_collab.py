@@ -160,11 +160,16 @@ def test_disjoint_checklists_and_wip_merge(tmp_path, proj_binary):
     a.commit("base items")
     t.push(a)
     t.rebase(b)
-    # A checks item 1; B checks item 2 (disjoint) — both in the same record
+    # A checks item 1; B checks item 2 (disjoint) — both in the same record.
+    # The item lines are numbered ("- [ ] #001 步骤一"), so match the numbered
+    # line (a bare "- [ ] 步骤一" replace is a silent no-op and never ticks).
     for c, item in ((a, "步骤一"), (b, "步骤二")):
         md = next(c.path.rglob(f"{tid}-*.md"))
-        md.write_text(md.read_text(encoding="utf-8").replace(
-            f"- [ ] {item}", f"- [x] {item}"), encoding="utf-8")
+        old = md.read_text(encoding="utf-8")
+        new, n = re.subn(rf"- \[ \] #\d+ {re.escape(item)}\b",
+                         lambda m: m.group(0).replace("- [ ]", "- [x]"), old)
+        assert n == 1, f"checkbox line for {item!r} not found in {md.name}"
+        md.write_text(new, encoding="utf-8")
         c.run("sync")
         c.commit(f"check {item}")
     t.push(a)

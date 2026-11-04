@@ -296,6 +296,56 @@ def link_record_ids(text: str, db, reg: dict, rspec, row: dict) -> str:
     return _ID_CANDIDATE_RE.sub(repl, text)
 
 
+# ---- WIP.md K3 task-ref links (root-relative) ----------------------------------
+# WIP.md sits at the project root, so its item lines link the K3 ` → T-…`
+# reference root-relative (`docs/tasks/T-….md`), unlike the record md (which
+# renders the ref bare). link_task_refs is the display form (entry_lines);
+# unlink_task_refs restores the bare form before the WIP.md comparison / write-
+# back (entry_items_text), so the DB keeps the bare id and _changed compares
+# bare==bare (no false drift, no write-back loop). Free text is untouched (P5
+# only fires with a ctx, which the WIP view does not pass — so the only bare
+# ` → T-…` in a WIP rendering is the K3 ref, and the only ` → [..](..)` is one
+# we just produced).
+_WIP_K3_RE = re.compile(r" → (T-\d{4,})")
+_WIP_K3_LINK_RE = re.compile(r" → (\[[^\]]+\]\([^)]*\))")
+
+
+def link_task_refs(text: str, db, root: Path) -> str:
+    """Link the bare K3 ` → T-…` refs in `text` relative to `root` (the project
+    root — WIP.md lives there, so the refs are root-relative). A dangling ref
+    (no record of that id) stays bare."""
+    if not text:
+        return text
+    from proj.engine import store as rec  # lazy: items<->store cycle
+    root = Path(root)
+    cfg = rec.ProjConfig(root)
+    reg = rec.load_registry(root)
+
+    def repl(m: re.Match) -> str:
+        rid = m.group(1)
+        for tspec in reg.values():
+            trow = rec.by_id(cfg, tspec, db, rid)
+            if trow is not None:
+                rel = os.path.relpath(rec.file_path(cfg, tspec, trow),
+                                      root).replace(os.sep, "/")
+                return f" → [{rid}]({rel})"
+        return m.group(0)  # no record of that id → leave bare
+    return _WIP_K3_RE.sub(repl, text)
+
+
+def unlink_task_refs(text: str) -> str:
+    """Restore a WIP-linked K3 ref ` → [ID-slug](rel)` to the bare ` → ID`
+    (the display inverse; the id is read back from the link text). A link whose
+    text does not start with a record id is left as-is."""
+    if not text:
+        return text
+
+    def repl(m: re.Match) -> str:
+        mid = re.match(r"\[?([A-Za-z]+-\d+)", m.group(1))
+        return " → " + mid.group(1) if mid else m.group(0)
+    return _WIP_K3_LINK_RE.sub(repl, text)
+
+
 def render_item_line(item: Item, spec, ctx=None) -> str:
     box = "x" if item.state in CLOSED_STATES else " "
     text = item.text
